@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     min_resume_text_chars: int = 80
     gemini_model: str = "gemini-2.0-flash"
     profile_extraction_retries: int = 1
+    profile_extraction_max_chars: int = 12000
 
     model_config = SettingsConfigDict(env_file=PROJECT_ROOT / ".env", env_file_encoding="utf-8", extra="ignore")
 

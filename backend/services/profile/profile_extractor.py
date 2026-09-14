@@ -13,6 +13,21 @@ class ProfileExtractor(Protocol):
     def extract(self, resume_text: str) -> ProfileData: ...
 
 
+def prepare_resume_text_for_ai(resume_text: str, max_chars: int) -> str:
+    normalized = " ".join(resume_text.split())
+    if max_chars <= 0 or len(normalized) <= max_chars:
+        return normalized
+
+    separator = " ...[TRUNCATED]... "
+    if max_chars <= len(separator):
+        return normalized[:max_chars]
+
+    remaining = max_chars - len(separator)
+    head_chars = int(remaining * 0.7)
+    tail_chars = remaining - head_chars
+    return f"{normalized[:head_chars]}{separator}{normalized[-tail_chars:]}"
+
+
 class GeminiProfileExtractor(AIProvider):
     """Narrow, source-grounded Gemini integration reserved for profile extraction."""
 
@@ -22,6 +37,7 @@ class GeminiProfileExtractor(AIProvider):
         settings = get_settings()
         if not settings.gemini_api_key:
             raise ProfileExtractionError("Profile extraction requires a configured Gemini API key.")
+        prepared_text = prepare_resume_text_for_ai(resume_text, settings.profile_extraction_max_chars)
         try:
             from google import genai
             from google.genai import types
@@ -32,7 +48,7 @@ class GeminiProfileExtractor(AIProvider):
                 contents=(
                     "Extract only facts explicitly stated in this resume. Return JSON matching the provided schema. "
                     "Never infer, normalize into a more specific value, or add related skills. Use null or [] for missing facts.\n\n"
-                    f"RESUME:\n{resume_text}"
+                    f"RESUME:\n{prepared_text}"
                 ),
                 config=types.GenerateContentConfig(response_mime_type="application/json"),
             )

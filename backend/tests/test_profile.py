@@ -11,6 +11,7 @@ from backend.core.exceptions import ProfileExtractionError
 from backend.core.exceptions import ValidationError
 from backend.database.database import Base
 from backend.schemas.profile import ProfileData, ProfileStatus, ProfileUpdateRequest
+from backend.services.profile.profile_extractor import prepare_resume_text_for_ai
 from backend.services.profile.profile_service import ProfileService
 
 
@@ -152,3 +153,10 @@ def test_confirm_requires_review_status(profile_session: Session, resume_bytes: 
     service.confirm_current_profile()
     with pytest.raises(ValidationError):
         service.confirm_current_profile()
+
+
+def test_prepare_resume_text_for_ai_truncates_large_payload() -> None:
+    long_text = ("Python SQL PowerBI " * 2000).strip()
+    prepared = prepare_resume_text_for_ai(long_text, 1000)
+    assert len(prepared) <= 1000
+    assert "[TRUNCATED]" in prepared
