@@ -1,7 +1,3 @@
-import hashlib
-import os
-from pathlib import Path
-
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -9,19 +5,19 @@ from backend.core.config import get_settings
 from backend.core.exceptions import ProfileExtractionError, ValidationError
 from backend.models.profile import Profile, Resume
 from backend.schemas.profile import ProfileData, ProfileResponse, ProfileStatus, ProfileUpdateRequest, ResumeUploadResponse
-from backend.services.profile.pdf_extractor import PdfTextExtractor
 from backend.services.profile.profile_extractor import ProfileExtractor, get_profile_extractor
+from backend.services.profile.resume_service import ResumeService
 
 
 class ProfileService:
-    def __init__(self, session: Session, extractor: ProfileExtractor | None = None) -> None:
+    def __init__(self, session: Session, extractor: ProfileExtractor | None = None, resume_service: ResumeService | None = None) -> None:
         self.session = session
         self.extractor = extractor or get_profile_extractor()
-        self.pdf_extractor = PdfTextExtractor()
+        self.resume_service = resume_service or ResumeService()
 
     def upload_resume(self, filename: str | None, content_type: str | None, content: bytes) -> ResumeUploadResponse:
-        self._validate_upload(filename, content_type, content)
-        digest = hashlib.sha256(content).hexdigest()
+        self.resume_service.validate_upload(filename, content_type, content)
+        digest = self._compute_hash(content)
         existing = self.session.scalar(select(Resume).where(Resume.sha256 == digest))
         if existing:
             self.session.execute(update(Resume).values(is_current=False))
@@ -30,20 +26,26 @@ class ProfileService:
             self.session.commit()
             return ResumeUploadResponse(profile_id=profile.id, status=ProfileStatus(profile.status), resume_hash=digest, duplicate=True)
 
-        settings = get_settings()
-        extracted_text = self.pdf_extractor.extract(content, settings.min_resume_text_chars)
-        stored_filename = f"{digest}.pdf"
-        self._store_resume(settings.resume_storage_dir, stored_filename, content)
+        processed = self.resume_service.process_upload(filename, content_type, content)
         try:
             self.session.execute(update(Resume).values(is_current=False))
-            resume = Resume(stored_filename=stored_filename, original_filename=Path(filename or "resume.pdf").name, sha256=digest, file_size=len(content), text_length=len(extracted_text), is_current=True)
+            resume = Resume(
+                stored_filename=processed.stored_filename,
+                original_filename=processed.original_filename,
+                sha256=processed.sha256,
+                file_size=processed.file_size,
+                text_length=len(processed.extracted_text),
+                is_current=True,
+            )
             self.session.add(resume)
             self.session.flush()
-            profile = Profile(resume_id=resume.id, status=ProfileStatus.EXTRACTING.value, confirmed=False, data={})
+            profile = Profile(resume_id=resume.id, status=ProfileStatus.RESUME_UPLOADED.value, confirmed=False, data={})
             self.session.add(profile)
             self.session.flush()
             try:
-                profile_data = self.extractor.extract(extracted_text)
+                profile.status = ProfileStatus.EXTRACTING.value
+                self.session.flush()
+                profile_data = self._extract_profile_with_retry(processed.extracted_text)
                 profile.data = profile_data.model_dump(mode="json")
                 profile.status = ProfileStatus.REVIEW_REQUIRED.value
             except ProfileExtractionError:
@@ -92,29 +94,31 @@ class ProfileService:
 
     @staticmethod
     def _response(profile: Profile, resume: Resume) -> ProfileResponse:
-        return ProfileResponse(id=profile.id, status=ProfileStatus(profile.status), confirmed=profile.confirmed, data=ProfileData.model_validate(profile.data), resume_hash=resume.sha256, original_filename=resume.original_filename, uploaded_at=resume.uploaded_at, updated_at=profile.updated_at)
+        return ProfileResponse(
+            id=profile.id,
+            status=ProfileStatus(profile.status),
+            confirmed=profile.confirmed,
+            data=ProfileData.model_validate(profile.data),
+            resume_hash=resume.sha256,
+            original_filename=resume.original_filename,
+            file_size=resume.file_size,
+            uploaded_at=resume.uploaded_at,
+            updated_at=profile.updated_at,
+        )
 
     @staticmethod
-    def _store_resume(directory: Path, filename: str, content: bytes) -> None:
-        directory.mkdir(parents=True, exist_ok=True)
-        destination = directory / filename
-        temporary = directory / f".{filename}.tmp"
-        try:
-            with temporary.open("wb") as file:
-                file.write(content)
-            os.replace(temporary, destination)
-        except OSError as exc:
-            temporary.unlink(missing_ok=True)
-            raise ValidationError("The resume could not be stored locally.") from exc
+    def _compute_hash(content: bytes) -> str:
+        import hashlib
 
-    @staticmethod
-    def _validate_upload(filename: str | None, content_type: str | None, content: bytes) -> None:
+        return hashlib.sha256(content).hexdigest()
+
+    def _extract_profile_with_retry(self, extracted_text: str) -> ProfileData:
         settings = get_settings()
-        if not filename or Path(filename).suffix.lower() != ".pdf":
-            raise ValidationError("Upload a PDF resume.")
-        if content_type not in {"application/pdf", "application/x-pdf"}:
-            raise ValidationError("The uploaded file must have a PDF content type.")
-        if not content or len(content) > settings.max_resume_file_size_bytes:
-            raise ValidationError("The resume file is empty or exceeds the 10 MB limit.")
-        if not content.startswith(b"%PDF-"):
-            raise ValidationError("The uploaded file is not a valid PDF.")
+        retries = max(0, settings.profile_extraction_retries)
+        last_error: ProfileExtractionError | None = None
+        for _ in range(retries + 1):
+            try:
+                return self.extractor.extract(extracted_text)
+            except ProfileExtractionError as exc:
+                last_error = exc
+        raise last_error or ValidationError("Profile extraction failed.")

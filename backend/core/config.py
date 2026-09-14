@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     max_resume_file_size_bytes: int = 10 * 1024 * 1024
     min_resume_text_chars: int = 80
     gemini_model: str = "gemini-2.0-flash"
+    profile_extraction_retries: int = 1
 
     model_config = SettingsConfigDict(env_file=PROJECT_ROOT / ".env", env_file_encoding="utf-8", extra="ignore")
 

@@ -70,6 +70,7 @@ class ProfileResponse(BaseModel):
     data: ProfileData | None = None
     resume_hash: str | None = None
     original_filename: str | None = None
+    file_size: int | None = None
     uploaded_at: datetime | None = None
     updated_at: datetime | None = None
 
