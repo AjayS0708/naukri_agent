@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.0-flash"
     profile_extraction_retries: int = 1
     profile_extraction_max_chars: int = 12000
+    gemini_timeout_seconds: float = 20.0
+    gemini_request_retries: int = 2
+    ai_cache_enabled: bool = True
 
     model_config = SettingsConfigDict(env_file=PROJECT_ROOT / ".env", env_file_encoding="utf-8", extra="ignore")
 

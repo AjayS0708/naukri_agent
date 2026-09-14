@@ -37,3 +37,18 @@ class ValidationError(ApplicationError):
 class ProfileExtractionError(ApplicationError):
     category = ErrorCategory.AI
     status_code = 502
+
+
+class AIConfigurationError(ApplicationError):
+    category = ErrorCategory.CONFIGURATION
+    status_code = 503
+
+
+class AIQuotaExceededError(ApplicationError):
+    category = ErrorCategory.AI_QUOTA
+    status_code = 503
+
+
+class AIUnavailableError(ApplicationError):
+    category = ErrorCategory.AI
+    status_code = 503
