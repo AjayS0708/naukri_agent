@@ -28,37 +28,26 @@ def prepare_resume_text_for_ai(resume_text: str, max_chars: int) -> str:
     return f"{normalized[:head_chars]}{separator}{normalized[-tail_chars:]}"
 
 
-class GeminiProfileExtractor(AIProvider):
-    """Narrow, source-grounded Gemini integration reserved for profile extraction."""
-
-    provider_name = "gemini"
+class GeminiProfileExtractor:
+    """Delegates to the Centralized GeminiProvider."""
 
     def extract(self, resume_text: str) -> ProfileData:
         settings = get_settings()
-        if not settings.gemini_api_key:
-            raise ProfileExtractionError("Profile extraction requires a configured Gemini API key.")
         prepared_text = prepare_resume_text_for_ai(resume_text, settings.profile_extraction_max_chars)
+        
+        from backend.services.gemini.provider import GeminiProvider
+        provider = GeminiProvider()
+        
+        if not provider.client:
+            raise ProfileExtractionError("Profile extraction requires a configured Gemini API key.")
+            
         try:
-            from google import genai
-            from google.genai import types
-
-            client = genai.Client(api_key=settings.gemini_api_key)
-            response = client.models.generate_content(
-                model=settings.gemini_model,
-                contents=(
-                    "Extract only facts explicitly stated in this resume. Return JSON matching the provided schema. "
-                    "Never infer, normalize into a more specific value, or add related skills. Use null or [] for missing facts.\n\n"
-                    f"RESUME:\n{prepared_text}"
-                ),
-                config=types.GenerateContentConfig(response_mime_type="application/json"),
-            )
-            if not response.text:
+            profile_data = provider.extract_profile(prepared_text)
+            if not profile_data:
                 raise ProfileExtractionError("The profile extractor returned no structured result.")
-            return ProfileData.model_validate(json.loads(response.text))
+            return profile_data
         except ProfileExtractionError:
             raise
-        except (json.JSONDecodeError, PydanticValidationError) as exc:
-            raise ProfileExtractionError("The profile extractor returned invalid structured data.") from exc
         except Exception as exc:
             raise ProfileExtractionError("Profile extraction could not be completed.") from exc
 

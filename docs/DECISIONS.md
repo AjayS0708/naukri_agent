@@ -14,3 +14,6 @@
 | JSON profile payload with typed Pydantic contract | Keeps the initial local SQLite schema small while enforcing structured, portable profile data. |
 | Narrow Gemini profile extraction | Gemini receives only normalized resume text and must return schema-validated, source-grounded facts; it has no browser capability. |
 | Reconfirmation after edits | Editing a profile clears confirmation so future automation can only rely on explicitly approved facts. |
+| Clean NPM Installation (Phase 3) | Resolves Vite 8 / Rolldown native binding issues blocking the frontend on Windows environments. |
+| `google-genai` SDK for Gemini | Prioritized over LangChain for minimal, type-safe, and native `response_schema` bounds. |
+| Integrated AI Database Tracking | Enforces AI usage awareness by recording requests, caching outcomes, and managing model configurations directly in SQLite to preserve request quota limits. |
