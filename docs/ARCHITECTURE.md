@@ -44,3 +44,16 @@ PDF upload -> validation -> SHA-256 storage -> PyMuPDF text extraction
 ```
 
 `ProfileService` owns the workflow. It stores only generated resume filenames and hashes in the database; API responses never expose local paths or raw resume text. A newly uploaded resume is current but cannot overwrite its predecessor's confirmed facts until its own review is explicitly confirmed.
+
+## AI Engine Workflow (Phase 3)
+
+The reasoning bounds run exclusively through a centralized `GeminiProvider`.
+
+```text
+Gemini SDK (google-genai) -> Provide System Instruction Context
+    -> Response -> Pydantic Schema Validation (Strict JSON)
+    -> SQLAlchemy Record (JobAnalysis / AIUsage)
+    -> Backend App Logic
+```
+
+The app's AI integration does NOT make direct browser-related commands or manipulate business execution; it strictly conforms to JSON-bound models (e.g. returning a deterministic `recommendation: AIRecommendation`) and catches rate-limiting or quota errors proactively.
