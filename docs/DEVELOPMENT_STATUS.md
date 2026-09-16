@@ -1,5 +1,18 @@
 # Development Status
 
+## Phase 4: COMPLETE - Job Matching & Rules Engine
+
+Implemented Phase 4:
+
+- Designed strict deterministic matching pipelines enforcing hard rules for Experience, Location, Salary, Employment Types, and scoping.
+- Added string normalizer `backend/services/matching/normalizer.py` to interpret "LPA", "Bengaluru", and relative experience blocks accurately.
+- Built central `MatchEngine` to evaluate candidate jobs directly against SQLite Job Preferences.
+- Configured final AI delegation ensuring Gemini is strictly invoked only for Semantic/Skill Analysis *after* all deterministic filters explicitly pass.
+- Integrated `JobPreferences` API routes, enabling settings overrides like App limits and Aggressiveness.
+- Implemented `JobPreferences.tsx` locally mapping UI elements to backend matching filters cleanly.
+- Unit tested all deterministic filters; integration pipeline successful, with all bounds enforcing no unauthorized bypassing.
+- Next Phase: Phase 5 - Job Discovery & Automation (Playwright integrations).
+
 ## Phase 3: COMPLETE - Gemini AI Engine
 
 Implemented Phase 3:
