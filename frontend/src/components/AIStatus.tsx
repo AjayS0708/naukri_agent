@@ -66,10 +66,10 @@ export function AIStatus() {
     if (loading) return <div className="p-4 border rounded-lg animate-pulse bg-gray-50 h-32"></div>;
 
     return (
-        <div className="bg-white rounded-xl shadow-sm border border-[#E4E7EC] overflow-hidden">
-            <div className="p-4 border-b border-[#E4E7EC] bg-[#F7F9FC] flex justify-between items-center">
-                <h2 className="text-lg font-semibold text-[#1F2937] flex gap-2 items-center">
-                    <Database className="size-5 text-[#0073E6]" /> AI Engine Status
+        <div className="bg-[var(--color-white)] rounded-xl shadow-sm border border-[var(--color-border)] overflow-hidden">
+            <div className="p-4 border-b border-[var(--color-border)] bg-[var(--color-bg)] flex justify-between items-center">
+                <h2 className="text-lg font-semibold text-[var(--color-text)] flex gap-2 items-center">
+                    <Database className="size-5 text-[var(--color-primary-blue)]" /> AI Engine Status
                 </h2>
                 {status && (
                     <div className={`px-2 py-1 flex gap-1 items-center rounded-md border text-sm font-medium ${getStatusColor(status.status)}`}>
@@ -85,22 +85,22 @@ export function AIStatus() {
                 ) : (
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                         <div className="flex flex-col">
-                            <span className="text-[#667085] text-xs uppercase tracking-wider font-semibold">Provider</span>
-                            <span className="text-[#1F2937] font-medium capitalize">{status?.provider || "Unknown"}</span>
+                            <span className="text-[var(--color-text-secondary)] text-xs uppercase tracking-wider font-semibold">Provider</span>
+                            <span className="text-[var(--color-text)] font-medium capitalize">{status?.provider || "Unknown"}</span>
                         </div>
                         <div className="flex flex-col">
-                            <span className="text-[#667085] text-xs uppercase tracking-wider font-semibold">Model</span>
-                            <span className="text-[#1F2937] font-medium">{status?.model || "Not configured"}</span>
+                            <span className="text-[var(--color-text-secondary)] text-xs uppercase tracking-wider font-semibold">Model</span>
+                            <span className="text-[var(--color-text)] font-medium">{status?.model || "Not configured"}</span>
                         </div>
                         <div className="flex flex-col">
-                            <span className="text-[#667085] text-xs uppercase tracking-wider font-semibold">Engine Activity</span>
-                            <span className="text-[#1F2937] font-medium flex gap-2 items-center">
-                                <Activity className="size-4 text-[#0073E6]" /> {status?.requests || 0} Requests
+                            <span className="text-[var(--color-text-secondary)] text-xs uppercase tracking-wider font-semibold">Engine Activity</span>
+                            <span className="text-[var(--color-text)] font-medium flex gap-2 items-center">
+                                <Activity className="size-4 text-[var(--color-primary-blue)]" /> {status?.requests || 0} Requests
                             </span>
                         </div>
                         <div className="flex flex-col">
-                            <span className="text-[#667085] text-xs uppercase tracking-wider font-semibold">Errors Limit</span>
-                            <span className="text-[#1F2937] font-medium">{status?.errors || 0} Issues</span>
+                            <span className="text-[var(--color-text-secondary)] text-xs uppercase tracking-wider font-semibold">Errors Limit</span>
+                            <span className="text-[var(--color-text)] font-medium">{status?.errors || 0} Issues</span>
                         </div>
                     </div>
                 )}
