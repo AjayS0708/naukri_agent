@@ -12,6 +12,7 @@ from backend.models.matching import JobPreference
 from backend.services.naukri.adapter import NaukriAdapter
 from backend.database.database import SessionLocal
 from backend.core.logging import get_logger
+from backend.core.config import get_settings
 
 logger = get_logger(__name__)
 
@@ -26,7 +27,8 @@ DISCOVERY_STATUS_SECURITY_REQUIRED = "SECURITY_REQUIRED"
 class DiscoveryService:
     def __init__(self, state_manager: AgentStateManager):
         self.state_manager = state_manager
-        self.adapter = NaukriAdapter()
+        settings = get_settings()
+        self.adapter = NaukriAdapter(browser_type=settings.browser_type)
         self.current_run: Optional[DiscoveryRun] = None
         self.current_search: Optional[str] = None
         self._stop_requested = False
@@ -143,12 +145,13 @@ class DiscoveryService:
                     logger.error(f"Error during search for {term}: {str(e)}", exc_info=True)
                     self.current_run.errors += 1
 
-                    if "auth" in str(e).lower() or "login" in str(e).lower():
+                    error_lower = str(e).lower()
+                    if "login required" in error_lower or "sign in" in error_lower:
                         self._finalize_run(db, DISCOVERY_STATUS_AUTH_REQUIRED, "Naukri login required.")
                         self._transition_to_auth_required()
                         return
-                    if "security" in str(e).lower() or "captcha" in str(e).lower():
-                        self._finalize_run(db, DISCOVERY_STATUS_SECURITY_REQUIRED, "Security verification required.")
+                    if "security verification" in error_lower or "captcha" in error_lower or "access blocked" in error_lower:
+                        self._finalize_run(db, DISCOVERY_STATUS_SECURITY_REQUIRED, f"Security verification required: {str(e)}")
                         self._transition_to_security_required()
                         return
 
