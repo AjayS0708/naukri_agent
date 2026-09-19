@@ -71,10 +71,10 @@ class DiscoveryService:
                 self._handle_failure("No job preferences found. Configure them first.", AgentState.STOPPED, db)
                 return
 
-            search_terms = preferences.target_roles or []
+            search_terms = preferences.job_titles or []
             locations = preferences.locations or []
             if not search_terms:
-                self._handle_failure("No search terms (target roles) configured.", AgentState.STOPPED, db)
+                self._handle_failure("No job titles configured.", AgentState.STOPPED, db)
                 return
 
             self.state_manager.transition_to(AgentState.SEARCHING)

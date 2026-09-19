@@ -20,3 +20,4 @@ dist/
 .vscode/
 *.session
 playwright/.auth/
+/test*.txt
