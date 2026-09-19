@@ -15,6 +15,13 @@ from backend.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+DISCOVERY_STATUS_RUNNING = "RUNNING"
+DISCOVERY_STATUS_COMPLETED = "COMPLETED"
+DISCOVERY_STATUS_FAILED = "FAILED"
+DISCOVERY_STATUS_STOPPED = "STOPPED"
+DISCOVERY_STATUS_AUTH_REQUIRED = "AUTH_REQUIRED"
+DISCOVERY_STATUS_SECURITY_REQUIRED = "SECURITY_REQUIRED"
+
 
 class DiscoveryService:
     def __init__(self, state_manager: AgentStateManager):
@@ -26,7 +33,11 @@ class DiscoveryService:
 
     @property
     def is_running(self) -> bool:
-        return self.state_manager.current_state in [AgentState.RUNNING, AgentState.SEARCHING]
+        return self.state_manager.current_state in [
+            AgentState.RUNNING,
+            AgentState.SEARCHING,
+            AgentState.FILTERING,
+        ]
 
     async def stop_safely(self):
         """Request a graceful stop to the discovery process."""
@@ -43,35 +54,35 @@ class DiscoveryService:
 
         self._stop_requested = False
         self.state_manager.transition_to(AgentState.RUNNING)
-        
-        # Create run record
-        run = DiscoveryRun(status=AgentState.RUNNING)
+
+        run = DiscoveryRun(status=DISCOVERY_STATUS_RUNNING)
         db.add(run)
         db.commit()
         db.refresh(run)
         self.current_run = run
 
+        filtering_entered = False
+
         try:
-            # 1. Start browser via adapter
             started = await self.adapter.start_session()
             if not started:
-                self._handle_failure("Failed to start browser session.", AgentState.CRITICAL_ERROR, db)
+                self._finalize_run(db, DISCOVERY_STATUS_FAILED, "Failed to start browser session.")
+                self.state_manager.transition_to(AgentState.CRITICAL_ERROR)
                 return
 
             if self._stop_requested:
-                self._handle_failure("Stopped by user.", AgentState.STOPPED, db)
+                self._abort_before_search(db, "Stopped by user.")
                 return
 
-            # 2. Get preferences
             preferences = db.execute(select(JobPreference)).scalars().first()
             if not preferences:
-                self._handle_failure("No job preferences found. Configure them first.", AgentState.STOPPED, db)
+                self._abort_before_search(db, "No job preferences found. Configure them first.")
                 return
 
             search_terms = preferences.job_titles or []
             locations = preferences.locations or []
             if not search_terms:
-                self._handle_failure("No job titles configured.", AgentState.STOPPED, db)
+                self._abort_before_search(db, "No job titles configured.")
                 return
 
             self.state_manager.transition_to(AgentState.SEARCHING)
@@ -84,26 +95,28 @@ class DiscoveryService:
                 self.current_run.searches_attempted += 1
                 db.commit()
 
+                if not filtering_entered:
+                    self.state_manager.transition_to(AgentState.FILTERING)
+                    filtering_entered = True
+
                 try:
-                    # 3. Perform search using the adapter (generator)
                     async for job_data in self.adapter.search_jobs(term, locations):
                         if self._stop_requested:
                             break
-                            
+
                         self.current_run.jobs_discovered += 1
-                        
-                        # 4. Deduplicate (Phase 5 requirement check 3 things)
+
                         existing_job = None
                         if job_data.get("external_job_id"):
                             existing_job = db.execute(
                                 select(Job).where(Job.external_job_id == job_data["external_job_id"])
                             ).scalars().first()
-                        
+
                         if not existing_job and job_data.get("url"):
                             existing_job = db.execute(
                                 select(Job).where(Job.url == job_data["url"])
                             ).scalars().first()
-                        
+
                         if not existing_job and job_data.get("title") and job_data.get("company"):
                             existing_job = db.execute(
                                 select(Job).where(Job.title == job_data["title"], Job.company == job_data["company"])
@@ -114,15 +127,13 @@ class DiscoveryService:
                             existing_job.last_seen = datetime.utcnow()
                             db.commit()
                             continue
-                            
-                        self.current_run.new_jobs += 1
-                        
-                        # Fetch full description if missing but we have URL (for Phase 5)
-                        if not job_data.get("description") and job_data.get("url"):
-                             full_desc = await self.adapter.fetch_job_description(job_data["url"])
-                             job_data["description"] = full_desc
 
-                        # 5. Persist Job
+                        self.current_run.new_jobs += 1
+
+                        if not job_data.get("description") and job_data.get("url"):
+                            full_desc = await self.adapter.fetch_job_description(job_data["url"])
+                            job_data["description"] = full_desc
+
                         new_job = Job(
                             platform=self.adapter.platform_name,
                             external_job_id=job_data.get("external_job_id") or "tmp_" + str(hash(job_data.get("url"))),
@@ -134,7 +145,7 @@ class DiscoveryService:
                             salary=job_data.get("salary"),
                             experience=job_data.get("experience"),
                             employment_type=job_data.get("employment_type"),
-                            source=term
+                            source=term,
                         )
                         db.add(new_job)
                         db.commit()
@@ -143,44 +154,73 @@ class DiscoveryService:
                 except Exception as e:
                     logger.error(f"Error during search for {term}: {str(e)}", exc_info=True)
                     self.current_run.errors += 1
-                    
-                    # Handle specific internal halt conditions like CAPTCHA/AUTH
+
                     if "auth" in str(e).lower() or "login" in str(e).lower():
-                        self._handle_failure("Naukri login required.", AgentState.AUTH_REQUIRED, db)
+                        self._finalize_run(db, DISCOVERY_STATUS_AUTH_REQUIRED, "Naukri login required.")
+                        self._transition_to_auth_required()
                         return
                     if "security" in str(e).lower() or "captcha" in str(e).lower():
-                        self._handle_failure("Security verification required.", AgentState.SECURITY_REQUIRED, db)
+                        self._finalize_run(db, DISCOVERY_STATUS_SECURITY_REQUIRED, "Security verification required.")
+                        self._transition_to_security_required()
                         return
 
-            # Graceful finish
-            final_status = AgentState.STOPPED if self._stop_requested else AgentState.IDLE
-            self._handle_failure(None, final_status, db)
+            if self._stop_requested:
+                self._finalize_run(db, DISCOVERY_STATUS_STOPPED, None)
+            else:
+                self._finalize_run(db, DISCOVERY_STATUS_COMPLETED, None)
+            self._return_to_idle_from_active()
 
         except Exception as e:
             logger.error(f"Discovery run failed: {str(e)}", exc_info=True)
-            self._handle_failure(f"Critical error: {str(e)}", AgentState.CRITICAL_ERROR, db)
+            self._finalize_run(db, DISCOVERY_STATUS_FAILED, f"Critical error: {str(e)}")
+            self._transition_to_critical_error()
         finally:
             await self.adapter.stop_session()
             self.current_search = None
 
-
-    def _handle_failure(self, error_message: str | None, state: AgentState, db: Session):
+    def _finalize_run(self, db: Session, status: str, error_message: str | None) -> None:
         if self.current_run:
-            self.current_run.status = state
+            self.current_run.status = status
             self.current_run.completed_at = datetime.utcnow()
-            if error_message:
-                self.current_run.error_message = error_message
+            self.current_run.error_message = error_message
             db.commit()
-        
-        # State transition according to allowed rules from AgentStateManager
-        # Running -> Stopped
-        # Searching -> Filter -> PAUSED/CRITICAL ERROR. 
-        # For simplicity, if we need IDLE, we must go to STOPPED first
-        try:
-             self.state_manager.transition_to(state)
-        except ValueError:
-             try:
-                 self.state_manager.transition_to(AgentState.STOPPED)
-                 self.state_manager.transition_to(AgentState.IDLE)
-             except Exception as e:
-                 logger.error(f"State transition fallback failed: {e}")
+
+    def _abort_before_search(self, db: Session, error_message: str) -> None:
+        self._finalize_run(db, DISCOVERY_STATUS_STOPPED, error_message)
+        if self.state_manager.current_state == AgentState.RUNNING:
+            self.state_manager.transition_to(AgentState.STOPPED)
+        if self.state_manager.current_state == AgentState.STOPPED:
+            self.state_manager.transition_to(AgentState.IDLE)
+
+    def _return_to_idle_from_active(self) -> None:
+        state = self.state_manager.current_state
+        if state == AgentState.FILTERING:
+            self.state_manager.transition_to(AgentState.STOPPED)
+        elif state == AgentState.SEARCHING:
+            self.state_manager.transition_to(AgentState.FILTERING)
+            self.state_manager.transition_to(AgentState.STOPPED)
+        if self.state_manager.current_state == AgentState.STOPPED:
+            self.state_manager.transition_to(AgentState.IDLE)
+
+    def _transition_to_auth_required(self) -> None:
+        state = self.state_manager.current_state
+        if state == AgentState.SEARCHING:
+            self.state_manager.transition_to(AgentState.AUTH_REQUIRED)
+        elif state == AgentState.FILTERING:
+            self.state_manager.transition_to(AgentState.AUTH_REQUIRED)
+
+    def _transition_to_security_required(self) -> None:
+        state = self.state_manager.current_state
+        if state == AgentState.SEARCHING:
+            self.state_manager.transition_to(AgentState.SECURITY_REQUIRED)
+        elif state == AgentState.FILTERING:
+            self.state_manager.transition_to(AgentState.SECURITY_REQUIRED)
+
+    def _transition_to_critical_error(self) -> None:
+        state = self.state_manager.current_state
+        if state == AgentState.RUNNING:
+            self.state_manager.transition_to(AgentState.CRITICAL_ERROR)
+        elif state == AgentState.SEARCHING:
+            self.state_manager.transition_to(AgentState.CRITICAL_ERROR)
+        elif state == AgentState.FILTERING:
+            self.state_manager.transition_to(AgentState.CRITICAL_ERROR)

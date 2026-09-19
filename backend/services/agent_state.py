@@ -5,9 +5,23 @@ class AgentStateManager:
     """Phase 1 transition boundary; later phases persist state."""
     _allowed = {
         AgentState.IDLE: {AgentState.RUNNING, AgentState.STOPPED},
-        AgentState.RUNNING: {AgentState.SEARCHING, AgentState.PAUSED, AgentState.STOPPED},
-        AgentState.SEARCHING: {AgentState.FILTERING, AgentState.PAUSED, AgentState.CRITICAL_ERROR},
-        AgentState.FILTERING: {AgentState.ANALYZING, AgentState.PAUSED, AgentState.CRITICAL_ERROR},
+        AgentState.RUNNING: {AgentState.SEARCHING, AgentState.PAUSED, AgentState.STOPPED, AgentState.CRITICAL_ERROR},
+        AgentState.SEARCHING: {
+            AgentState.FILTERING,
+            AgentState.PAUSED,
+            AgentState.CRITICAL_ERROR,
+            AgentState.STOPPED,
+            AgentState.AUTH_REQUIRED,
+            AgentState.SECURITY_REQUIRED,
+        },
+        AgentState.FILTERING: {
+            AgentState.ANALYZING,
+            AgentState.PAUSED,
+            AgentState.CRITICAL_ERROR,
+            AgentState.STOPPED,
+            AgentState.AUTH_REQUIRED,
+            AgentState.SECURITY_REQUIRED,
+        },
         AgentState.ANALYZING: {AgentState.APPLYING, AgentState.NEEDS_ATTENTION, AgentState.PAUSED},
         AgentState.APPLYING: {AgentState.RUNNING, AgentState.NEEDS_ATTENTION, AgentState.PAUSED},
         AgentState.PAUSED: {AgentState.RUNNING, AgentState.STOPPED},

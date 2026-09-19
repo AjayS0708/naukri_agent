@@ -5,7 +5,11 @@ from sqlalchemy.orm import Session
 
 from backend.schemas.agent import AgentState
 from backend.services.agent_state import AgentStateManager
-from backend.services.discovery.service import DiscoveryService
+from backend.services.discovery.service import (
+    DiscoveryService,
+    DISCOVERY_STATUS_AUTH_REQUIRED,
+    DISCOVERY_STATUS_COMPLETED,
+)
 from backend.models.discovery import DiscoveryRun
 from backend.models.job import Job
 from backend.models.matching import JobPreference
@@ -87,10 +91,11 @@ async def test_discovery_run_flow_and_state_transitions(
     assert len(add_calls) == 2
     assert isinstance(add_calls[0].args[0], DiscoveryRun)
     assert isinstance(add_calls[1].args[0], Job)
-    assert service.current_run.status == AgentState.IDLE
+    assert service.current_run.status == DISCOVERY_STATUS_COMPLETED
     assert service.current_run.jobs_discovered == 1
     assert service.current_run.new_jobs == 1
     assert service.current_run.duplicate_jobs == 0
+    assert state_manager.current_state == AgentState.IDLE
     mock_adapter.fetch_job_description.assert_awaited_once_with("http://naukri.com/job")
 
 
@@ -117,7 +122,6 @@ async def test_discovery_halts_on_auth_required_exception(
 
     await service.run_discovery(mock_db_session)
 
-    assert service.current_run.status == AgentState.AUTH_REQUIRED
+    assert service.current_run.status == DISCOVERY_STATUS_AUTH_REQUIRED
     assert service.current_run.error_message == "Naukri login required."
-    # AgentStateManager does not yet allow SEARCHING -> AUTH_REQUIRED (Step 4 scope).
-    assert state_manager.current_state == AgentState.SEARCHING
+    assert state_manager.current_state == AgentState.AUTH_REQUIRED
