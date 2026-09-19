@@ -16,6 +16,7 @@ class AgentStateManager:
         },
         AgentState.FILTERING: {
             AgentState.ANALYZING,
+            AgentState.APPLYING,
             AgentState.PAUSED,
             AgentState.CRITICAL_ERROR,
             AgentState.STOPPED,
@@ -23,7 +24,7 @@ class AgentStateManager:
             AgentState.SECURITY_REQUIRED,
         },
         AgentState.ANALYZING: {AgentState.APPLYING, AgentState.NEEDS_ATTENTION, AgentState.PAUSED},
-        AgentState.APPLYING: {AgentState.RUNNING, AgentState.NEEDS_ATTENTION, AgentState.PAUSED},
+        AgentState.APPLYING: {AgentState.RUNNING, AgentState.NEEDS_ATTENTION, AgentState.PAUSED, AgentState.STOPPED, AgentState.CRITICAL_ERROR, AgentState.SECURITY_REQUIRED, AgentState.AUTH_REQUIRED},
         AgentState.PAUSED: {AgentState.RUNNING, AgentState.STOPPED},
         AgentState.AUTH_REQUIRED: {AgentState.PAUSED, AgentState.STOPPED},
         AgentState.SECURITY_REQUIRED: {AgentState.PAUSED, AgentState.STOPPED},

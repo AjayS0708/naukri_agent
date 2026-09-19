@@ -281,3 +281,236 @@ class NaukriAdapter(JobPlatformAdapter):
             pass
         
         return None
+
+    async def open_job_page(self, url: str) -> Page:
+        """Open a job page and return the page object."""
+        if not self.browser:
+            raise Exception("Browser session not started")
+        
+        page = await self.browser.new_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(2)  # Natural pause
+            await self._check_security(page)
+            return page
+        except Exception as e:
+            await page.close()
+            raise e
+
+    async def detect_application_type(self, page: Page) -> str:
+        """
+        Detect if the job has a Naukri-native application or redirects externally.
+        Returns: "NAUKRI_NATIVE" or "EXTERNAL"
+        """
+        try:
+            # Check for external redirect indicators
+            content = await page.content()
+            content_lower = content.lower()
+            
+            # External application indicators
+            external_indicators = [
+                "apply on company website",
+                "external application",
+                "redirecting to",
+                "you will be redirected",
+                "apply externally"
+            ]
+            
+            for indicator in external_indicators:
+                if indicator in content_lower:
+                    return "EXTERNAL"
+            
+            # Check for Naukri native apply button
+            apply_button = await page.query_selector('button[type="submit"]')
+            if not apply_button:
+                apply_button = await page.query_selector('.apply-btn')
+            if not apply_button:
+                apply_button = await page.query_selector('a.apply')
+            
+            if apply_button:
+                return "NAUKRI_NATIVE"
+            
+            # Default to external if unclear
+            return "EXTERNAL"
+        except Exception as e:
+            logger.warning(f"Error detecting application type: {e}")
+            return "EXTERNAL"
+
+    async def start_application(self, page: Page) -> bool:
+        """
+        Start the application process by clicking the apply button.
+        Returns True if started successfully, False otherwise.
+        """
+        try:
+            # Try various apply button selectors
+            apply_selectors = [
+                'button[type="submit"]',
+                '.apply-btn',
+                'a.apply',
+                'button.apply-now',
+                '.apply-now-btn'
+            ]
+            
+            for selector in apply_selectors:
+                button = await page.query_selector(selector)
+                if button:
+                    await button.click()
+                    await asyncio.sleep(2)
+                    await self._check_security(page)
+                    return True
+            
+            logger.warning("No apply button found")
+            return False
+        except Exception as e:
+            logger.error(f"Error starting application: {e}")
+            raise e
+
+    async def detect_application_questions(self, page: Page) -> List[Dict[str, Any]]:
+        """
+        Detect application questions on the page.
+        Returns a list of question dictionaries with 'question' and 'type' keys.
+        """
+        questions = []
+        try:
+            # Look for common question selectors
+            question_selectors = [
+                'input[type="text"]',
+                'textarea',
+                'select',
+                '.question',
+                '.form-group label'
+            ]
+            
+            for selector in question_selectors:
+                elements = await page.query_selector_all(selector)
+                for element in elements:
+                    # Get label or placeholder
+                    label = await element.get_attribute('placeholder')
+                    if not label:
+                        # Try to find associated label
+                        label_element = await element.query_selector('label')
+                        if label_element:
+                            label = await label_element.inner_text()
+                    
+                    if label:
+                        questions.append({
+                            'question': label.strip(),
+                            'type': 'text'  # Simplified type detection
+                        })
+            
+            return questions
+        except Exception as e:
+            logger.warning(f"Error detecting questions: {e}")
+            return []
+
+    async def answer_question(self, page: Page, question: str, answer: str) -> bool:
+        """
+        Answer a specific question on the application form.
+        Returns True if answered successfully, False otherwise.
+        """
+        try:
+            # Find the input/textarea by placeholder or label
+            input_selectors = [
+                f'input[placeholder="{question}"]',
+                f'textarea[placeholder="{question}"]',
+                f'input[name="{question}"]',
+                f'textarea[name="{question}"]'
+            ]
+            
+            for selector in input_selectors:
+                element = await page.query_selector(selector)
+                if element:
+                    await element.fill(answer)
+                    await asyncio.sleep(0.5)
+                    return True
+            
+            # Try to find by label text
+            labels = await page.query_selector_all('label')
+            for label in labels:
+                label_text = await label.inner_text()
+                if question.lower() in label_text.lower():
+                    # Find the associated input
+                    input_element = await page.query_selector(f'#{await label.get_attribute("for")}')
+                    if input_element:
+                        await input_element.fill(answer)
+                        await asyncio.sleep(0.5)
+                        return True
+            
+            logger.warning(f"Could not find input for question: {question}")
+            return False
+        except Exception as e:
+            logger.error(f"Error answering question: {e}")
+            return False
+
+    async def submit_application(self, page: Page) -> bool:
+        """
+        Submit the application form.
+        Returns True if submitted successfully, False otherwise.
+        """
+        try:
+            # Look for submit button
+            submit_selectors = [
+                'button[type="submit"]',
+                '.submit-btn',
+                'input[type="submit"]',
+                'button.submit'
+            ]
+            
+            for selector in submit_selectors:
+                button = await page.query_selector(selector)
+                if button:
+                    await button.click()
+                    await asyncio.sleep(3)
+                    await self._check_security(page)
+                    return True
+            
+            logger.warning("No submit button found")
+            return False
+        except Exception as e:
+            logger.error(f"Error submitting application: {e}")
+            raise e
+
+    async def confirm_submission(self, page: Page) -> bool:
+        """
+        Confirm that the application was submitted successfully.
+        Returns True if confirmation detected, False otherwise.
+        """
+        try:
+            content = await page.content()
+            content_lower = content.lower()
+            
+            # Success indicators
+            success_indicators = [
+                "application submitted",
+                "successfully applied",
+                "your application has been submitted",
+                "thank you for applying",
+                "application received"
+            ]
+            
+            for indicator in success_indicators:
+                if indicator in content_lower:
+                    return True
+            
+            return False
+        except Exception as e:
+            logger.warning(f"Error confirming submission: {e}")
+            return False
+
+    async def get_external_redirect_url(self, page: Page) -> str | None:
+        """
+        Get the external redirect URL if the application redirects externally.
+        Returns the URL or None.
+        """
+        try:
+            # Look for external links
+            external_links = await page.query_selector_all('a[href^="http"]')
+            for link in external_links:
+                href = await link.get_attribute('href')
+                if href and 'naukri.com' not in href:
+                    return href
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Error getting external URL: {e}")
+            return None

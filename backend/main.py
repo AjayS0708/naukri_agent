@@ -10,6 +10,7 @@ from backend.api.routes.profile import router as profile_router
 from backend.api.routes.ai import router as ai_router
 from backend.api.routes.matching import router as matching_router
 from backend.api.routes.discovery import router as discovery_router
+from backend.api.routes.application import router as application_router
 from backend.core.config import get_settings
 from backend.core.exceptions import ApplicationError
 from backend.core.logging import configure_logging, get_logger
@@ -55,3 +56,4 @@ app.include_router(profile_router, prefix="/api")
 app.include_router(ai_router, prefix="/api")
 app.include_router(matching_router)
 app.include_router(discovery_router, prefix="/api")
+app.include_router(application_router, prefix="/api/applications")
