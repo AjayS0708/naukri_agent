@@ -13,6 +13,7 @@ from backend.services.applications import ApplicationRunner
 from backend.services.agent_state import AgentStateManager
 from backend.schemas.agent import AgentState
 from backend.schemas.application import ApplicationStatus
+from backend.services.naukri.adapter import JobPageResult
 
 
 # Test database setup
@@ -51,7 +52,7 @@ def confirmed_profile(db_session: Session):
     )
     db_session.add(resume)
     db_session.commit()
-    
+
     profile = Profile(
         resume_id=resume.id,
         status="CONFIRMED",
@@ -121,7 +122,7 @@ def application_runner(db_session: Session, state_manager: AgentStateManager):
 
 class TestApplicationRunner:
     """Test the application runner."""
-    
+
     @pytest.mark.asyncio
     async def test_runner_processes_single_job_successfully(
         self,
@@ -140,18 +141,19 @@ class TestApplicationRunner:
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=[]), \
              patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True), \
              patch('backend.services.applications.runner.NaukriAdapter.confirm_submission', new_callable=AsyncMock, return_value=True):
-            
-            # Mock page object
+
+            # Mock page object - return JobPageResult
             mock_page = MagicMock()
             mock_page.close = AsyncMock()
-            mock_open_page.return_value = mock_page
-            
+            mock_result = JobPageResult(page=mock_page, security_required=False)
+            mock_open_page.return_value = mock_result
+
             stats = await application_runner.run_applications([eligible_job.id])
-            
+
             assert stats["total"] == 1
             assert stats["processed"] == 1
             assert stats["applied"] == 1
-    
+
     @pytest.mark.asyncio
     async def test_runner_continues_after_safe_single_job_failure(
         self,
@@ -189,16 +191,16 @@ class TestApplicationRunner:
         db_session.add(job1)
         db_session.add(job2)
         db_session.commit()
-        
+
         # Simplified test: just verify the runner can handle multiple jobs
         # Full integration testing requires more complex mocking
         with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
              patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock):
-            
+
             # This test is simplified - full integration requires complex async mocking
             # The core functionality is tested in other tests
             pass
-    
+
     @pytest.mark.asyncio
     async def test_runner_stops_on_security_condition(
         self,
@@ -212,11 +214,11 @@ class TestApplicationRunner:
         # Full integration requires complex async mocking of Playwright
         with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
              patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock):
-            
+
             # This test is simplified - full integration requires complex async mocking
             # The core security handling is tested in safety gate tests
             pass
-    
+
     @pytest.mark.asyncio
     async def test_runner_stops_on_critical_browser_failure(
         self,
@@ -228,14 +230,14 @@ class TestApplicationRunner:
         """Test that runner stops on critical browser failure."""
         # Mock adapter to fail to start session
         with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=False):
-            
+
             stats = await application_runner.run_applications([eligible_job.id])
-            
+
             assert stats["total"] == 1
             assert stats["processed"] == 0
             # State should transition to CRITICAL_ERROR
             assert application_runner.state_manager.current_state == AgentState.CRITICAL_ERROR
-    
+
     @pytest.mark.asyncio
     async def test_runner_handles_external_application(
         self,
@@ -250,17 +252,18 @@ class TestApplicationRunner:
              patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="EXTERNAL"), \
              patch('backend.services.applications.runner.NaukriAdapter.get_external_redirect_url', new_callable=AsyncMock, return_value="https://company.com/apply"):
-            
+
             mock_page = MagicMock()
             mock_page.close = AsyncMock()
-            mock_open_page.return_value = mock_page
-            
+            mock_result = JobPageResult(page=mock_page, security_required=False)
+            mock_open_page.return_value = mock_result
+
             stats = await application_runner.run_applications([eligible_job.id])
-            
+
             assert stats["total"] == 1
             assert stats["processed"] == 1
             assert stats["external"] == 1
-    
+
     @pytest.mark.asyncio
     async def test_runner_requires_idle_state(
         self,
@@ -270,11 +273,11 @@ class TestApplicationRunner:
         """Test that runner requires IDLE state to start."""
         # Transition to non-idle state
         application_runner.state_manager.transition_to(AgentState.RUNNING)
-        
+
         stats = await application_runner.run_applications([eligible_job.id])
-        
+
         assert "error" in stats or stats.get("processed", 0) == 0
-    
+
     @pytest.mark.asyncio
     async def test_runner_handles_no_profile(
         self,
@@ -286,14 +289,14 @@ class TestApplicationRunner:
         # Remove profile from database
         db_session.query(Profile).delete()
         db_session.commit()
-        
+
         with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
              patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock):
-            
+
             # Simplified test - full integration requires complex async mocking
             # The core profile validation is tested in safety gate tests
             pass
-    
+
     @pytest.mark.asyncio
     async def test_runner_handles_no_preferences(
         self,
@@ -306,10 +309,10 @@ class TestApplicationRunner:
         # Remove preferences from database
         db_session.query(JobPreference).delete()
         db_session.commit()
-        
+
         with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
              patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock):
-            
+
             # Simplified test - full integration requires complex async mocking
             # The core preference validation is tested in safety gate tests
             pass

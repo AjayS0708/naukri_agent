@@ -2,8 +2,9 @@ import asyncio
 import re
 import urllib.parse
 from datetime import datetime
-from typing import AsyncGenerator, Dict, Any, List
+from typing import AsyncGenerator, Dict, Any, List, Optional
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from dataclasses import dataclass
 import os
 
 from backend.services.platform_adapter import JobPlatformAdapter
@@ -13,6 +14,14 @@ logger = get_logger(__name__)
 
 # User-data directory for Playwright persistent context to maintain active logged-in sessions without needing credentials
 USER_DATA_DIR = os.path.join(os.getcwd(), ".agent", "browser_session")
+
+
+@dataclass
+class JobPageResult:
+    """Result of opening a job page with explicit state handling."""
+    page: Page
+    security_required: bool = False
+    security_reason: Optional[str] = None
 
 
 class NaukriAdapter(JobPlatformAdapter):
@@ -147,8 +156,8 @@ class NaukriAdapter(JobPlatformAdapter):
         Extracts structured info.
 
         Note: If a security exception is raised, the page is NOT closed to allow
-        manual user intervention. The caller (DiscoveryService) is responsible for
-        cleanup after handling the security state transition.
+        manual user intervention. The caller is responsible for cleanup after handling
+        the security state transition by calling cleanup_abandoned_pages().
         """
         if not self.browser:
             return
@@ -209,6 +218,21 @@ class NaukriAdapter(JobPlatformAdapter):
             # This allows manual CAPTCHA resolution on the open page
             if security_exception is None:
                 await page.close()
+
+    async def cleanup_abandoned_pages(self):
+        """
+        Clean up any abandoned pages from security exceptions.
+        Call this after manual CAPTCHA resolution to prevent page leaks.
+        """
+        if self.browser:
+            try:
+                # Close all pages in the context except the active one
+                pages = self.browser.pages
+                for page in pages:
+                    if not page.is_closed:
+                        await page.close()
+            except Exception as e:
+                logger.warning(f"Error cleaning up abandoned pages: {e}")
 
     async def _extract_card_data(self, card) -> Dict[str, Any]:
         """Extract job fields from a single job card element."""
@@ -298,33 +322,42 @@ class NaukriAdapter(JobPlatformAdapter):
 
         return None
 
-    async def open_job_page(self, url: str) -> Page:
+    async def open_job_page(self, url: str) -> JobPageResult:
         """
-        Open a job page and return the page object.
+        Open a job page and return a JobPageResult with explicit state.
 
-        Note: If a security exception is raised, the page is NOT closed to allow
-        manual user intervention. The caller is responsible for cleanup after
-        handling the security state. On success, the page is returned for caller cleanup.
+        Returns:
+            JobPageResult: Contains the page object and security state information.
+
+        The caller is responsible for:
+        - Checking result.security_required to determine if manual intervention is needed
+        - Closing result.page when done (regardless of security state)
+        - Calling _check_security(page) again after manual resolution if needed
+
+        Security exceptions are handled explicitly rather than raised, allowing
+        the caller to receive the page object for manual CAPTCHA resolution.
         """
         if not self.browser:
             raise Exception("Browser session not started")
 
         page = await self.browser.new_page()
-        security_exception = None
+        security_required = False
+        security_reason = None
         non_security_exception = None
 
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(2)  # Natural pause
             await self._check_security(page)
-            return page
+            return JobPageResult(page=page, security_required=False)
         except Exception as e:
-            # Store security exceptions to prevent page closure
             error_msg = str(e).lower()
             if "captcha" in error_msg or "security" in error_msg or "verify" in error_msg or "access blocked" in error_msg:
-                security_exception = e
+                security_required = True
+                security_reason = str(e)
                 logger.warning(f"Security challenge on job page, keeping page open for manual intervention: {e}")
-                raise
+                # Return the page with security_required=True instead of raising
+                return JobPageResult(page=page, security_required=True, security_reason=security_reason)
             else:
                 non_security_exception = e
                 raise
