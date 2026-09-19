@@ -1,8 +1,5 @@
-from typing import Optional
-from fastapi import APIRouter, Depends, BackgroundTasks
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, BackgroundTasks
 
-from backend.database.database import get_session
 from backend.schemas.discovery import DiscoveryStatusResponse, DiscoveryRunStats, DiscoveryRunResponse
 from backend.services.agent_state import AgentStateManager
 from backend.schemas.agent import AgentState
@@ -20,7 +17,7 @@ discovery_service = DiscoveryService(state_manager=state_manager)
 
 
 @router.post("/start", response_model=DiscoveryStatusResponse)
-async def start_discovery(background_tasks: BackgroundTasks, db: Session = Depends(get_session)):
+async def start_discovery(background_tasks: BackgroundTasks):
     """
     Start the Naukri job discovery process using user's job preferences.
     """
@@ -28,7 +25,7 @@ async def start_discovery(background_tasks: BackgroundTasks, db: Session = Depen
         return _get_status()
 
     # Launch background task
-    background_tasks.add_task(discovery_service.run_discovery, db)
+    background_tasks.add_task(discovery_service.run_discovery)
     
     return _get_status()
 
