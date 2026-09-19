@@ -398,10 +398,133 @@ class TestFetchJobDescription:
         adapter.browser = AsyncMock()
         
         mock_page = AsyncMock()
-        mock_page.query_selector.return_value = None  # No description element
         adapter.browser.new_page.return_value = mock_page
+        
+        mock_page.query_selector.return_value = None
         
         with patch.object(adapter, '_check_security', new_callable=AsyncMock):
             result = await adapter.fetch_job_description("https://www.naukri.com/job/123")
         
         assert result == ""
+        mock_page.close.assert_called_once()
+
+
+class TestSearchJobsCaptchaLifecycle:
+    """Tests for CAPTCHA/security exception handling in search_jobs."""
+    
+    @pytest.mark.asyncio
+    async def test_search_jobs_captcha_does_not_close_page(self):
+        """When CAPTCHA is detected, the page should NOT be closed to allow manual intervention."""
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+        
+        mock_page = AsyncMock()
+        adapter.browser.new_page.return_value = mock_page
+        
+        # Simulate CAPTCHA exception
+        with patch.object(adapter, '_check_security', new_callable=AsyncMock) as mock_check:
+            mock_check.side_effect = Exception("Security Verification Required: captcha")
+            
+            with pytest.raises(Exception, match="captcha"):
+                async for _ in adapter.search_jobs("Data Analyst", ["Bengaluru"]):
+                    pass
+        
+        # Page should NOT be closed when CAPTCHA is detected
+        mock_page.close.assert_not_called()
+    
+    @pytest.mark.asyncio
+    async def test_search_jobs_security_verification_does_not_close_page(self):
+        """When security verification is detected, the page should NOT be closed."""
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+        
+        mock_page = AsyncMock()
+        adapter.browser.new_page.return_value = mock_page
+        
+        with patch.object(adapter, '_check_security', new_callable=AsyncMock) as mock_check:
+            mock_check.side_effect = Exception("Security verification required")
+            
+            with pytest.raises(Exception, match="Security verification"):
+                async for _ in adapter.search_jobs("Data Analyst", ["Bengaluru"]):
+                    pass
+        
+        # Page should NOT be closed when security verification is detected
+        mock_page.close.assert_not_called()
+    
+    @pytest.mark.asyncio
+    async def test_search_jobs_access_blocked_does_not_close_page(self):
+        """When access is blocked, the page should NOT be closed."""
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+        
+        mock_page = AsyncMock()
+        adapter.browser.new_page.return_value = mock_page
+        
+        with patch.object(adapter, '_check_security', new_callable=AsyncMock) as mock_check:
+            mock_check.side_effect = Exception("Access blocked")
+            
+            with pytest.raises(Exception, match="blocked"):
+                async for _ in adapter.search_jobs("Data Analyst", ["Bengaluru"]):
+                    pass
+        
+        # Page should NOT be closed when access is blocked
+        mock_page.close.assert_not_called()
+    
+    @pytest.mark.asyncio
+    async def test_search_jobs_normal_exception_closes_page(self):
+        """When a non-security exception occurs, the page should be closed normally."""
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+        
+        mock_page = AsyncMock()
+        adapter.browser.new_page.return_value = mock_page
+        
+        with patch.object(adapter, '_check_security', new_callable=AsyncMock):
+            # Simulate a non-security exception
+            mock_page.goto.side_effect = Exception("Network error")
+            
+            with pytest.raises(Exception, match="Network error"):
+                async for _ in adapter.search_jobs("Data Analyst", ["Bengaluru"]):
+                    pass
+        
+        # Page should be closed for non-security exceptions
+        mock_page.close.assert_called_once()
+    
+    @pytest.mark.asyncio
+    async def test_search_jobs_successful_closes_page(self):
+        """When search completes successfully, the page should be closed."""
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+        
+        mock_page = AsyncMock()
+        adapter.browser.new_page.return_value = mock_page
+        
+        # Simulate no job cards found
+        mock_page.query_selector_all.return_value = []
+        mock_page.query_selector.return_value = None
+        
+        with patch.object(adapter, '_check_security', new_callable=AsyncMock):
+            async for _ in adapter.search_jobs("Data Analyst", ["Bengaluru"]):
+                pass
+        
+        # Page should be closed after successful search
+        mock_page.close.assert_called_once()
+    
+    @pytest.mark.asyncio
+    async def test_search_jobs_login_required_closes_page(self):
+        """When login is required (AUTH_REQUIRED), the page should be closed."""
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+        
+        mock_page = AsyncMock()
+        adapter.browser.new_page.return_value = mock_page
+        
+        with patch.object(adapter, '_check_security', new_callable=AsyncMock) as mock_check:
+            mock_check.side_effect = Exception("Naukri login required")
+            
+            with pytest.raises(Exception):
+                async for _ in adapter.search_jobs("Data Analyst", ["Bengaluru"]):
+                    pass
+        
+        # Page should be closed for login required (not a security/CAPTCHA issue)
+        mock_page.close.assert_called_once()

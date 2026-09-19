@@ -153,6 +153,8 @@ class DiscoveryService:
                     if "security verification" in error_lower or "captcha" in error_lower or "access blocked" in error_lower:
                         self._finalize_run(db, DISCOVERY_STATUS_SECURITY_REQUIRED, f"Security verification required: {str(e)}")
                         self._transition_to_security_required()
+                        # Page is left open by adapter for manual CAPTCHA resolution
+                        # Browser context will be cleaned up when session is stopped
                         return
 
             if self._stop_requested:

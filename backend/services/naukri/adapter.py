@@ -50,7 +50,6 @@ class NaukriAdapter(JobPlatformAdapter):
                     user_data_dir=USER_DATA_DIR,
                     channel=browser_channel,
                     headless=False,
-                    args=["--disable-blink-features=AutomationControlled"],
                 )
             except Exception as channel_error:
                 logger.warning(f"Failed to launch {browser_channel}, falling back to chromium: {channel_error}")
@@ -58,7 +57,6 @@ class NaukriAdapter(JobPlatformAdapter):
                 self.browser = await self.playwright.chromium.launch_persistent_context(
                     user_data_dir=USER_DATA_DIR,
                     headless=False,
-                    args=["--disable-blink-features=AutomationControlled"],
                 )
             return True
         except Exception as e:
@@ -146,12 +144,18 @@ class NaukriAdapter(JobPlatformAdapter):
     async def search_jobs(self, search_term: str, locations: List[str]) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Navigates Naukri and scrapes job cards.
-        Extracts structured info. 
+        Extracts structured info.
+        
+        Note: If a security exception is raised, the page is NOT closed to allow
+        manual user intervention. The caller (DiscoveryService) is responsible for
+        cleanup after handling the security state transition.
         """
         if not self.browser:
             return
 
         page = await self.browser.new_page()
+        security_exception = None
+        
         try:
             # Build search URL
             # Note: Naukri often uses https://www.naukri.com/{term}-jobs-in-{location}
@@ -191,8 +195,20 @@ class NaukriAdapter(JobPlatformAdapter):
                     await asyncio.sleep(4)
                 else:
                     break
+        except Exception as e:
+            # Store security exceptions to prevent page closure
+            error_msg = str(e).lower()
+            if "captcha" in error_msg or "security" in error_msg or "verify" in error_msg or "access blocked" in error_msg:
+                security_exception = e
+                logger.warning(f"Security challenge detected, keeping page open for manual intervention: {e}")
+                raise
+            else:
+                raise
         finally:
-            await page.close()
+            # Only close the page if no security exception was raised
+            # This allows manual CAPTCHA resolution on the open page
+            if security_exception is None:
+                await page.close()
 
     async def _extract_card_data(self, card) -> Dict[str, Any]:
         """Extract job fields from a single job card element."""
