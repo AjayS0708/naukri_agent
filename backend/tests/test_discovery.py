@@ -188,3 +188,339 @@ async def test_discovery_halts_on_auth_required_exception(
     assert service.current_run.completed_at == fixed_now
     assert service.current_run.completed_at.tzinfo is UTC
     assert state_manager.current_state == AgentState.AUTH_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_discovery_halts_on_security_required_exception(
+    state_manager, mock_db_session, mock_adapter
+):
+    fixed_now = datetime(2026, 3, 19, 12, 30, tzinfo=UTC)
+
+    async def mock_search_jobs_with_security_error(*args, **kwargs):
+        yield {"dummy": "data", "page_number": 1}
+        raise Exception("Security Verification Required: captcha")
+
+    mock_adapter.search_jobs = mock_search_jobs_with_security_error
+
+    with patch("backend.services.discovery.service.utc_now", return_value=fixed_now):
+        service = DiscoveryService(state_manager)
+        service.adapter = mock_adapter
+
+        mock_preferences = MagicMock(spec=JobPreference)
+        mock_preferences.job_titles = ["Developer"]
+        mock_preferences.locations = []
+
+        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+            mock_preferences,
+        ]
+
+        await service.run_discovery(mock_db_session)
+
+    assert service.current_run.status == "SECURITY_REQUIRED"
+    assert "Security verification required" in service.current_run.error_message
+    assert service.current_run.completed_at == fixed_now
+    assert state_manager.current_state == AgentState.SECURITY_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_discovery_halts_on_browser_start_failure(
+    state_manager, mock_db_session
+):
+    fixed_now = datetime(2026, 3, 19, 12, 30, tzinfo=UTC)
+
+    with patch("backend.services.discovery.service.NaukriAdapter") as MockAdapter:
+        adapter_instance = MockAdapter.return_value
+        adapter_instance.start_session = AsyncMock(return_value=False)  # Browser start fails
+        adapter_instance.stop_session = AsyncMock()
+        adapter_instance.platform_name = "naukri"
+
+        with patch("backend.services.discovery.service.utc_now", return_value=fixed_now):
+            service = DiscoveryService(state_manager)
+            service.adapter = adapter_instance
+
+            mock_preferences = MagicMock(spec=JobPreference)
+            mock_preferences.job_titles = ["Developer"]
+            mock_preferences.locations = []
+
+            mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+                mock_preferences,
+            ]
+
+            await service.run_discovery(mock_db_session)
+
+    assert service.current_run.status == "FAILED"
+    assert "Failed to start browser session" in service.current_run.error_message
+    assert state_manager.current_state == AgentState.CRITICAL_ERROR
+
+
+@pytest.mark.asyncio
+async def test_discovery_user_stop(
+    state_manager, mock_db_session, mock_adapter
+):
+    fixed_now = datetime(2026, 3, 19, 12, 30, tzinfo=UTC)
+
+    async def mock_search_jobs_with_stop(*args, **kwargs):
+        yield {"title": "Engineer", "company": "Corp", "url": "http://naukri.com/job", "external_job_id": "123", "page_number": 1}
+        # Simulate user stop after first job
+        service._stop_requested = True
+
+    mock_adapter.search_jobs = mock_search_jobs_with_stop
+
+    with patch("backend.services.discovery.service.utc_now", return_value=fixed_now):
+        service = DiscoveryService(state_manager)
+        service.adapter = mock_adapter
+
+        mock_preferences = MagicMock(spec=JobPreference)
+        mock_preferences.job_titles = ["Developer"]
+        mock_preferences.locations = []
+
+        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+            mock_preferences,
+            None,  # external_id check
+            None,  # url check
+            None,  # title+company check
+        ]
+
+        await service.run_discovery(mock_db_session)
+
+    assert service.current_run.status == "STOPPED"
+    assert state_manager.current_state == AgentState.IDLE
+
+
+@pytest.mark.asyncio
+async def test_discovery_duplicate_detection_by_external_id(
+    state_manager, mock_db_session, mock_adapter
+):
+    async def mock_search_jobs_duplicate(*args, **kwargs):
+        yield {
+            "title": "Software Engineer",
+            "company": "Tech Corp",
+            "url": "http://naukri.com/job",
+            "external_job_id": "12345",
+            "page_number": 1,
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs_duplicate
+
+    service = DiscoveryService(state_manager)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = []
+
+    # Simulate existing job with same external_job_id
+    existing_job = MagicMock(spec=Job)
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences,
+        existing_job,  # Found duplicate by external_job_id
+    ]
+
+    await service.run_discovery(mock_db_session)
+
+    assert service.current_run.jobs_discovered == 1
+    assert service.current_run.new_jobs == 0
+    assert service.current_run.duplicate_jobs == 1
+    # Should not add new job
+    assert mock_db_session.add.call_count == 1  # Only DiscoveryRun added
+
+
+@pytest.mark.asyncio
+async def test_discovery_duplicate_detection_by_url(
+    state_manager, mock_db_session, mock_adapter
+):
+    async def mock_search_jobs_no_external_id(*args, **kwargs):
+        yield {
+            "title": "Software Engineer",
+            "company": "Tech Corp",
+            "url": "http://naukri.com/job",
+            "external_job_id": None,
+            "page_number": 1,
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs_no_external_id
+
+    service = DiscoveryService(state_manager)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = []
+
+    # First lookup by external_id returns None, second by URL returns existing job
+    existing_job = MagicMock(spec=Job)
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences,
+        None,  # No external_id match
+        existing_job,  # Found duplicate by URL
+    ]
+
+    await service.run_discovery(mock_db_session)
+
+    assert service.current_run.duplicate_jobs == 1
+    assert service.current_run.new_jobs == 0
+
+
+@pytest.mark.asyncio
+async def test_discovery_duplicate_detection_by_title_company(
+    state_manager, mock_db_session, mock_adapter
+):
+    async def mock_search_jobs_no_id_no_url(*args, **kwargs):
+        yield {
+            "title": "Software Engineer",
+            "company": "Tech Corp",
+            "url": "http://naukri.com/job",  # URL is required for job without external_id
+            "external_job_id": None,
+            "page_number": 1,
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs_no_id_no_url
+
+    service = DiscoveryService(state_manager)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = []
+
+    # No external_id, but URL matches existing job
+    existing_job = MagicMock(spec=Job)
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences,
+        None,  # No external_id match
+        existing_job,  # Found duplicate by URL
+    ]
+
+    await service.run_discovery(mock_db_session)
+
+    assert service.current_run.duplicate_jobs == 1
+    assert service.current_run.new_jobs == 0
+
+
+@pytest.mark.asyncio
+async def test_discovery_handles_malformed_job_data(
+    state_manager, mock_db_session, mock_adapter
+):
+    async def mock_search_jobs_malformed(*args, **kwargs):
+        # Job with missing optional fields should be processed
+        yield {
+            "title": "Valid Engineer",
+            "company": "Valid Corp",
+            "url": "http://naukri.com/job2",
+            "external_job_id": "456",
+            "location": None,  # Missing optional
+            "salary": None,  # Missing optional
+            "experience": None,  # Missing optional
+            "employment_type": None,  # Missing optional
+            "posted_at": None,  # Missing optional
+            "page_number": 1,
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs_malformed
+
+    service = DiscoveryService(state_manager)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = []
+
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences,
+        None,  # external_id check
+        None,  # url check
+        None,  # title+company check
+    ]
+
+    await service.run_discovery(mock_db_session)
+
+    # Job with missing optional fields should be processed successfully
+    assert service.current_run.jobs_discovered == 1
+    assert service.current_run.new_jobs == 1
+    assert service.current_run.status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_discovery_description_fetch_failure_doesnt_crash(
+    state_manager, mock_db_session, mock_adapter
+):
+    async def mock_search_jobs(*args, **kwargs):
+        yield {
+            "title": "Software Engineer",
+            "company": "Tech Corp",
+            "url": "http://naukri.com/job",
+            "external_job_id": "123",
+            "page_number": 1,
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs
+    # Description fetch fails but should not crash discovery
+    mock_adapter.fetch_job_description = AsyncMock(return_value="")
+
+    service = DiscoveryService(state_manager)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = []
+
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences,
+        None,  # external_id check
+        None,  # url check
+        None,  # title+company check
+    ]
+
+    await service.run_discovery(mock_db_session)
+
+    # Discovery should complete successfully even with empty description
+    assert service.current_run.status == "COMPLETED"
+    assert service.current_run.new_jobs == 1
+    mock_adapter.fetch_job_description.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discovery_background_task_db_session_handling(
+    state_manager, mock_adapter
+):
+    """Test that discovery can handle its own DB session when called from background task."""
+    async def mock_search_jobs(*args, **kwargs):
+        yield {
+            "title": "Software Engineer",
+            "company": "Tech Corp",
+            "url": "http://naukri.com/job",
+            "external_job_id": "123",
+            "page_number": 1,
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs
+
+    service = DiscoveryService(state_manager)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = []
+
+    # Patch SessionLocal to return our mock session
+    with patch("backend.services.discovery.service.SessionLocal") as MockSessionLocal:
+        mock_db_session = MagicMock(spec=Session)
+        
+        def add_side_effect(obj):
+            if isinstance(obj, DiscoveryRun):
+                _initialize_discovery_run(obj)
+        
+        mock_db_session.add.side_effect = add_side_effect
+        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+            mock_preferences,
+            None,  # external_id check
+            None,  # url check
+            None,  # title+company check
+        ]
+        MockSessionLocal.return_value = mock_db_session
+
+        # Call without passing db session (simulating background task)
+        await service.run_discovery(db=None)
+
+    assert service.current_run.status == "COMPLETED"
+    assert service.current_run.new_jobs == 1
