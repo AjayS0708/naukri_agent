@@ -26,6 +26,21 @@ class Job(Base):
     company: Mapped[str] = mapped_column(String(255))
     description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     
+    # Phase 5 discovery fields
+    location: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    salary: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    salary_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    salary_max: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    experience: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    experience_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    experience_max: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    employment_type: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    source: Mapped[Optional[str]] = mapped_column(String(255), nullable=True) # search term
+
     # Simple states according to PRD
     status: Mapped[str] = mapped_column(String(32), default="DISCOVERED", index=True)
     
