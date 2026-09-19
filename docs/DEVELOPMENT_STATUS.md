@@ -1,5 +1,49 @@
 # Development Status
 
+## Phase 5: COMPLETE - Naukri Job Discovery & Automation
+
+Implemented Phase 5:
+
+- Added Playwright dependency for browser automation
+- Implemented NaukriAdapter with Chrome/Edge browser selection and graceful fallback
+- Enhanced security detection (CAPTCHA, human verification, blocked access, login required)
+- Implemented job extraction from Naukri search pages with page_number tracking
+- Added posted_at extraction with basic parsing (today, yesterday, just now)
+- Added employment_type extraction
+- Implemented job description fetching from individual job pages
+- Integrated DiscoveryService with NaukriAdapter for complete discovery pipeline
+- Implemented deduplication by external_job_id, URL, and title+company
+- Added timezone-aware timestamps (UTC) for all datetime fields
+- Implemented pages_processed tracking in DiscoveryRun statistics
+- Configured discovery state transitions (COMPLETED, AUTH_REQUIRED, SECURITY_REQUIRED, FAILED, STOPPED)
+- Added comprehensive integration tests (67 total tests passing)
+- Configured background task DB session handling for API routes
+
+Discovery Pipeline:
+```text
+NaukriAdapter (Playwright)
+    ↓
+DiscoveryService
+    ↓
+normalization
+    ↓
+deduplication
+    ↓
+persistence (SQLite)
+    ↓
+DiscoveryRun statistics
+    ↓
+AgentState/DiscoveryRun lifecycle
+```
+
+Known limitations:
+- Live Naukri validation still required for CSS selectors, real job extraction, pagination, posted date formats, browser channels, persistent authenticated session, real security/CAPTCHA detection, and complete real-site discovery flow
+- Posted date parsing currently handles only "today", "yesterday", "just now" - more complex formats return None
+- Automatic application submission is NOT implemented (Phase 6)
+- Scheduler is NOT implemented (Phase 7)
+
+Next Phase: Phase 6 - Naukri-native Application Automation
+
 ## Phase 4: COMPLETE - Job Matching & Rules Engine
 
 Implemented Phase 4:

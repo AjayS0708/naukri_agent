@@ -4,11 +4,11 @@ Windows-first, local-first foundation for a controlled job-application agent. De
 
 ## Status
 
-Phase 1 is complete: FastAPI backend, SQLite/SQLAlchemy foundation, React/TypeScript/Tailwind dashboard shell, typed architecture boundaries, and backend tests.
+Phase 5 is complete: Naukri job discovery with Playwright, job extraction, deduplication, and discovery state management. 67 tests passing.
 
 ## Stack
 
-Python 3.12+, FastAPI, SQLAlchemy, SQLite, React, TypeScript, Vite, Tailwind CSS, and pytest. Later phases add Gemini, Playwright, APScheduler, and PyMuPDF.
+Python 3.12+, FastAPI, SQLAlchemy, SQLite, React, TypeScript, Vite, Tailwind CSS, pytest, Playwright, Gemini, and PyMuPDF.
 
 ## Layout
 
@@ -49,7 +49,7 @@ python -m pytest backend/tests
 
 ## Current Limitations
 
-There is no Naukri login, browsing, discovery, job analysis, scheduling, or application submission. Gemini is limited to source-grounded profile extraction; the complete AI engine belongs to Phase 3. The dashboard contains no controls for unimplemented automation.
+Phase 5 job discovery is implemented but requires live Naukri validation for CSS selectors, real job extraction, pagination, posted date formats, browser channels, persistent authenticated session, and real security/CAPTCHA detection. Automatic application submission is NOT implemented (Phase 6). Scheduler is NOT implemented (Phase 7). The dashboard contains no controls for unimplemented automation.
 
 ## Profile Setup
 
@@ -60,11 +60,11 @@ The Phase 2 backend tests pass. In this environment the frontend build is curren
 ## Development Phases
 
 1. Foundation and architecture - complete
-2. Resume and user profile
-3. Gemini AI engine
-4. Matching and rules engine
-5. Naukri job discovery
-6. Naukri-native application automation
+2. Resume and user profile - complete
+3. Gemini AI engine - complete
+4. Matching and rules engine - complete
+5. Naukri job discovery - complete
+6. Naukri-native application automation - next
 7. Scheduler and continuous agent
 8. Dashboard expansion
 9. Notifications
