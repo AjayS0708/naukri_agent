@@ -11,7 +11,6 @@ from backend.models.discovery import DiscoveryRun
 from backend.models.job import Job
 from backend.models.matching import JobPreference
 from backend.services.naukri.adapter import NaukriAdapter
-from backend.services.matching.engine import MatchEngine
 from backend.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -37,7 +36,7 @@ class DiscoveryService:
     async def run_discovery(self, db: Session):
         """
         Orchestrates the discovery flow fetching jobs using the adapter,
-        normalizing/saving them, and passing them to Phase 4 Match Engine.
+        deduplicating them, and persisting them to the database.
         """
         if self.is_running:
             return
@@ -52,8 +51,6 @@ class DiscoveryService:
         db.refresh(run)
         self.current_run = run
 
-        match_engine = MatchEngine(db)
-        
         try:
             # 1. Start browser via adapter
             started = await self.adapter.start_session()
@@ -143,10 +140,6 @@ class DiscoveryService:
                         db.commit()
                         db.refresh(new_job)
 
-                        # 6. Pass to Match Engine (Phase 4 integration)
-                        match_engine.evaluate_job(new_job)
-                        db.commit()
-                        
                 except Exception as e:
                     logger.error(f"Error during search for {term}: {str(e)}", exc_info=True)
                     self.current_run.errors += 1
