@@ -184,6 +184,38 @@ class NaukriAdapter(JobPlatformAdapter):
             if page:
                 await page.close()
 
+    def _build_naukri_search_url(self, search_term: str, locations: List[str]) -> str:
+        """
+        Build Naukri search URL using path-based format.
+
+        Format: https://www.naukri.com/{SearchTerm}-jobs-in-{Location}
+
+        Normalizes:
+        - spaces → hyphens
+        - capitalizes each word
+        - handles multiple-word search terms and locations
+
+        Args:
+            search_term: Job title/keywords (e.g., "Data Analyst")
+            locations: List of locations (e.g., ["Bengaluru"])
+
+        Returns:
+            Formatted Naukri search URL
+        """
+        # Normalize search term: capitalize words, replace spaces with hyphens
+        normalized_search = "-".join(word.capitalize() for word in search_term.split())
+
+        # Normalize location: use first location, capitalize words, replace spaces with hyphens
+        if locations:
+            normalized_location = "-".join(word.capitalize() for word in locations[0].split())
+        else:
+            normalized_location = "india"
+
+        # Build path-based URL
+        url = f"https://www.naukri.com/{normalized_search}-jobs-in-{normalized_location}"
+        logger.info(f"Built Naukri search URL: {url}")
+        return url
+
     async def search_jobs(self, search_term: str, locations: List[str]) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Navigates Naukri and scrapes job cards.
@@ -200,19 +232,23 @@ class NaukriAdapter(JobPlatformAdapter):
         security_exception = None
 
         try:
-            # Build search URL
-            # Note: Naukri often uses https://www.naukri.com/{term}-jobs-in-{location}
-            # For simplicity, using generic query param format which works reasonably well
-            base_url = "https://www.naukri.com/jobs-in-india"
-            query_params = {"k": search_term}
-            if locations:
-                 query_params["l"] = ",".join(locations)
+            # Navigate to Naukri homepage first to establish session context
+            logger.info("Navigating to Naukri homepage to establish session context")
+            await page.goto("https://www.naukri.com", wait_until="load", timeout=30000)
+            await self._check_security(page)
 
-            url = f"{base_url}?{urllib.parse.urlencode(query_params)}"
-            logger.info(f"Navigating to {url}")
+            # Build search URL using path-based format
+            url = self._build_naukri_search_url(search_term, locations)
+            logger.info(f"Navigating to search URL: {url}")
 
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3) # Wait for cards SPA load
+            await page.goto(url, wait_until="load", timeout=30000)
+
+            # Wait for job cards to appear with timeout
+            try:
+                await page.wait_for_selector('.srp-jobtuple-wrapper', timeout=10000)
+            except Exception:
+                # If selector doesn't appear, continue anyway - might be empty results
+                logger.debug("Job card selector not found within timeout, continuing anyway")
 
             await self._check_security(page)
 
@@ -220,10 +256,11 @@ class NaukriAdapter(JobPlatformAdapter):
             MAX_PAGES = 3
 
             for page_num in range(1, MAX_PAGES + 1):
-                job_cards = await page.query_selector_all('article.jobTuple')
+                # Use the working primary selector
+                job_cards = await page.query_selector_all('.srp-jobtuple-wrapper')
                 if not job_cards:
-                     # try newer Naukri layout class
-                     job_cards = await page.query_selector_all('.srp-jobtuple-wrapper')
+                    # Fallback to older selector for backward compatibility
+                    job_cards = await page.query_selector_all('article.jobTuple')
 
                 for card in job_cards:
                     data = await self._extract_card_data(card)
