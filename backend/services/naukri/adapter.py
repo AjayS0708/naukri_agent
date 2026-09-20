@@ -120,6 +120,40 @@ class NaukriAdapter(JobPlatformAdapter):
             if indicator in content_lower:
                 raise Exception(f"Access Blocked: {indicator}")
 
+    async def recheck_security_after_manual_intervention(self, page: Page, wait_seconds: int = 5) -> bool:
+        """
+        Re-evaluate security status after manual CAPTCHA resolution.
+
+        This method should be called after the user manually resolves a security challenge.
+        It reloads the page to ensure fresh content and checks if security is cleared.
+
+        Args:
+            page: The page object that had a security challenge
+            wait_seconds: Time to wait after reload for page to stabilize
+
+        Returns:
+            True if security is cleared (no security indicators), False if still blocked
+        """
+        try:
+            # Reload the page to get fresh content after manual resolution
+            await page.reload(wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(wait_seconds)
+
+            # Check if security is cleared
+            await self._check_security(page)
+
+            # If we get here, security is cleared
+            return True
+        except Exception as e:
+            error_msg = str(e).lower()
+            # Security still required
+            if any(indicator in error_msg for indicator in ["captcha", "security", "verify", "access blocked"]):
+                logger.warning(f"Security still required after manual intervention: {e}")
+                return False
+            # Other error
+            logger.error(f"Error during security re-evaluation: {e}")
+            return False
+
     async def fetch_job_description(self, url: str) -> str:
         """Fetch the details page explicitly if missing from cards."""
         if not self.browser:

@@ -688,6 +688,120 @@ class TestOpenJobPageCaptchaLifecycle:
         mock_page.close.assert_not_called()
 
 
+class TestSecurityRecheckAfterManualIntervention:
+    """Tests for recheck_security_after_manual_intervention method."""
+
+    @pytest.mark.asyncio
+    async def test_recheck_security_cleared_after_manual_intervention(self):
+        """When security is cleared after manual intervention, should return True."""
+        adapter = NaukriAdapter()
+        mock_page = AsyncMock()
+
+        # Mock successful reload and no security check exception
+        mock_page.reload.return_value = None
+        mock_page.content.return_value = "Job description loaded successfully"
+        mock_page.url = "https://www.naukri.com/job/123"
+
+        result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=1)
+
+        assert result is True
+        mock_page.reload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_recheck_security_still_required_after_manual_intervention(self):
+        """When security is still required after manual intervention, should return False."""
+        adapter = NaukriAdapter()
+        mock_page = AsyncMock()
+
+        # Mock reload but security check still fails
+        mock_page.reload.return_value = None
+        mock_page.content.return_value = "Please complete the CAPTCHA to continue"
+        mock_page.url = "https://www.naukri.com/job/123"
+
+        result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=1)
+
+        assert result is False
+        mock_page.reload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_recheck_security_login_required_still_blocks(self):
+        """When login is still required after manual intervention, should return False."""
+        adapter = NaukriAdapter()
+        mock_page = AsyncMock()
+
+        # Mock reload but login required
+        mock_page.reload.return_value = None
+        mock_page.content.return_value = "Job listings"
+        mock_page.url = "https://www.naukri.com/login"
+
+        result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=1)
+
+        assert result is False
+        mock_page.reload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_recheck_security_access_blocked_still_blocks(self):
+        """When access is still blocked after manual intervention, should return False."""
+        adapter = NaukriAdapter()
+        mock_page = AsyncMock()
+
+        # Mock reload but still blocked
+        mock_page.reload.return_value = None
+        mock_page.content.return_value = "Access denied"
+        mock_page.url = "https://www.naukri.com/job/123"
+
+        result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=1)
+
+        assert result is False
+        mock_page.reload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_recheck_security_reload_failure_returns_false(self):
+        """When page reload fails, should return False."""
+        adapter = NaukriAdapter()
+        mock_page = AsyncMock()
+
+        # Mock reload failure
+        mock_page.reload.side_effect = Exception("Network error during reload")
+
+        result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=1)
+
+        assert result is False
+        mock_page.reload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_recheck_security_custom_wait_time(self):
+        """Should respect custom wait_seconds parameter."""
+        adapter = NaukriAdapter()
+        mock_page = AsyncMock()
+
+        mock_page.reload.return_value = None
+        mock_page.content.return_value = "Job description loaded successfully"
+        mock_page.url = "https://www.naukri.com/job/123"
+
+        with patch('asyncio.sleep') as mock_sleep:
+            result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=10)
+
+            assert result is True
+            mock_sleep.assert_called_once_with(10)
+
+    @pytest.mark.asyncio
+    async def test_recheck_security_preserves_page_object(self):
+        """Should not close the page during re-evaluation."""
+        adapter = NaukriAdapter()
+        mock_page = AsyncMock()
+
+        mock_page.reload.return_value = None
+        mock_page.content.return_value = "Job description loaded successfully"
+        mock_page.url = "https://www.naukri.com/job/123"
+
+        result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=1)
+
+        assert result is True
+        # Page should NOT be closed
+        mock_page.close.assert_not_called()
+
+
 class TestSearchJobsPageLeakPrevention:
     """Tests for page leak prevention in search_jobs."""
 
