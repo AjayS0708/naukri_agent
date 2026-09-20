@@ -83,3 +83,49 @@ AgentState lifecycle management (RUNNING → SEARCHING → FILTERING → IDLE/ST
 ```
 
 `DiscoveryService` owns the workflow. It uses Playwright for normal browser interactions without evasion techniques. Security challenges (CAPTCHA, human verification) halt discovery and transition to SECURITY_REQUIRED state. Authentication failures transition to AUTH_REQUIRED state. The service tracks pages_processed, jobs_discovered, new_jobs, duplicate_jobs, and errors in DiscoveryRun statistics.
+
+## Scheduler Workflow (Phase 7 - Checkpoint 1)
+
+```text
+SchedulerService orchestrates scheduled job discovery:
+    ↓
+JobScheduler (APScheduler AsyncIOScheduler)
+    ↓
+Configurable interval (default hourly, max_instances=1)
+    ↓
+Scheduled task callback triggers DiscoveryService
+    ↓
+Agent state check (skip if agent is busy)
+    ↓
+DiscoveryService.run_discovery()
+    ↓
+SchedulerConfig persistence (enabled, interval, state, timestamps)
+    ↓
+AgentState lifecycle management
+```
+
+`SchedulerService` owns the orchestration and persistence. It uses APScheduler for timing with `max_instances=1` to prevent overlapping runs. Configuration (enabled, interval_minutes, max_instances) is persisted to the database for recovery across restarts. The scheduler respects agent state - it skips discovery when the agent is in RUNNING, SEARCHING, FILTERING, or APPLYING states. The scheduler is timing/orchestration only - business rules remain in DiscoveryService. API routes provide control (start, stop, pause, resume) and status reporting. Safe startup/shutdown is integrated with the FastAPI lifespan.
+
+## Application Limits Workflow (Phase 7 - Checkpoint 2A)
+
+```text
+ApplicationLimitService enforces hourly/daily volume limits:
+    ↓
+Uses existing JobPreference model (max_hourly_applications, max_daily_applications)
+    ↓
+Counts only successful applications (APPLIED/SUBMITTED status)
+    ↓
+Hourly usage: applications with applied_at >= now - 1 hour
+    ↓
+Daily usage: applications with applied_at >= now - 24 hours
+    ↓
+Limit check: blocks if hourly_used >= max_hourly OR daily_used >= max_daily
+    ↓
+ApplicationRunner: checks limits AFTER duplicate check, BEFORE safety gate
+    ↓
+SchedulerService: checks limits BEFORE starting discovery
+    ↓
+Deterministic Python logic only - Gemini never decides limits
+```
+
+`ApplicationLimitService` owns the limit enforcement logic. It uses the existing JobPreference model which already had limit fields from Phase 4. Only successful applications (APPLIED or SUBMITTED status) count toward limits - failed, skipped, or external applications do not. The limit check happens in two places: (1) in ApplicationRunner after duplicate check but before the safety gate, and (2) in SchedulerService before starting discovery. This ensures resources aren't wasted on applications that would be blocked, and the scheduler doesn't start discovery when limits are reached. Limits are enforced using deterministic Python logic only - Gemini never decides whether a limit is exceeded. API routes provide limit status and configuration management.

@@ -11,10 +11,15 @@ from backend.api.routes.ai import router as ai_router
 from backend.api.routes.matching import router as matching_router
 from backend.api.routes.discovery import router as discovery_router
 from backend.api.routes.application import router as application_router
+from backend.api.routes.scheduler import router as scheduler_router, set_scheduler_service_instance
 from backend.core.config import get_settings
 from backend.core.exceptions import ApplicationError
 from backend.core.logging import configure_logging, get_logger
-from backend.database.database import initialize_database
+from backend.database.database import initialize_database, SessionLocal
+from backend.services.agent_state import AgentStateManager
+from backend.services.discovery.service import DiscoveryService
+from backend.services.scheduler.service import SchedulerService
+from backend.schemas.agent import AgentState
 import backend.models  # noqa: F401 - registers SQLAlchemy metadata before startup
 
 settings = get_settings()
@@ -25,8 +30,44 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_database()
+
+    # Initialize shared services
+    state_manager = AgentStateManager(initial_state=AgentState.IDLE)
+    discovery_service = DiscoveryService(state_manager=state_manager)
+
+    # Initialize scheduler service
+    db = SessionLocal()
+    try:
+        scheduler_svc = SchedulerService(
+            state_manager=state_manager,
+            discovery_service=discovery_service
+        )
+        scheduler_svc.initialize(db)
+
+        # Store in global for API routes
+        set_scheduler_service_instance(scheduler_svc)
+
+        # Auto-start scheduler if enabled
+        if settings.scheduler_enabled:
+            await scheduler_svc.start(db)
+            logger.info("scheduler_auto_started")
+
+        db.close()
+    except Exception as e:
+        logger.error("scheduler_initialization_failed", extra={"error": str(e)})
+        db.close()
+
     logger.info("application_started", extra={"component": "application"})
     yield
+
+    # Shutdown scheduler
+    from backend.api.routes.scheduler import _scheduler_service_instance as routes_scheduler_instance
+    if routes_scheduler_instance:
+        try:
+            await routes_scheduler_instance.shutdown()
+        except Exception as e:
+            logger.error("scheduler_shutdown_failed", extra={"error": str(e)})
+
     logger.info("application_stopped", extra={"component": "application"})
 
 
@@ -57,3 +98,4 @@ app.include_router(ai_router, prefix="/api")
 app.include_router(matching_router)
 app.include_router(discovery_router, prefix="/api")
 app.include_router(application_router, prefix="/api/applications")
+app.include_router(scheduler_router, prefix="/api")

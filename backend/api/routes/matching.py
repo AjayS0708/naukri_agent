@@ -7,9 +7,10 @@ from sqlalchemy.orm import Session
 from backend.api.dependencies import get_db
 from backend.models.matching import JobPreference
 from backend.schemas.matching import (
-    JobPreferenceUpdate, JobPreferenceResponse, 
+    JobPreferenceUpdate, JobPreferenceResponse,
     EvaluateJobRequest, MatchDecision
 )
+from backend.schemas.application import ApplicationLimitsResponse
 from backend.models.profile import Profile
 from backend.models.job import Job
 from backend.schemas.profile import ProfileStatus

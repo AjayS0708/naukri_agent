@@ -12,6 +12,7 @@ from backend.models.ai import JobAnalysisModel
 from backend.schemas.agent import AgentState
 from backend.services.agent_state import AgentStateManager
 from backend.services.applications.service import ApplicationService, SafetyGateError
+from backend.services.applications.limits import ApplicationLimitService
 from backend.schemas.application import ApplicationStatus, ApplicationMethod, ApplicationCreate, ApplicationUpdate
 from backend.services.naukri.adapter import NaukriAdapter
 from backend.services.gemini.provider import GeminiProvider
@@ -32,6 +33,7 @@ class ApplicationRunner:
         self.session = session
         self.state_manager = state_manager
         self.application_service = ApplicationService(session)
+        self.limit_service = ApplicationLimitService(session)
         self.adapter = NaukriAdapter(browser_type=get_settings().browser_type)
         self.ai_provider = GeminiProvider()
         self._stop_requested = False
@@ -186,6 +188,13 @@ class ApplicationRunner:
         if self.application_service.check_duplicate_application(job):
             logger.info(f"Job {job_id} already applied to")
             self.application_service.record_application_skip(job, "Duplicate application")
+            return "SKIPPED"
+
+        # Check application limits
+        limit_check = self.limit_service.check_limits()
+        if not limit_check.allowed:
+            logger.info(f"Job {job_id} blocked by application limits: {limit_check.reason}")
+            self.application_service.record_application_skip(job, limit_check.reason)
             return "SKIPPED"
 
         # Create application record

@@ -21,3 +21,5 @@ dist/
 *.session
 playwright/.auth/
 /test*.txt
+
+.agent/

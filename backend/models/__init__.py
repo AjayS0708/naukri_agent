@@ -4,5 +4,6 @@ from backend.models.job import Job
 from backend.models.matching import JobPreference, MatchResult
 from backend.models.discovery import DiscoveryRun
 from backend.models.application import Application, ApplicationAnswer
+from backend.models.scheduler import SchedulerConfig
 
-__all__ = ["Profile", "Resume", "AIUsage", "JobAnalysisModel", "Job", "JobPreference", "MatchResult", "DiscoveryRun", "Application", "ApplicationAnswer"]
+__all__ = ["Profile", "Resume", "AIUsage", "JobAnalysisModel", "Job", "JobPreference", "MatchResult", "DiscoveryRun", "Application", "ApplicationAnswer", "SchedulerConfig"]

@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     gemini_request_retries: int = 2
     ai_cache_enabled: bool = True
     browser_type: str = "chrome"
+    scheduler_enabled: bool = True
+    scheduler_interval_minutes: int = 60
+    scheduler_max_instances: int = 1
 
     model_config = SettingsConfigDict(env_file=PROJECT_ROOT / ".env", env_file_encoding="utf-8", extra="ignore")
 

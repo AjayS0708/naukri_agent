@@ -4,9 +4,11 @@ from sqlalchemy.orm import Session
 from backend.database.database import get_session
 from backend.schemas.application import (
     ApplicationSchema, ApplicationCreate, ApplicationUpdate,
-    ApplicationStartRequest, ApplicationStartResponse, ApplicationHistoryResponse
+    ApplicationStartRequest, ApplicationStartResponse, ApplicationHistoryResponse,
+    ApplicationLimitsUpdate, ApplicationLimitsResponse, LimitCheckResponse
 )
 from backend.services.applications import ApplicationService, ApplicationRunner
+from backend.services.applications.limits import ApplicationLimitService
 from backend.services.agent_state import AgentStateManager
 from backend.core.logging import get_logger
 
@@ -134,3 +136,41 @@ async def stop_applications():
     # Note: This is a simplified implementation
     # In production, you'd need to track the runner instance
     return {"message": "Stop requested (not fully implemented in this version)"}
+
+
+@router.get("/limits", response_model=ApplicationLimitsResponse)
+async def get_application_limits(db: Session = Depends(get_session)):
+    """Get current application limits and usage."""
+    limit_service = ApplicationLimitService(db)
+    status = limit_service.get_limit_status()
+    return ApplicationLimitsResponse(**status)
+
+
+@router.put("/limits", response_model=ApplicationLimitsResponse)
+async def update_application_limits(
+    update: ApplicationLimitsUpdate,
+    db: Session = Depends(get_session)
+):
+    """Update application limits."""
+    limit_service = ApplicationLimitService(db)
+    limit_service.update_limits(
+        max_hourly=update.max_hourly_applications,
+        max_daily=update.max_daily_applications
+    )
+    status = limit_service.get_limit_status()
+    return ApplicationLimitsResponse(**status)
+
+
+@router.get("/limits/check", response_model=LimitCheckResponse)
+async def check_application_limits(db: Session = Depends(get_session)):
+    """Check if another application is allowed based on current limits."""
+    limit_service = ApplicationLimitService(db)
+    result = limit_service.check_limits()
+    return LimitCheckResponse(
+        allowed=result.allowed,
+        reason=result.reason,
+        hourly_used=result.hourly_used,
+        daily_used=result.daily_used,
+        hourly_remaining=result.hourly_remaining,
+        daily_remaining=result.daily_remaining
+    )
