@@ -1,7 +1,7 @@
 import pytest
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from backend.database.database import Base
@@ -13,6 +13,7 @@ from backend.services.applications import ApplicationRunner
 from backend.services.agent_state import AgentStateManager
 from backend.schemas.agent import AgentState
 from backend.schemas.application import ApplicationStatus
+from backend.schemas.ai import JobQuality, AIRecommendation
 from backend.services.naukri.adapter import JobPageResult
 
 
@@ -95,7 +96,7 @@ def job_preferences(db_session: Session):
 
 @pytest.fixture
 def eligible_job(db_session: Session):
-    """Create an eligible job."""
+    """Create an eligible job with completed AI analysis."""
     job = Job(
         platform="naukri",
         external_job_id="job123",
@@ -111,6 +112,27 @@ def eligible_job(db_session: Session):
     db_session.add(job)
     db_session.commit()
     db_session.refresh(job)
+
+    # Add completed AI analysis
+    analysis = JobAnalysisModel(
+        job_id=job.id,
+        match_score=85,
+        role_match=True,
+        skill_match=True,
+        experience_match=True,
+        location_match=True,
+        salary_match=True,
+        job_quality=JobQuality.GOOD.value,
+        duplicate_probability=0.05,
+        suspicious=False,
+        recommendation=AIRecommendation.APPLY.value,
+        short_reason="Strong match for Python developer role",
+        model="gemini",
+        prompt_version="v1"
+    )
+    db_session.add(analysis)
+    db_session.commit()
+
     return job
 
 
@@ -163,7 +185,7 @@ class TestApplicationRunner:
         job_preferences: JobPreference
     ):
         """Test that runner continues after a safe single-job failure."""
-        # Create two jobs
+        # Create two jobs with AI analysis
         job1 = Job(
             platform="naukri",
             external_job_id="job1",
@@ -190,6 +212,27 @@ class TestApplicationRunner:
         )
         db_session.add(job1)
         db_session.add(job2)
+        db_session.commit()
+
+        # Add AI analysis for both jobs
+        for job in [job1, job2]:
+            analysis = JobAnalysisModel(
+                job_id=job.id,
+                match_score=85,
+                role_match=True,
+                skill_match=True,
+                experience_match=True,
+                location_match=True,
+                salary_match=True,
+                job_quality=JobQuality.GOOD.value,
+                duplicate_probability=0.05,
+                suspicious=False,
+                recommendation=AIRecommendation.APPLY.value,
+                short_reason="Good match",
+                model="gemini",
+                prompt_version="v1"
+            )
+            db_session.add(analysis)
         db_session.commit()
 
         # Simplified test: just verify the runner can handle multiple jobs
@@ -244,9 +287,16 @@ class TestApplicationRunner:
         application_runner: ApplicationRunner,
         eligible_job: Job,
         confirmed_profile: Profile,
-        job_preferences: JobPreference
+        job_preferences: JobPreference,
+        db_session: Session
     ):
         """Test that runner handles external application correctly."""
+        # Ensure job has AI analysis (already in fixture, but verify)
+        analysis = db_session.execute(
+            select(JobAnalysisModel).where(JobAnalysisModel.job_id == eligible_job.id)
+        ).scalars().first()
+        assert analysis is not None
+
         with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
              patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
              patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \

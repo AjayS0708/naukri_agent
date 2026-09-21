@@ -34,3 +34,8 @@ def get_session() -> Generator[Session, None, None]:
         yield session
     finally:
         session.close()
+
+
+def get_db() -> Generator[Session, None, None]:
+    """Alias for get_session for consistency with existing API routes."""
+    return get_session()

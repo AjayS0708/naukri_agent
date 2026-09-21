@@ -12,6 +12,7 @@ from backend.api.routes.matching import router as matching_router
 from backend.api.routes.discovery import router as discovery_router
 from backend.api.routes.application import router as application_router
 from backend.api.routes.scheduler import router as scheduler_router, set_scheduler_service_instance
+from backend.api.routes.ai_queue import router as ai_queue_router
 from backend.core.config import get_settings
 from backend.core.exceptions import ApplicationError
 from backend.core.logging import configure_logging, get_logger
@@ -99,3 +100,4 @@ app.include_router(matching_router)
 app.include_router(discovery_router, prefix="/api")
 app.include_router(application_router, prefix="/api/applications")
 app.include_router(scheduler_router, prefix="/api")
+app.include_router(ai_queue_router)

@@ -9,6 +9,7 @@ from backend.models.job import Job
 from backend.models.profile import Profile
 from backend.models.matching import JobPreference
 from backend.models.ai import JobAnalysisModel
+from backend.models.ai_queue import AIQueueItem
 from backend.schemas.agent import AgentState
 from backend.services.agent_state import AgentStateManager
 from backend.services.applications.service import ApplicationService, SafetyGateError
@@ -17,6 +18,7 @@ from backend.schemas.application import ApplicationStatus, ApplicationMethod, Ap
 from backend.services.naukri.adapter import NaukriAdapter
 from backend.services.gemini.provider import GeminiProvider
 from backend.schemas.ai import JobAnalysis
+from backend.schemas.ai_queue import AIQueueStatus
 from backend.core.logging import get_logger
 from backend.core.config import get_settings
 
@@ -153,6 +155,16 @@ class ApplicationRunner:
             logger.warning(f"Job {job_id} not found")
             return "ERROR"
 
+        # Check if job is in AI queue and not completed
+        queue_item = self.session.execute(
+            select(AIQueueItem).where(AIQueueItem.job_id == job_id)
+        ).scalars().first()
+
+        if queue_item and queue_item.status != AIQueueStatus.COMPLETED.value:
+            logger.info(f"Job {job_id} has incomplete AI analysis (status: {queue_item.status})")
+            self.application_service.record_application_skip(job, f"AI analysis not completed: {queue_item.status}")
+            return "SKIPPED"
+
         # Get AI analysis if available
         job_analysis = None
         analysis_model = self.session.execute(
@@ -173,6 +185,11 @@ class ApplicationRunner:
                 recommendation=analysis_model.recommendation,
                 short_reason=analysis_model.short_reason
             )
+        else:
+            # No AI analysis available - skip job
+            logger.info(f"Job {job_id} has no AI analysis")
+            self.application_service.record_application_skip(job, "No AI analysis available")
+            return "SKIPPED"
 
         # Run final safety gate
         allowed, reason = self.application_service.run_final_safety_gate(

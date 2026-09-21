@@ -152,3 +152,25 @@ async def update_scheduler_config(
     except Exception as e:
         logger.error("update_scheduler_config_failed", extra={"error": str(e)})
         raise HTTPException(status_code=500, detail=f"Failed to update scheduler config: {str(e)}")
+
+
+@router.post("/process-ai-queue")
+async def process_ai_queue(
+    profile_context: str,
+    service: SchedulerService = Depends(get_scheduler_service)
+):
+    """
+    Process the AI queue by analyzing queued jobs.
+
+    This method processes queue items sequentially, respecting quota limits
+    and retry policies. It's designed to be called from the scheduler or
+    manually from the API.
+
+    Returns statistics about the processing run.
+    """
+    try:
+        stats = await service.process_ai_queue(profile_context)
+        return stats
+    except Exception as e:
+        logger.error("process_ai_queue_failed", extra={"error": str(e)})
+        raise HTTPException(status_code=500, detail=f"Failed to process AI queue: {str(e)}")
