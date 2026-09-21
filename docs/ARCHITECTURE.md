@@ -129,3 +129,61 @@ Deterministic Python logic only - Gemini never decides limits
 ```
 
 `ApplicationLimitService` owns the limit enforcement logic. It uses the existing JobPreference model which already had limit fields from Phase 4. Only successful applications (APPLIED or SUBMITTED status) count toward limits - failed, skipped, or external applications do not. The limit check happens in two places: (1) in ApplicationRunner after duplicate check but before the safety gate, and (2) in SchedulerService before starting discovery. This ensures resources aren't wasted on applications that would be blocked, and the scheduler doesn't start discovery when limits are reached. Limits are enforced using deterministic Python logic only - Gemini never decides whether a limit is exceeded. API routes provide limit status and configuration management.
+
+## AI Queue Workflow (Phase 7 - Checkpoint 2B)
+
+```text
+AIQueueService manages persistent work queue for Gemini analysis:
+    ↓
+Enqueue discovered jobs (SCHEDULER or MANUAL source)
+    ↓
+Priority-based processing (higher priority first)
+    ↓
+Sequential processing with quota handling
+    ↓
+Retry logic (1min, 5min, 15min delays)
+    ↓
+Stale item recovery (PROCESSING stuck > 30min)
+    ↓
+Status tracking: QUEUED, PROCESSING, COMPLETED, RETRY_PENDING, QUOTA_BLOCKED, NEEDS_ATTENTION, FAILED
+```
+
+`AIQueueService` owns the queue management. It uses AIQueueItem model for persistence with status, priority, attempt tracking, and retry scheduling. Items are enqueued from scheduler after discovery or manually via API. Processing is sequential with GeminiProvider for analysis. Quota exhaustion items are marked QUOTA_BLOCKED and retried when quota becomes available. Stale items (stuck in PROCESSING > 30min) are recovered to RETRY_PENDING or NEEDS_ATTENTION on startup. The queue respects deterministic priority calculation based on job freshness, description completeness, and title relevance. API routes provide queue status, enqueue, and manual processing triggers.
+
+## Agent Lifecycle Workflow (Phase 7 - Checkpoint 3)
+
+```text
+AgentLifecycleService orchestrates agent lifecycle:
+    ↓
+Safe startup recovery (recover stale queue, reset active states to IDLE)
+    ↓
+Prerequisite validation (confirmed profile, job preferences, API key)
+    ↓
+START: Validate prerequisites → Start scheduler → Transition to RUNNING
+    ↓
+PAUSE: Pause scheduler → Transition to PAUSED (queue preserved)
+    ↓
+RESUME: Validate prerequisites → Resume scheduler → Transition to RUNNING
+    ↓
+STOP: Stop scheduler → Transition to STOPPED (queue preserved)
+    ↓
+State transitions follow AgentStateManager rules
+```
+
+`AgentLifecycleService` owns lifecycle orchestration without duplicating AgentStateManager. It provides safe start/stop/pause/resume operations with prerequisite validation. Startup recovery resets active states (RUNNING, SEARCHING, FILTERING, APPLYING) to IDLE to prevent automatic application submission after restart. Problem states (AUTH_REQUIRED, SECURITY_REQUIRED) are preserved for user attention. Stale AI queue items are recovered on startup. The service integrates with SchedulerService and AIQueueService for complete lifecycle management. API routes provide lifecycle status and control endpoints.
+
+## Windows Auto-Start Workflow (Phase 7 - Checkpoint 3)
+
+```text
+WindowsAutoStartService manages Windows Task Scheduler integration:
+    ↓
+Enable: Create Task Scheduler task (ONLOGON trigger, user-level)
+    ↓
+Disable: Delete Task Scheduler task
+    ↓
+Status: Check if task exists and is enabled
+    ↓
+Platform-aware: Only available on Windows
+```
+
+`WindowsAutoStartService` owns Windows auto-start management using Task Scheduler. It creates user-level tasks (no admin required) with ONLOGON trigger to start the application when the user logs in. The task runs with HIGHEST privileges which may be needed for browser automation. Auto-start is optional and user-controlled - not automatic during development. The service checks task status, enables/disables via schtasks command, and provides platform-aware behavior (no-op on non-Windows). API routes provide auto-start status and control. This allows the application to start automatically with Windows while still requiring explicit user action to begin job processing (safe default).

@@ -1,6 +1,140 @@
 # Development Status
 
-## Phase 7: IN PROGRESS - Application Limits (Checkpoint 2A)
+## Phase 7: COMPLETE - Windows Startup & Local Agent Lifecycle (Checkpoint 3)
+
+Implemented Phase 7 Checkpoint 3:
+
+- Created AgentLifecycleService in backend/services/lifecycle/service.py:
+  - get_lifecycle_status(): Comprehensive status including agent state, scheduler, AI queue, prerequisites
+  - start(): Safe agent start with prerequisite validation
+  - stop(): Safe agent stop with queue preservation
+  - pause(): Pause agent with queue preservation
+  - resume(): Resume agent with prerequisite validation
+  - recover_on_startup(): Startup recovery with stale queue recovery and safe state restoration
+  - _check_prerequisites(): Validates confirmed profile, job preferences, and API key
+- Created WindowsAutoStartService in backend/services/windows/autostart.py:
+  - is_enabled(): Check if Windows Task Scheduler auto-start is enabled
+  - enable(): Enable auto-start via Task Scheduler (user-level, no admin required)
+  - disable(): Disable auto-start by removing Task Scheduler task
+  - get_status(): Get auto-start status and platform support
+- Added lifecycle schemas in backend/schemas/lifecycle.py:
+  - LifecycleStatusResponse: Full lifecycle status
+  - LifecycleActionResponse: Start/stop/pause/resume results
+  - RecoveryStatsResponse: Startup recovery statistics
+  - RecoveryResponse: Recovery operation result
+- Added auto-start schemas in backend/schemas/autostart.py:
+  - AutoStartStatusResponse: Auto-start status
+  - AutoStartEnableRequest: Enable auto-start request
+  - AutoStartActionResponse: Enable/disable results
+- Created lifecycle API routes in backend/api/routes/lifecycle.py:
+  - GET /api/agent/status: Get agent lifecycle status
+  - POST /api/agent/start: Start agent
+  - POST /api/agent/stop: Stop agent
+  - POST /api/agent/pause: Pause agent
+  - POST /api/agent/resume: Resume agent
+  - POST /api/agent/recovery: Trigger startup recovery (for testing)
+- Created system API routes in backend/api/routes/system.py:
+  - GET /api/system/autostart: Get auto-start status
+  - POST /api/system/autostart/enable: Enable Windows auto-start
+  - POST /api/system/autostart/disable: Disable Windows auto-start
+- Integrated lifecycle services in backend/main.py:
+  - Initialize AgentLifecycleService with state_manager and scheduler_service
+  - Initialize WindowsAutoStartService
+  - Perform startup recovery during FastAPI lifespan
+  - Removed auto-start of scheduler on startup (safe default)
+  - Agent resets to IDLE after restart (no automatic application submission)
+- Extended AgentControl component in frontend/src/components/AgentControl.tsx:
+  - Displays current agent state with color coding
+  - Start/Stop/Pause/Resume buttons based on current state
+  - Shows scheduler status and AI queue counts
+  - Windows auto-start toggle (Windows only)
+  - Prerequisites validation warnings
+  - Real-time status polling (5-second interval)
+- Added agent control styles in frontend/src/styles.css:
+  - Control button styles (primary, secondary, danger)
+  - Agent state color coding (idle, running, paused, stopped, error states)
+  - Warning text for missing prerequisites
+  - Toggle button for auto-start
+  - Status meta display improvements
+- Fixed SchedulerService database session management:
+  - AI queue service now initialized per-session to avoid session conflicts
+  - process_ai_queue() takes db session parameter
+  - _enqueue_discovered_jobs() takes db session parameter
+  - Gemini provider lazy initialization in AIQueueService
+- Comprehensive test coverage (38 new tests):
+  - Lifecycle service tests (21 tests): status, prerequisites, start/stop/pause/resume, recovery
+  - Auto-start service tests (16 tests): enable/disable/status, Windows/non-Windows behavior
+  - Lifecycle integration tests (15 tests): complete flow, scheduler integration, recovery, safety
+- Total: 239 tests passing
+
+Lifecycle Architecture:
+```text
+AgentLifecycleService (orchestration)
+    ↓
+AgentStateManager (existing state management)
+    ↓
+SchedulerService (existing scheduler)
+    ↓
+AIQueueService (existing AI queue)
+    ↓
+WindowsAutoStartService (Task Scheduler integration)
+```
+
+Key Design Decisions:
+- Lifecycle service extends AgentStateManager without duplicating state logic
+- Startup recovery defaults to IDLE state (safe default, no auto-submission)
+- Active states (RUNNING, SEARCHING, FILTERING, APPLYING) reset to IDLE on restart
+- Problem states (AUTH_REQUIRED, SECURITY_REQUIRED) are preserved on restart
+- Auto-start uses Windows Task Scheduler (user-level, no admin required)
+- Auto-start is optional and user-controlled (not automatic during development)
+- Agent checks prerequisites before start/resume operations
+- Scheduler is NOT auto-started on application startup (safe default)
+- Queue is preserved across stop/start operations
+- AI queue stale items recovered on startup
+- Windows auto-start only available on Windows platform
+- Subprocess flags are platform-specific (CREATE_NO_WINDOW on Windows)
+
+API Endpoints Added:
+- GET /api/agent/status
+- POST /api/agent/start
+- POST /api/agent/stop
+- POST /api/agent/pause
+- POST /api/agent/resume
+- POST /api/agent/recovery
+- GET /api/system/autostart
+- POST /api/system/autostart/enable
+- POST /api/system/autostart/disable
+
+Frontend Changes:
+- AgentControl component with real-time status polling
+- State-based button visibility (Start when IDLE/STOPPED, Pause/Stop when RUNNING, etc.)
+- Prerequisites validation and warnings
+- Windows auto-start toggle (platform-aware)
+- Color-coded agent states
+- Scheduler and AI queue status display
+
+Safety Behavior:
+- No automatic application submission after restart
+- Agent resets to IDLE even if it was RUNNING before restart
+- Prerequisites validated before start/resume
+- Queue preserved across lifecycle operations
+- Stale queue items recovered on startup
+- Error states preserved for user attention
+- Scheduler not auto-started with application
+
+Known limitations:
+- Cloud execution NOT implemented (future phase)
+- LinkedIn/Indeed NOT implemented (future phase)
+- CAPTCHA solving, anti-bot bypass, stealth, fingerprint spoofing, proxy rotation, rate-limit bypass NOT implemented
+- Windows service NOT implemented (Task Scheduler used instead)
+- Complex installer NOT implemented
+- Multi-platform auto-start NOT implemented (Windows-only currently)
+
+Next Phase: Phase 8 - Production Readiness (TBD)
+
+---
+
+## Phase 7: COMPLETE - AI Work Queue (Checkpoint 2B)
 
 Implemented Phase 7 Checkpoint 2A:
 

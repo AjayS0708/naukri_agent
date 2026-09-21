@@ -100,3 +100,37 @@ h2 { margin-bottom: 8px; font-size: 18px; }
 .button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .inline-state, .inline-message { margin-top: 12px; font-size: 13px; color: var(--color-text-secondary); display: flex; align-items: center; gap: 6px; }
+
+/* Agent Control Styles */
+.control-buttons { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.btn { display: inline-flex; gap: 8px; align-items: center; padding: 8px 16px; cursor: pointer; font-weight: 600; border-radius: 6px; transition: background 0.2s, border-color 0.2s; font-size: 13px; border: none; }
+.btn-primary { background: var(--color-primary-blue); color: var(--color-white); }
+.btn-primary:hover:not(:disabled) { background: var(--color-deep-blue); }
+.btn-secondary { background: var(--color-bg); color: var(--color-text); border: 1px solid var(--color-border); }
+.btn-secondary:hover:not(:disabled) { background: var(--color-border); }
+.btn-danger { background: var(--color-error); color: var(--color-white); }
+.btn-danger:hover:not(:disabled) { background: #B91C1C; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.agent-state { display: block; font-size: 25px; margin-bottom: 7px; }
+.agent-state.idle { color: var(--color-text-secondary); }
+.agent-state.running { color: var(--color-success); }
+.agent-state.paused { color: var(--color-warning); }
+.agent-state.stopped { color: var(--color-error); }
+.agent-state.auth_required, .agent-state.security_required { color: var(--color-error); }
+.agent-state.ai_quota_exhausted { color: var(--color-warning); }
+.agent-state.needs_attention { color: var(--color-warning); }
+.agent-state.critical_error { color: var(--color-error); }
+
+.warning-text { color: var(--color-warning); font-size: 13px; margin-top: 6px; }
+
+.paused-badge { display: inline-block; background: var(--color-warning); color: var(--color-white); padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-left: 6px; }
+
+.toggle-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 48px; padding: 4px 12px; cursor: pointer; font-weight: 600; border-radius: 4px; transition: background 0.2s; font-size: 12px; border: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-text); }
+.toggle-btn.enabled { background: var(--color-success); color: var(--color-white); border-color: var(--color-success); }
+.toggle-btn:hover:not(:disabled) { opacity: 0.9; }
+.toggle-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.status-meta { text-align: right; font-size: 12px; color: var(--color-text-secondary); display: flex; align-items: center; gap: 6px; }
+.status-meta b { display: block; max-width: 225px; margin-top: 6px; color: var(--color-text); font-size: 13px; }
+.status-meta span { display: flex; align-items: center; gap: 4px; }

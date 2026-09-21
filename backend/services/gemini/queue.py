@@ -29,7 +29,7 @@ class AIQueueService:
     
     def __init__(self, session: Session):
         self.session = session
-        self.gemini_provider = GeminiProvider()
+        self.gemini_provider = None  # Will be initialized when needed
         
         # Retry configuration
         self.max_retry_attempts = 3
@@ -361,6 +361,10 @@ class AIQueueService:
         
         Returns processing result with status and any error information.
         """
+        # Initialize Gemini provider lazily
+        if self.gemini_provider is None:
+            self.gemini_provider = GeminiProvider()
+        
         # Mark as processing
         item = self.mark_processing(queue_item_id)
         if not item:

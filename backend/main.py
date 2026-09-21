@@ -13,6 +13,8 @@ from backend.api.routes.discovery import router as discovery_router
 from backend.api.routes.application import router as application_router
 from backend.api.routes.scheduler import router as scheduler_router, set_scheduler_service_instance
 from backend.api.routes.ai_queue import router as ai_queue_router
+from backend.api.routes.lifecycle import router as lifecycle_router, set_lifecycle_service_instance
+from backend.api.routes.system import router as system_router, set_autostart_service_instance
 from backend.core.config import get_settings
 from backend.core.exceptions import ApplicationError
 from backend.core.logging import configure_logging, get_logger
@@ -20,6 +22,8 @@ from backend.database.database import initialize_database, SessionLocal
 from backend.services.agent_state import AgentStateManager
 from backend.services.discovery.service import DiscoveryService
 from backend.services.scheduler.service import SchedulerService
+from backend.services.lifecycle import AgentLifecycleService
+from backend.services.windows import WindowsAutoStartService
 from backend.schemas.agent import AgentState
 import backend.models  # noqa: F401 - registers SQLAlchemy metadata before startup
 
@@ -48,14 +52,30 @@ async def lifespan(_: FastAPI):
         # Store in global for API routes
         set_scheduler_service_instance(scheduler_svc)
 
-        # Auto-start scheduler if enabled
-        if settings.scheduler_enabled:
-            await scheduler_svc.start(db)
-            logger.info("scheduler_auto_started")
+        # Initialize lifecycle service
+        lifecycle_svc = AgentLifecycleService(
+            state_manager=state_manager,
+            scheduler_service=scheduler_svc
+        )
+        set_lifecycle_service_instance(lifecycle_svc)
+
+        # Initialize auto-start service
+        autostart_svc = WindowsAutoStartService()
+        set_autostart_service_instance(autostart_svc)
+
+        # Perform startup recovery
+        recovery_result = lifecycle_svc.recover_on_startup(db)
+        logger.info("startup_recovery_completed", extra={"recovery_stats": recovery_result.get("recovery_stats", {})})
+
+        # NOTE: We do NOT auto-start the scheduler on startup
+        # The scheduler should only start when the user explicitly starts the agent
+        # This prevents automatic application submission after restart
+        # Users can enable auto-start via Windows Task Scheduler, but the agent
+        # will start in IDLE state and wait for explicit user action to begin processing
 
         db.close()
     except Exception as e:
-        logger.error("scheduler_initialization_failed", extra={"error": str(e)})
+        logger.error("service_initialization_failed", extra={"error": str(e)})
         db.close()
 
     logger.info("application_started", extra={"component": "application"})
@@ -101,3 +121,5 @@ app.include_router(discovery_router, prefix="/api")
 app.include_router(application_router, prefix="/api/applications")
 app.include_router(scheduler_router, prefix="/api")
 app.include_router(ai_queue_router)
+app.include_router(lifecycle_router, prefix="/api")
+app.include_router(system_router, prefix="/api")

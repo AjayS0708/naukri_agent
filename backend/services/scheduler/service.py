@@ -13,6 +13,7 @@ from backend.services.discovery.service import DiscoveryService
 from backend.services.agent_state import AgentStateManager
 from backend.services.applications.limits import ApplicationLimitService
 from backend.services.gemini.queue import AIQueueService
+from backend.services.gemini.provider import GeminiProvider
 from backend.database.database import SessionLocal
 
 logger = get_logger(__name__)
@@ -44,6 +45,7 @@ class SchedulerService:
         self._scheduler: Optional[JobScheduler] = None
         self._config: Optional[SchedulerConfig] = None
         self._ai_queue_service: Optional[AIQueueService] = None
+        self._gemini_provider: Optional[GeminiProvider] = None
         
     def initialize(self, db: Session) -> None:
         """Initialize scheduler with configuration from database or defaults."""
@@ -68,14 +70,9 @@ class SchedulerService:
         )
         
         self._scheduler.set_task_callback(self._run_discovery_task)
-
-        # Initialize AI queue service
-        self._ai_queue_service = AIQueueService(db)
-
-        # Recover any stale queue items on startup
-        recovered = self._ai_queue_service.recover_stale_items()
-        if recovered > 0:
-            logger.info(f"scheduler_recovered_stale_queue_items", extra={"count": recovered})
+        
+        # Initialize Gemini provider
+        self._gemini_provider = GeminiProvider()
     async def start(self, db: Session) -> None:
         """Start the scheduler."""
         if not self._scheduler:
@@ -280,22 +277,24 @@ class SchedulerService:
             logger.info("scheduler_discovery_completed")
 
             # Enqueue newly discovered jobs for AI analysis
-            await self._enqueue_discovered_jobs()
+            await self._enqueue_discovered_jobs(db)
 
         except Exception as e:
             logger.error("scheduler_discovery_failed", extra={"error": str(e)}, exc_info=True)
 
-    async def _enqueue_discovered_jobs(self) -> None:
+    async def _enqueue_discovered_jobs(self, db: Session) -> None:
         """
         Enqueue newly discovered jobs for AI analysis.
 
         This method finds jobs that have been discovered but not yet analyzed
         and enqueues them in the AI queue for processing.
         """
-        db = SessionLocal()
         try:
             from backend.models.job import Job
             from backend.models.ai import JobAnalysisModel
+
+            # Initialize AI queue service with current session
+            ai_queue_service = AIQueueService(db)
 
             # Find jobs without analysis
             stmt = select(Job).where(
@@ -323,7 +322,7 @@ class SchedulerService:
                     continue
 
                 # Enqueue the job
-                queue_item = self._ai_queue_service.enqueue_job(
+                queue_item = ai_queue_service.enqueue_job(
                     job_id=job.id,
                     priority=50,  # Default priority
                     priority_reason="Discovered by scheduler",
@@ -338,10 +337,8 @@ class SchedulerService:
 
         except Exception as e:
             logger.error("scheduler_enqueue_failed", extra={"error": str(e)}, exc_info=True)
-        finally:
-            db.close()
 
-    async def process_ai_queue(self, profile_context: str) -> dict:
+    async def process_ai_queue(self, db: Session) -> dict:
         """
         Process the AI queue by analyzing queued jobs.
 
@@ -351,10 +348,17 @@ class SchedulerService:
 
         Returns statistics about the processing run.
         """
-        db = SessionLocal()
         try:
+            # Initialize AI queue service with current session
+            ai_queue_service = AIQueueService(db)
+            
             # Recover stale items first
-            recovered = self._ai_queue_service.recover_stale_items()
+            recovered = ai_queue_service.recover_stale_items()
+
+            # Get profile context from database
+            from backend.models.profile import Profile
+            profile = db.execute(select(Profile)).scalars().first()
+            profile_context = str(profile.data) if profile and profile.data else ""
 
             stats = {
                 "recovered": recovered,
@@ -372,13 +376,13 @@ class SchedulerService:
             items_processed = 0
 
             while items_processed < max_items_per_run:
-                next_item = self._ai_queue_service.get_next_item()
+                next_item = ai_queue_service.get_next_item()
                 if not next_item:
                     logger.info("scheduler_no_more_queue_items")
                     break
 
                 try:
-                    result = self._ai_queue_service.process_item(next_item.id, profile_context)
+                    result = ai_queue_service.process_item(next_item.id, profile_context)
                     stats["processed"] += 1
 
                     if result.status.value == "COMPLETED":
@@ -408,5 +412,3 @@ class SchedulerService:
         except Exception as e:
             logger.error("scheduler_ai_queue_processing_failed", extra={"error": str(e)}, exc_info=True)
             return {"error": str(e)}
-        finally:
-            db.close()
