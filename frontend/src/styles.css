@@ -134,3 +134,55 @@ h2 { margin-bottom: 8px; font-size: 18px; }
 .status-meta { text-align: right; font-size: 12px; color: var(--color-text-secondary); display: flex; align-items: center; gap: 6px; }
 .status-meta b { display: block; max-width: 225px; margin-top: 6px; color: var(--color-text); font-size: 13px; }
 .status-meta span { display: flex; align-items: center; gap: 4px; }
+
+/* Analytics Dashboard Styles */
+.analytics-section { margin-top: 28px; }
+.analytics-section header { margin-bottom: 20px; }
+.analytics-section .period-text { color: var(--color-text-secondary); font-size: 13px; margin-top: 4px; }
+
+.analytics-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 28px; }
+.analytics-card { display: flex; align-items: center; gap: 16px; padding: 20px; background: var(--color-white); border: 1px solid var(--color-border); border-radius: 8px; transition: border-color 0.2s ease, box-shadow 0.2s ease; }
+.analytics-card:hover { border-color: var(--color-primary-blue); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
+
+.analytics-icon { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 8px; background: var(--color-light-blue); color: var(--color-primary-blue); }
+.analytics-icon.success { background: #DCFCE7; color: var(--color-success); }
+.analytics-icon.warning { background: #FEF3C7; color: var(--color-warning); }
+.analytics-icon.attention { background: #FEE2E2; color: var(--color-error); }
+.analytics-icon.info { background: #E0E7FF; color: var(--color-primary-blue); }
+.analytics-icon.neutral { background: var(--color-bg); color: var(--color-text-secondary); }
+
+.analytics-content { flex: 1; }
+.analytics-label { margin: 0 0 4px; color: var(--color-text-secondary); font-size: 12px; font-weight: 600; }
+.analytics-value { display: block; font-size: 24px; color: var(--color-text); }
+.analytics-subtext { margin: 4px 0 0; color: var(--color-text-secondary); font-size: 12px; }
+
+.decision-breakdown { background: var(--color-white); border: 1px solid var(--color-border); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+.decision-breakdown h3 { margin: 0 0 16px; font-size: 16px; color: var(--color-text); }
+
+.breakdown-bars { display: grid; gap: 12px; }
+.breakdown-item { display: grid; grid-template-columns: 180px 1fr 60px; gap: 12px; align-items: center; }
+.breakdown-label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.priority-badge { background: var(--color-bg); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; color: var(--color-text); }
+.count-badge { background: var(--color-light-blue); color: var(--color-primary-blue); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+
+.breakdown-bar { height: 8px; background: var(--color-bg); border-radius: 4px; overflow: hidden; }
+.breakdown-fill { height: 100%; background: var(--color-primary-blue); border-radius: 4px; transition: width 0.3s ease; }
+.percentage-text { text-align: right; font-size: 12px; color: var(--color-text-secondary); font-weight: 600; }
+
+.skip-reasons { background: var(--color-white); border: 1px solid var(--color-border); border-radius: 8px; padding: 20px; }
+.skip-reasons h3 { margin: 0 0 16px; font-size: 16px; color: var(--color-text); }
+
+.skip-reasons-list { display: grid; gap: 8px; }
+.skip-reason-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: var(--color-bg); border-radius: 6px; }
+.skip-reason-text { font-size: 13px; color: var(--color-text); }
+.skip-reason-count { background: var(--color-light-blue); color: var(--color-primary-blue); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+
+.error-text { color: var(--color-error); font-size: 13px; }
+
+@media (max-width: 760px) {
+  .analytics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .breakdown-item { grid-template-columns: 1fr; gap: 8px; }
+  .breakdown-label { justify-content: space-between; }
+  .breakdown-bar { grid-column: 1 / -1; }
+  .percentage-text { text-align: left; }
+}

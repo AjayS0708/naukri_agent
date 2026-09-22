@@ -1268,6 +1268,118 @@ STOPPED
 CRITICAL_ERROR
 ```
 
+---
+
+# 40. Agent Intelligence and Decision Quality
+
+The agent should provide explainable decision-making with structured priority levels:
+
+```text
+Decision Priorities:
+- HARD_REJECT: Fails hard filters (location, experience, salary, duplicate)
+- SKIP: Low relevance or not worth applying
+- LOW_PRIORITY: Weak match but eligible
+- NORMAL_PRIORITY: Good match
+- HIGH_PRIORITY: Strong match
+- NEEDS_ATTENTION: Requires manual review
+```
+
+Decision signals should include:
+- Role relevance score
+- Skill relevance score
+- Experience compatibility score
+- Location match score
+- Salary suitability score
+- Job quality score
+- Freshness score
+- Duplicate probability
+- Suspicious probability
+- Historical feedback adjustment
+
+Every decision should have:
+- Structured reason codes
+- Concise explanation
+- Signal breakdown
+- Priority level
+- Decision score (0-100)
+
+---
+
+# 41. Job Prioritization
+
+Jobs should be prioritized before application processing based on:
+- Strong role and skill relevance
+- Acceptable salary
+- Location fit
+- Freshness
+- Quality
+- Low duplicate probability
+- Historical user feedback
+
+Hard-filtered jobs must never become higher priority.
+
+Prioritization must be deterministic and reproducible for the same inputs.
+
+---
+
+# 42. Feedback and Learning
+
+The system should support explicit user feedback:
+
+```text
+Feedback Types:
+- RELEVANT
+- NOT_RELEVANT
+- APPLIED
+- SKIPPED
+- INCORRECT_MATCH
+- GOOD_MATCH
+- TOO_SENIOR
+- TOO_JUNIOR
+- WRONG_LOCATION
+- SALARY_TOO_LOW
+```
+
+Feedback influences ranking/prioritization only.
+
+Learning boundaries:
+- CANNOT modify hard filters automatically
+- CANNOT change salary minimum
+- CANNOT change location restrictions
+- CANNOT change experience restrictions
+- CANNOT remove duplicate protection
+- CANNOT bypass safety gate
+- CANNOT invent new job categories
+- CANNOT silently change user preferences
+
+User-controlled preferences remain authoritative.
+
+---
+
+# 43. Application Analytics
+
+The system should provide comprehensive analytics:
+
+```text
+Metrics:
+- Discovered jobs
+- Eligible jobs
+- Skipped jobs
+- Applications submitted
+- Application success rate
+- Top skip reasons
+- Top application categories
+- AI analysis usage
+- AI quota/queue activity
+- Applications by day
+- Applications by job profile
+- Decision priority breakdown
+- Primary reason codes
+- Feedback summary
+```
+
+Analytics should use existing Job, Application, and decision data without creating fake historical data.
+
 The dashboard should display the current state.
 
 ---

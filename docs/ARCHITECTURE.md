@@ -259,3 +259,158 @@ Platform-aware: Only available on Windows
 ```
 
 `WindowsAutoStartService` owns Windows auto-start management using Task Scheduler. It creates user-level tasks (no admin required) with ONLOGON trigger to start the application when the user logs in. The task runs with HIGHEST privileges which may be needed for browser automation. Auto-start is optional and user-controlled - not automatic during development. The service checks task status, enables/disables via schtasks command, and provides platform-aware behavior (no-op on non-Windows). API routes provide auto-start status and control. This allows the application to start automatically with Windows while still requiring explicit user action to begin job processing (safe default).
+
+## Decision Quality Workflow (Phase 7 - Checkpoint 4)
+
+```text
+DecisionQualityService evaluates job decision quality:
+    ↓
+Hard filter checks (authoritative Python rules):
+    - Profile confirmation
+    - Location match
+    - Experience compatibility
+    - Salary minimum
+    - Employment type
+    - Job title scope
+    - Duplicate protection
+    ↓
+If hard filter fails → HARD_REJECT
+    ↓
+AI Analysis integration (advisory only):
+    - Role relevance
+    - Skill relevance
+    - Job quality
+    - Suspicious detection
+    ↓
+Signal calculation:
+    - Role relevance score (0-1)
+    - Skill relevance score (0-1)
+    - Experience compatibility score (0-1)
+    - Location match score (0-1)
+    - Salary suitability score (0-1)
+    - Job quality score (0-1)
+    - Freshness score (0-1)
+    - Duplicate probability (0-1)
+    - Suspicious probability (0-1)
+    - Feedback adjustment (-1 to 1)
+    ↓
+Decision score calculation (0-100)
+    ↓
+Priority determination:
+    - HIGH_PRIORITY (score ≥ 80)
+    - NORMAL_PRIORITY (score ≥ 60)
+    - LOW_PRIORITY (score ≥ 40)
+    - SKIP (score ≥ 20)
+    - HARD_REJECT (hard filter failed)
+    - NEEDS_ATTENTION (special cases)
+    ↓
+Explainable decision with reason codes
+    ↓
+DecisionQualityRecord persistence for analytics
+```
+
+`DecisionQualityService` owns decision quality assessment. Hard filters remain authoritative - Gemini recommendations are advisory only. The service combines deterministic Python rules with AI analysis to produce explainable decisions with structured reason codes. Decision scores are calculated using weighted signal combination. Priority levels are determined based on decision scores and special cases. All decisions are persisted to DecisionQualityRecord for analytics and learning.
+
+## Job Prioritization Workflow (Phase 7 - Checkpoint 4)
+
+```text
+JobPrioritizationService prioritizes jobs for application:
+    ↓
+Get list of job IDs to prioritize
+    ↓
+For each job:
+    - Evaluate decision quality via DecisionQualityService
+    - Calculate priority level
+    - Generate explanation
+    ↓
+Sort by priority (descending):
+    - HIGH_PRIORITY → 5
+    - NORMAL_PRIORITY → 4
+    - LOW_PRIORITY → 3
+    - SKIP → 2
+    - HARD_REJECT → 1
+    - NEEDS_ATTENTION → 0
+    ↓
+Within same priority, sort by decision score (descending)
+    ↓
+Return prioritized job list
+    ↓
+Filter to eligible jobs (HIGH/NORMAL/LOW priority only)
+    ↓
+Apply limit if specified
+```
+
+`JobPrioritizationService` owns job prioritization logic. It uses DecisionQualityService for job evaluation and sorts jobs by priority level and decision score. The service provides methods to get all prioritized jobs, eligible jobs only, and eligible jobs with limit. Prioritization is deterministic and reproducible for the same inputs. Hard-filtered jobs (HARD_REJECT) never become higher priority than eligible jobs.
+
+## Feedback and Learning Workflow (Phase 7 - Checkpoint 4)
+
+```text
+FeedbackService manages user feedback:
+    ↓
+Submit feedback for a job:
+    - Feedback type (RELEVANT, NOT_RELEVANT, etc.)
+    - Optional comments
+    ↓
+Store in JobFeedback model
+    ↓
+Feedback influence on decision quality:
+    - Positive feedback → increase adjustment
+    - Negative feedback → decrease adjustment
+    - Adjustment range: -1 to 1
+    ↓
+Get feedback summary:
+    - Total feedback count
+    - Feedback type breakdown
+    - Relevance rate calculation
+```
+
+`FeedbackService` owns feedback management. It stores explicit user feedback in JobFeedback model and provides methods to submit, retrieve, and summarize feedback. Feedback influences decision quality by adjusting the feedback_adjustment signal in DecisionQualityService. Learning boundaries are enforced - feedback cannot modify hard filters, change user preferences, or bypass safety gates. Feedback is used for ranking/prioritization only.
+
+## Application Analytics Workflow (Phase 7 - Checkpoint 4)
+
+```text
+AnalyticsService provides application analytics:
+    ↓
+Analytics summary:
+    - Discovered jobs
+    - Total applications
+    - Successful applications
+    - Skipped applications
+    - Needs attention
+    - External applications
+    - Success rate
+    - AI requests
+    - AI analyses
+    - Discovery runs
+    ↓
+Skip reasons analysis:
+    - Top skip reasons with counts
+    - Configurable time period
+    ↓
+Decision breakdown:
+    - Priority distribution
+    - Counts and percentages
+    ↓
+Applications by day:
+    - Daily application counts
+    - Time-series data
+    ↓
+Applications by job profile:
+    - Breakdown by job title
+    - Application counts per title
+    ↓
+Primary reason codes:
+    - Top decision reason codes
+    - Aggregated statistics
+    ↓
+Feedback summary:
+    - Total feedback
+    - Feedback type breakdown
+    - Relevance rate
+    ↓
+Recent decision activity:
+    - Latest decision quality records
+    - Priority, score, reason codes
+```
+
+`AnalyticsService` owns analytics and reporting. It uses existing Job, Application, DecisionQualityRecord, and JobFeedback data to provide comprehensive analytics without creating fake historical data. All analytics respect configurable time periods and provide aggregate metrics for decision-making and performance monitoring.

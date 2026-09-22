@@ -15,6 +15,9 @@ from backend.api.routes.scheduler import router as scheduler_router, set_schedul
 from backend.api.routes.ai_queue import router as ai_queue_router
 from backend.api.routes.lifecycle import router as lifecycle_router, set_lifecycle_service_instance
 from backend.api.routes.system import router as system_router, set_autostart_service_instance
+from backend.api.routes.decision import router as decision_router
+from backend.api.routes.feedback import router as feedback_router
+from backend.api.routes.analytics import router as analytics_router
 from backend.core.config import get_settings
 from backend.core.exceptions import ApplicationError
 from backend.core.logging import configure_logging, get_logger
@@ -123,3 +126,6 @@ app.include_router(scheduler_router, prefix="/api")
 app.include_router(ai_queue_router)
 app.include_router(lifecycle_router, prefix="/api")
 app.include_router(system_router, prefix="/api")
+app.include_router(decision_router)
+app.include_router(feedback_router)
+app.include_router(analytics_router)

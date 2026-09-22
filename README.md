@@ -4,7 +4,7 @@ Windows-first, local-first foundation for a controlled job-application agent. De
 
 ## Status
 
-Phase 7 is complete: Windows agent lifecycle, auto-start, scheduler, application limits, AI work queue, and cloud readiness infrastructure. 323 tests passing.
+Phase 7 Checkpoint 4 is complete: Agent intelligence, decision quality, job prioritization, feedback/learning, and application analytics. 369 tests passing.
 
 ## Stack
 
@@ -49,7 +49,7 @@ python -m pytest backend/tests
 
 ## Current Limitations
 
-Phase 7 agent lifecycle, scheduler, and AI queue are implemented. Cloud execution NOT implemented (future phase). LinkedIn/Indeed NOT implemented (future phase). CAPTCHA solving, anti-bot bypass, stealth, fingerprint spoofing, proxy rotation, rate-limit bypass NOT implemented. The dashboard contains controls for implemented features but future automation features remain disabled.
+Phase 7 Checkpoint 4 agent intelligence, decision quality, and analytics are implemented. Cloud execution NOT implemented (future phase). LinkedIn/Indeed NOT implemented (future phase). CAPTCHA solving, anti-bot bypass, stealth, fingerprint spoofing, proxy rotation, rate-limit bypass NOT implemented. The dashboard includes decision analytics and feedback management, but complex automated learning and external application submission remain future features.
 
 ## Cloud Readiness
 
@@ -78,9 +78,10 @@ The Phase 2 backend tests pass. In this environment the frontend build is curren
 5. Naukri job discovery - complete
 6. Naukri-native application automation - complete
 7. Scheduler and continuous agent - complete
-8. Dashboard expansion - in progress
-9. Notifications - pending
-10. Testing, security, and Windows packaging - pending
-11. Integration and production hardening - pending
+8. Agent intelligence and decision quality - complete
+9. Dashboard expansion - in progress
+10. Notifications - pending
+11. Testing, security, and Windows packaging - pending
+12. Integration and production hardening - pending
 
 Note: Cloud readiness infrastructure (runtime/storage abstractions) was implemented as foundational work to support future cloud deployment without changing business logic. This is not a separate phase but enables future cloud execution.
