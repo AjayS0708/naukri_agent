@@ -9,11 +9,18 @@ import os
 
 from backend.services.platform_adapter import JobPlatformAdapter
 from backend.core.logging import get_logger
+from backend.core.config import get_settings
 
 logger = get_logger(__name__)
 
 # User-data directory for Playwright persistent context to maintain active logged-in sessions without needing credentials
-USER_DATA_DIR = os.path.join(os.getcwd(), ".agent", "browser_session")
+# Now configurable via environment variable NAUKRI_AGENT_BROWSER_USER_DATA_DIR
+def get_browser_user_data_dir() -> str:
+    """Get browser user data directory from settings."""
+    settings = get_settings()
+    return str(settings.browser_user_data_path)
+
+USER_DATA_DIR = get_browser_user_data_dir()
 
 
 @dataclass

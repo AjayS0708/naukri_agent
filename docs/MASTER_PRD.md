@@ -154,6 +154,14 @@ The system must NOT pretend to operate while the computer is powered off.
 
 However, the architecture must be cloud-ready.
 
+Cloud readiness infrastructure has been implemented to support future cloud deployment without changing business logic:
+
+- `RuntimeContext` abstraction for environment-specific behavior
+- `StorageService` abstraction for file operations (enables future object storage)
+- Environment variable configuration with `NAUKRI_AGENT_` prefix
+- Database abstraction supporting both SQLite and PostgreSQL
+- No changes to existing V1 functionality or public APIs
+
 Future architecture:
 
 ```text
@@ -161,15 +169,25 @@ V1
 Windows PC
    ↓
 Local Agent
+   ↓
+RuntimeContext (LOCAL_WINDOWS)
+   ↓
+StorageService (local filesystem)
+   ↓
+SQLite
 
 Future
 Cloud Scheduler
    ↓
 Remote Worker
    ↓
-Browser Automation
+RuntimeContext (CLOUD_READY)
    ↓
-Database
+StorageService (object storage)
+   ↓
+PostgreSQL
+   ↓
+Remote Browser Automation
    ↓
 Dashboard
 ```

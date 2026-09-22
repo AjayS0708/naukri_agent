@@ -4,7 +4,7 @@ Windows-first, local-first foundation for a controlled job-application agent. De
 
 ## Status
 
-Phase 5 is complete: Naukri job discovery with Playwright, job extraction, deduplication, and discovery state management. 67 tests passing.
+Phase 7 is complete: Windows agent lifecycle, auto-start, scheduler, application limits, AI work queue, and cloud readiness infrastructure. 323 tests passing.
 
 ## Stack
 
@@ -49,7 +49,19 @@ python -m pytest backend/tests
 
 ## Current Limitations
 
-Phase 5 job discovery is implemented but requires live Naukri validation for CSS selectors, real job extraction, pagination, posted date formats, browser channels, persistent authenticated session, and real security/CAPTCHA detection. Automatic application submission is NOT implemented (Phase 6). Scheduler is NOT implemented (Phase 7). The dashboard contains no controls for unimplemented automation.
+Phase 7 agent lifecycle, scheduler, and AI queue are implemented. Cloud execution NOT implemented (future phase). LinkedIn/Indeed NOT implemented (future phase). CAPTCHA solving, anti-bot bypass, stealth, fingerprint spoofing, proxy rotation, rate-limit bypass NOT implemented. The dashboard contains controls for implemented features but future automation features remain disabled.
+
+## Cloud Readiness
+
+The application includes cloud readiness infrastructure to support future cloud deployment while maintaining local-first V1 operation:
+
+- **RuntimeContext**: Environment detection and behavior abstraction (LOCAL_WINDOWS for V1, CLOUD_READY for future)
+- **StorageService**: File operations abstraction enabling future object storage (S3/Azure/GCS)
+- **Environment configuration**: All settings use `NAUKRI_AGENT_` prefix for clean cloud deployment
+- **Database flexibility**: Supports both SQLite (V1) and PostgreSQL (future)
+- **No business logic changes**: V1 functionality unchanged; abstractions enable future cloud without code changes
+
+Future cloud deployment will require: remote browser automation, object storage integration, PostgreSQL deployment, and cloud infrastructure setup.
 
 ## Profile Setup
 
@@ -64,9 +76,11 @@ The Phase 2 backend tests pass. In this environment the frontend build is curren
 3. Gemini AI engine - complete
 4. Matching and rules engine - complete
 5. Naukri job discovery - complete
-6. Naukri-native application automation - next
-7. Scheduler and continuous agent
-8. Dashboard expansion
-9. Notifications
-10. Testing, security, and Windows packaging
-11. Integration and production hardening
+6. Naukri-native application automation - complete
+7. Scheduler and continuous agent - complete
+8. Dashboard expansion - in progress
+9. Notifications - pending
+10. Testing, security, and Windows packaging - pending
+11. Integration and production hardening - pending
+
+Note: Cloud readiness infrastructure (runtime/storage abstractions) was implemented as foundational work to support future cloud deployment without changing business logic. This is not a separate phase but enables future cloud execution.

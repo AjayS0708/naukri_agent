@@ -17,3 +17,9 @@
 | Clean NPM Installation (Phase 3) | Resolves Vite 8 / Rolldown native binding issues blocking the frontend on Windows environments. |
 | `google-genai` SDK for Gemini | Prioritized over LangChain for minimal, type-safe, and native `response_schema` bounds. |
 | Integrated AI Database Tracking | Enforces AI usage awareness by recording requests, caching outcomes, and managing model configurations directly in SQLite to preserve request quota limits. |
+| Runtime and Storage Abstractions | Cloud readiness infrastructure implemented before actual cloud deployment. RuntimeContext and StorageService provide clean interfaces for environment-specific behavior and file operations, enabling future cloud/24×7 execution without changing business logic. V1 continues to run in LOCAL_WINDOWS mode; future cloud deployment will use CLOUD_READY mode with object storage and PostgreSQL. |
+| Environment Variable Prefix | All configuration uses `NAUKRI_AGENT_` prefix for consistency and to prevent conflicts with other environment variables. This enables clean cloud deployment via environment configuration. |
+| Path Resolution Properties | Storage paths changed from Path fields to string fields with property resolution. This supports both relative and absolute paths and enables future cloud path configuration without code changes. |
+| Database URL Flexibility | Database configuration supports both SQLite and PostgreSQL via `DATABASE_URL`. This enables future PostgreSQL migration without code changes while maintaining SQLite for V1. |
+| Singleton Pattern for Abstractions | RuntimeContext and StorageService use singleton pattern with global getter functions. This ensures consistent behavior across the application and simplifies testing. |
+| No Business Logic Changes | Cloud readiness infrastructure is purely foundational - no changes to existing business logic, public APIs, or V1 functionality. All existing tests pass without modification. |

@@ -68,7 +68,7 @@ def multi_page_resume_bytes() -> bytes:
 
 
 def test_upload_extract_edit_and_confirm(profile_session: Session, resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(get_settings(), "resume_storage_dir", tmp_path)
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
     service = ProfileService(profile_session, extractor=FakeExtractor())
 
     uploaded = service.upload_resume("candidate.pdf", "application/pdf", resume_bytes)
@@ -86,7 +86,7 @@ def test_upload_extract_edit_and_confirm(profile_session: Session, resume_bytes:
 
 
 def test_identical_resume_reuses_existing_profile(profile_session: Session, resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(get_settings(), "resume_storage_dir", tmp_path)
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
     service = ProfileService(profile_session, extractor=FakeExtractor())
     first = service.upload_resume("candidate.pdf", "application/pdf", resume_bytes)
     second = service.upload_resume("renamed.pdf", "application/pdf", resume_bytes)
@@ -108,7 +108,7 @@ def test_upload_rejects_oversized_file(profile_session: Session, monkeypatch: py
 
 
 def test_pdf_extraction_uses_multi_page_content(profile_session: Session, multi_page_resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(get_settings(), "resume_storage_dir", tmp_path)
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
     service = ProfileService(profile_session, extractor=FakeExtractor())
     uploaded = service.upload_resume("candidate.pdf", "application/pdf", multi_page_resume_bytes)
     profile = service.get_current_profile()
@@ -117,7 +117,7 @@ def test_pdf_extraction_uses_multi_page_content(profile_session: Session, multi_
 
 
 def test_resume_original_filename_is_sanitized(profile_session: Session, resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(get_settings(), "resume_storage_dir", tmp_path)
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
     service = ProfileService(profile_session, extractor=FakeExtractor())
     service.upload_resume("..\\..\\secret\\resume.pdf", "application/pdf", resume_bytes)
     profile = service.get_current_profile()
@@ -130,7 +130,7 @@ def test_profile_schema_rejects_unknown_fields() -> None:
 
 
 def test_profile_extraction_retries_once(profile_session: Session, resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(get_settings(), "resume_storage_dir", tmp_path)
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
     monkeypatch.setattr(get_settings(), "profile_extraction_retries", 1)
     extractor = RetryExtractor()
     service = ProfileService(profile_session, extractor=extractor)
@@ -140,14 +140,14 @@ def test_profile_extraction_retries_once(profile_session: Session, resume_bytes:
 
 
 def test_extraction_failure_preserves_resume_as_error(profile_session: Session, resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(get_settings(), "resume_storage_dir", tmp_path)
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
     with pytest.raises(ProfileExtractionError):
         ProfileService(profile_session, extractor=FailingExtractor()).upload_resume("candidate.pdf", "application/pdf", resume_bytes)
     assert ProfileService(profile_session, extractor=FakeExtractor()).get_current_profile().status is ProfileStatus.ERROR
 
 
 def test_confirm_requires_review_status(profile_session: Session, resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(get_settings(), "resume_storage_dir", tmp_path)
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
     service = ProfileService(profile_session, extractor=FakeExtractor())
     service.upload_resume("candidate.pdf", "application/pdf", resume_bytes)
     service.confirm_current_profile()

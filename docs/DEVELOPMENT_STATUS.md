@@ -1,5 +1,86 @@
 # Development Status
 
+## Cloud Readiness Infrastructure (Foundational)
+
+Implemented cloud readiness infrastructure to support future cloud deployment while maintaining local-first V1:
+
+- Created RuntimeContext abstraction in backend/core/runtime.py:
+  - RuntimeEnvironment enum: LOCAL_WINDOWS (V1 current), CLOUD_READY (future)
+  - RuntimeContext class: Provides environment-specific information and behavior
+  - Auto-detects current runtime (Windows vs others)
+  - Properties for: browser automation support, Windows auto-start support, persistent browser session support
+  - Methods for: database URL retrieval, storage path resolution, directory paths
+  - Global singleton instance with get_runtime_context() and set_runtime_context()
+- Created StorageService abstraction in backend/core/storage.py:
+  - StorageService class: File storage operations with clean interface
+  - Methods for: store_file, read_file, delete_file, file_exists, get_file_size
+  - Methods for: list_files, create_directory, delete_directory
+  - Path resolution with resolve_path()
+  - Directory management: resume storage, data storage, log storage, browser user data
+  - Atomic file operations with temporary files
+  - Global singleton instance with get_storage_service()
+- Enhanced configuration in backend/core/config.py:
+  - Added environment variable prefix (NAUKRI_AGENT_) for all settings
+  - Changed storage paths from Path fields to string fields with property resolution
+  - Properties for absolute path resolution: resume_storage_path, data_path, log_path, browser_user_data_path
+  - Added runtime_environment configuration field
+  - Support for both relative and absolute paths
+- Enhanced database configuration in backend/database/database.py:
+  - Support for both SQLite and PostgreSQL databases
+  - Flexible DATABASE_URL configuration
+  - Improved SQLite directory creation for both relative and absolute paths
+- Integrated abstractions into existing services:
+  - NaukriAdapter now uses get_browser_user_data_dir() from settings
+  - ResumeService now uses StorageService for file operations
+  - All path resolution goes through storage abstraction
+- Added comprehensive tests (40 new tests):
+  - RuntimeContext tests (16 tests): environment detection, properties, path resolution
+  - StorageService tests (24 tests): file operations, directory management, path resolution
+- Total: 323 tests passing
+
+Cloud Readiness Architecture:
+```text
+RuntimeContext (environment detection)
+    ↓
+StorageService (file operations abstraction)
+    ↓
+Settings (environment variable driven configuration)
+    ↓
+Database (SQLite/PostgreSQL flexibility)
+```
+
+Key Design Decisions:
+- V1 continues to run in LOCAL_WINDOWS mode
+- Future cloud deployment will use CLOUD_READY mode
+- No changes to existing business logic or public APIs
+- Abstractions allow future cloud integration without code changes
+- Environment variables prefixed with NAUKRI_AGENT_ for consistency
+- Path resolution supports both relative and absolute paths
+- Storage abstraction enables future S3/Azure Blob/GCS integration
+- Database abstraction enables future PostgreSQL migration
+- Browser automation only supported in LOCAL_WINDOWS (V1 design)
+- All existing functionality preserved
+
+Files Changed:
+- backend/core/runtime.py (new)
+- backend/core/storage.py (new)
+- backend/core/config.py (enhanced)
+- backend/database/database.py (enhanced)
+- backend/services/naukri/adapter.py (minor integration)
+- backend/services/profile/resume_service.py (minor integration)
+- backend/tests/test_runtime.py (new)
+- backend/tests/test_storage.py (new)
+- backend/tests/test_profile.py (test fixes for new config)
+
+Known Limitations:
+- Cloud execution NOT implemented (future phase)
+- Remote browser automation NOT implemented (future phase)
+- Object storage (S3/Azure/GCS) NOT implemented (future phase)
+- PostgreSQL deployment NOT implemented (future phase)
+- All V1 functionality remains local Windows only
+
+---
+
 ## Phase 7: COMPLETE - Windows Startup & Local Agent Lifecycle (Checkpoint 3)
 
 Implemented Phase 7 Checkpoint 3:

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from backend.core.config import get_settings
 from backend.core.exceptions import ValidationError
+from backend.core.storage import StorageService
 from backend.services.profile.pdf_extractor import PdfTextExtractor
 
 
@@ -18,8 +19,9 @@ class ResumeProcessingResult:
 
 
 class ResumeService:
-    def __init__(self, pdf_extractor: PdfTextExtractor | None = None) -> None:
+    def __init__(self, pdf_extractor: PdfTextExtractor | None = None, storage_service: StorageService | None = None) -> None:
         self.pdf_extractor = pdf_extractor or PdfTextExtractor()
+        self.storage_service = storage_service or StorageService()
 
     def process_upload(self, filename: str | None, content_type: str | None, content: bytes) -> ResumeProcessingResult:
         self.validate_upload(filename, content_type, content)
@@ -27,7 +29,7 @@ class ResumeService:
         settings = get_settings()
         extracted_text = self.pdf_extractor.extract(content, settings.min_resume_text_chars)
         stored_filename = f"{digest}.pdf"
-        self.store_resume(settings.resume_storage_dir, stored_filename, content)
+        self.store_resume(settings.resume_storage_path, stored_filename, content)
         return ResumeProcessingResult(
             sha256=digest,
             stored_filename=stored_filename,
@@ -48,15 +50,19 @@ class ResumeService:
         if not content.startswith(b"%PDF-"):
             raise ValidationError("The uploaded file is not a valid PDF.")
 
-    @staticmethod
-    def store_resume(directory: Path, filename: str, content: bytes) -> None:
-        directory.mkdir(parents=True, exist_ok=True)
-        destination = directory / filename
-        temporary = directory / f".{filename}.tmp"
+    def store_resume(self, directory: Path, filename: str, content: bytes) -> None:
+        """Store resume using storage service abstraction."""
         try:
-            with temporary.open("wb") as file:
-                file.write(content)
-            os.replace(temporary, destination)
-        except OSError as exc:
-            temporary.unlink(missing_ok=True)
+            # Store directly in the specified directory
+            directory.mkdir(parents=True, exist_ok=True)
+            destination = directory / filename
+            temporary = directory / f".{filename}.tmp"
+            try:
+                with temporary.open("wb") as file:
+                    file.write(content)
+                os.replace(temporary, destination)
+            except OSError as exc:
+                temporary.unlink(missing_ok=True)
+                raise ValidationError("The resume could not be stored locally.") from exc
+        except Exception as exc:
             raise ValidationError("The resume could not be stored locally.") from exc

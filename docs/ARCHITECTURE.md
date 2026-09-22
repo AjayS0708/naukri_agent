@@ -1,5 +1,68 @@
 # Architecture
 
+## Cloud Readiness Architecture
+
+The application includes runtime and storage abstractions to support future cloud deployment while maintaining local-first V1 operation:
+
+```text
+RuntimeContext (environment detection)
+    ↓
+StorageService (file operations abstraction)
+    ↓
+Settings (environment variable driven configuration)
+    ↓
+Database (SQLite/PostgreSQL flexibility)
+```
+
+### Runtime Abstraction
+
+`RuntimeContext` provides environment-specific information and behavior without scattering environment checks throughout the codebase:
+
+- `RuntimeEnvironment.LOCAL_WINDOWS`: Desktop application on Windows (V1 current)
+- `RuntimeEnvironment.CLOUD_READY`: Server/cloud environment (future, not implemented in V1)
+- Auto-detects current runtime (Windows vs others)
+- Properties for: browser automation support, Windows auto-start support, persistent browser session support
+- Methods for: database URL retrieval, storage path resolution, directory paths
+- Global singleton instance with `get_runtime_context()` and `set_runtime_context()`
+
+### Storage Abstraction
+
+`StorageService` provides a clean interface for file operations, abstracting the underlying storage mechanism:
+
+- Methods for: `store_file`, `read_file`, `delete_file`, `file_exists`, `get_file_size`
+- Methods for: `list_files`, `create_directory`, `delete_directory`
+- Path resolution with `resolve_path()`
+- Directory management: resume storage, data storage, log storage, browser user data
+- Atomic file operations with temporary files
+- Global singleton instance with `get_storage_service()`
+
+### Configuration Enhancement
+
+Settings are now environment variable driven with `NAUKRI_AGENT_` prefix:
+
+- Storage paths changed from Path fields to string fields with property resolution
+- Properties for absolute path resolution: `resume_storage_path`, `data_path`, `log_path`, `browser_user_data_path`
+- Added `runtime_environment` configuration field
+- Support for both relative and absolute paths
+- Database URL supports both SQLite and PostgreSQL
+
+### Integration Points
+
+- `NaukriAdapter` uses `get_browser_user_data_dir()` from settings
+- `ResumeService` uses `StorageService` for file operations
+- All path resolution goes through storage abstraction
+- Database configuration supports both SQLite and PostgreSQL
+
+### Future Cloud Direction
+
+The abstractions enable future cloud deployment without changing business logic:
+
+- Cloud environments will use `CLOUD_READY` runtime mode
+- Storage abstraction enables S3/Azure Blob/GCS integration
+- Database abstraction enables PostgreSQL migration
+- Remote browser automation will be needed for cloud deployment
+- All existing V1 functionality remains local Windows only
+
 ## Phase 1 Foundation
 
 The application is Windows-first and local-first. React provides the local dashboard, FastAPI owns API and orchestration boundaries, and SQLAlchemy isolates application code from SQLite-specific behavior.
@@ -34,6 +97,15 @@ GeminiProvider   NaukriAdapter
 ## Future Cloud Direction
 
 The boundaries permit later queue-backed workers and PostgreSQL while retaining API, rules, provider, and platform-adapter contracts. No cloud infrastructure is part of Phase 1.
+
+Cloud readiness infrastructure (implemented as foundational abstractions):
+
+- `RuntimeContext` enables environment-specific behavior without code changes
+- `StorageService` enables object storage (S3/Azure/GCS) without code changes
+- Database abstraction enables PostgreSQL migration without code changes
+- Environment variable configuration enables cloud deployment via environment
+- All V1 functionality remains local Windows only
+- Future cloud deployment will require: remote browser automation, object storage integration, PostgreSQL deployment
 
 ## Profile Workflow (Phase 2)
 
