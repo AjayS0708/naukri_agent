@@ -4,7 +4,9 @@ Windows-first, local-first foundation for a controlled job-application agent. De
 
 ## Status
 
-Phase 7 Checkpoint 4 is complete: Agent intelligence, decision quality, job prioritization, feedback/learning, and application analytics. 369 tests passing.
+Phase 8.1 Checkpoint is complete: Production Backend Preparation. 401 tests passing. Backend is production-hosting ready with enhanced configuration, security, and monitoring.
+
+Phase 7 Checkpoint 4 is complete: Agent intelligence, decision quality, job prioritization, feedback/learning, and application analytics.
 
 Frontend UX/UI Redesign Checkpoint is complete: Professional SaaS dashboard design with modern UI/UX, improved accessibility, and responsive layout.
 
@@ -53,7 +55,22 @@ python -m pytest backend/tests
 
 ## Current Limitations
 
-Phase 7 Checkpoint 4 agent intelligence, decision quality, and analytics are implemented. Frontend UX/UI has been redesigned for professional SaaS experience. Cloud execution NOT implemented (future phase). LinkedIn/Indeed NOT implemented (future phase). CAPTCHA solving, anti-bot bypass, stealth, fingerprint spoofing, proxy rotation, rate-limit bypass NOT implemented. The dashboard includes decision analytics and feedback management, but complex automated learning and external application submission remain future features.
+Phase 8.1 production backend preparation is complete. Backend is production-hosting ready with enhanced configuration, security, and monitoring. Cloud execution NOT implemented (future phase). LinkedIn/Indeed NOT implemented (future phase). CAPTCHA solving, anti-bot bypass, stealth, fingerprint spoofing, proxy rotation, rate-limit bypass NOT implemented. The dashboard includes decision analytics and feedback management, but complex automated learning and external application submission remain future features.
+
+## Production Readiness (Phase 8.1)
+
+The backend has been prepared for production hosting with enhanced configuration, security, and monitoring:
+
+- **Production Configuration**: Environment separation (LOCAL_WINDOWS/CLOUD), production detection, configurable CORS origins
+- **CORS Configuration**: Production-safe with configurable multiple origins via FRONTEND_ORIGINS
+- **Health/Readiness Endpoints**: Separate liveness (/api/health) and readiness (/api/readiness) endpoints for container orchestration
+- **Error Handling**: Catch-all exception handler prevents sensitive information exposure
+- **Logging**: Production-safe logging with automatic sensitive information redaction (api_key, password, token, secret, credential, auth)
+- **Database Configuration**: Supports both SQLite (default) and PostgreSQL via DATABASE_URL
+- **Storage Configuration**: StorageService abstraction ready for future object storage integration
+- **Browser/API Separation**: API process does NOT auto-start Playwright browser; clear separation for future cloud architecture
+- **Frontend Configuration**: Environment-based backend URL via VITE_API_BASE_URL (development: localhost, production: configurable)
+- **Security**: No wildcard CORS in production, no stack traces in errors, no secrets in logs or API responses
 
 ## Cloud Readiness
 
@@ -83,9 +100,11 @@ The Phase 2 backend tests pass. In this environment the frontend build is curren
 6. Naukri-native application automation - complete
 7. Scheduler and continuous agent - complete
 8. Agent intelligence and decision quality - complete
-9. Dashboard expansion - in progress
-10. Notifications - pending
-11. Testing, security, and Windows packaging - pending
-12. Integration and production hardening - pending
+9. Dashboard expansion - complete
+10. Production backend preparation - complete
+11. Cloud deployment - pending
+12. Notifications - pending
+13. Testing, security, and Windows packaging - pending
+14. Integration and production hardening - pending
 
-Note: Cloud readiness infrastructure (runtime/storage abstractions) was implemented as foundational work to support future cloud deployment without changing business logic. This is not a separate phase but enables future cloud execution.
+Note: Cloud readiness infrastructure (runtime/storage abstractions) was implemented as foundational work to support future cloud deployment without changing business logic. This is not a separate phase but enables future cloud execution. Phase 8.1 prepared the backend for production hosting without actual deployment.

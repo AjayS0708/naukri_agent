@@ -20,7 +20,7 @@ from backend.api.routes.feedback import router as feedback_router
 from backend.api.routes.analytics import router as analytics_router
 from backend.core.config import get_settings
 from backend.core.exceptions import ApplicationError
-from backend.core.logging import configure_logging, get_logger
+from backend.core.logging import configure_logging, configure_production_logging, get_logger
 from backend.database.database import initialize_database, SessionLocal
 from backend.services.agent_state import AgentStateManager
 from backend.services.discovery.service import DiscoveryService
@@ -31,7 +31,11 @@ from backend.schemas.agent import AgentState
 import backend.models  # noqa: F401 - registers SQLAlchemy metadata before startup
 
 settings = get_settings()
-configure_logging(settings.log_level)
+# Use production-safe logging in production environment
+if settings.is_production:
+    configure_production_logging(settings.log_level)
+else:
+    configure_logging(settings.log_level)
 logger = get_logger(__name__)
 
 
@@ -96,12 +100,21 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, version=settings.app_version, docs_url="/api/docs" if settings.is_development else None, redoc_url=None, lifespan=lifespan)
+
+# CORS configuration - production-safe with configurable origins
+# In development, allow all origins for convenience
+# In production, use only configured origins
+cors_origins = settings.cors_origins
+if settings.is_development:
+    # In development, allow localhost for convenience
+    cors_origins = ["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:3000", "http://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url],
+    allow_origins=cors_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Request-ID"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS", "DELETE"],
+    allow_headers=["Content-Type", "X-Request-ID", "Authorization"],
 )
 
 
@@ -114,6 +127,14 @@ async def application_error_handler(_: Request, exc: ApplicationError) -> JSONRe
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(_: Request, __: RequestValidationError) -> JSONResponse:
     return JSONResponse(status_code=422, content={"detail": "Request validation failed.", "category": "VALIDATION_ERROR"})
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(_: Request, exc: Exception) -> JSONResponse:
+    """Catch-all exception handler to prevent sensitive information exposure."""
+    logger.error("unhandled_exception", extra={"component": "api", "error_type": type(exc).__name__})
+    # In production, don't expose stack traces or sensitive details
+    return JSONResponse(status_code=500, content={"detail": "An internal error occurred.", "category": "INTERNAL_ERROR"})
 
 
 app.include_router(health_router, prefix="/api")

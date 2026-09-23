@@ -16,18 +16,22 @@ class Settings(BaseSettings):
     app_host: str = "127.0.0.1"
     app_port: int = 8000
 
+    # Runtime environment - supports LOCAL_WINDOWS (V1) and CLOUD (future)
+    runtime_environment: str = Field(default="local_windows")
+
     # Database configuration - environment variable driven
     # Can be SQLite (sqlite:///./data/naukri_agent.db) or PostgreSQL (postgresql://user:pass@host/db)
     database_url: str = Field(default="sqlite:///./data/naukri_agent.db")
 
-    # API keys
+    # API keys - must be configured via environment variables in production
     gemini_api_key: str | None = Field(default=None)
 
     # Logging configuration
     log_level: str = Field(default="INFO")
 
-    # Frontend configuration
+    # Frontend configuration - supports multiple origins for CORS
     frontend_url: str = Field(default="http://127.0.0.1:5173")
+    frontend_origins: str = Field(default="http://127.0.0.1:5173")  # Comma-separated list for CORS
 
     # Storage directories - environment variable driven
     # Can be absolute paths or relative to PROJECT_ROOT
@@ -56,9 +60,6 @@ class Settings(BaseSettings):
     max_resume_file_size_bytes: int = Field(default=10 * 1024 * 1024)
     min_resume_text_chars: int = Field(default=80)
 
-    # Runtime environment (for future cloud support)
-    runtime_environment: str = Field(default="local_windows")
-
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
@@ -69,6 +70,26 @@ class Settings(BaseSettings):
     @property
     def is_development(self) -> bool:
         return self.app_env.lower() == "development"
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.lower() == "production"
+
+    @property
+    def is_local_windows(self) -> bool:
+        return self.runtime_environment.lower() == "local_windows"
+
+    @property
+    def is_cloud(self) -> bool:
+        return self.runtime_environment.lower() == "cloud"
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Get list of CORS origins from comma-separated string."""
+        origins_str = self.frontend_origins.strip()
+        if not origins_str:
+            return []
+        return [origin.strip() for origin in origins_str.split(",") if origin.strip()]
 
     @property
     def resume_storage_path(self) -> Path:

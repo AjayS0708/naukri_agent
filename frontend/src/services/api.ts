@@ -1,5 +1,8 @@
 import type { HealthResponse, ProfileData, ProfileResponse, ResumeUploadResponse } from "../types/api";
 
+// Environment-based API configuration
+// Development: http://127.0.0.1:8000/api
+// Production: https://<hosted-api>/api (configured via VITE_API_BASE_URL)
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000/api";
 
 export async function getHealth(): Promise<HealthResponse> {

@@ -1,5 +1,123 @@
 # Architecture
 
+## Production Readiness Architecture (Phase 8.1)
+
+The backend has been prepared for production hosting with enhanced configuration, security, and monitoring:
+
+```text
+Production Configuration
+    ↓
+Environment Separation (LOCAL_WINDOWS/CLOUD)
+    ↓
+CORS Configuration (configurable origins)
+    ↓
+Health/Readiness Endpoints
+    ↓
+Production-Safe Error Handling
+    ↓
+Production-Safe Logging (sensitive info redaction)
+    ↓
+Database Configuration (SQLite/PostgreSQL)
+    ↓
+Storage Configuration (abstraction ready for object storage)
+    ↓
+Browser/API Separation (no auto-start)
+```
+
+### Production Configuration
+
+- Environment detection: LOCAL_WINDOWS (V1) vs CLOUD (future)
+- Production mode detection: development vs production
+- CORS origins: configurable via FRONTEND_ORIGINS (comma-separated)
+- Database URL: supports SQLite (default) and PostgreSQL
+- Runtime environment: configurable via RUNTIME_ENVIRONMENT
+- All configuration driven by environment variables with NAUKRI_AGENT_ prefix
+
+### CORS Strategy
+
+- Development mode: allows localhost origins for convenience
+- Production mode: uses only configured origins from FRONTEND_ORIGINS
+- Multiple origins supported via comma-separated list
+- Wildcard origins NOT used in production
+- Configurable methods: GET, POST, PUT, OPTIONS, DELETE
+- Configurable headers: Content-Type, X-Request-ID, Authorization
+
+### Health and Readiness
+
+- Liveness endpoint (/api/health): simple API process status
+- Readiness endpoint (/api/readiness): detailed component status
+- Readiness checks: database, configuration, storage, AI provider, runtime environment
+- Production mode validates required API keys
+- Component status: healthy/unhealthy with detailed error messages
+- Ready for container orchestration and health checks
+
+### Error Handling
+
+- Catch-all exception handler prevents sensitive information exposure
+- Generic exceptions return safe error messages without stack traces
+- Application errors return structured responses with error categories
+- Validation errors return 422 with category information
+- No filesystem paths, environment variables, or secrets in API responses
+
+### Logging
+
+- Development mode: standard JsonFormatter for debugging
+- Production mode: SafeJsonFormatter with automatic redaction
+- Sensitive keys redacted: api_key, password, token, secret, credential, auth
+- Structured logging with timestamp, level, message, and component
+- Extra fields: component, event, error_category, request_id, job_id, application_id
+- Logs never contain API keys, credentials, or sensitive user data
+
+### Database Configuration
+
+- SQLite default for local development (sqlite:///./data/naukri_agent.db)
+- PostgreSQL support via DATABASE_URL (postgresql://user:pass@host:port/db)
+- SQLite directory creation for both relative and absolute paths
+- No SQLite-only assumptions preventing hosted operation
+- Database initialization works correctly in both modes
+- Connection pooling and session management via SQLAlchemy
+
+### Storage Configuration
+
+- StorageService abstraction for file operations
+- Local filesystem storage for LOCAL_WINDOWS (V1)
+- Methods: store_file, read_file, delete_file, file_exists, get_file_size
+- Directory management: create_directory, delete_directory
+- Path resolution with resolve_path()
+- Ready for future object storage (S3/Azure/GCS) without code changes
+
+### Browser/API Separation
+
+- API process does NOT auto-start Playwright browser
+- Browser only starts when explicitly called via DiscoveryService
+- Clear separation between API process and browser worker
+- RuntimeContext controls browser automation support
+- LOCAL_WINDOWS: browser automation supported
+- CLOUD: browser automation disabled (future remote browser)
+- Safe for future cloud architecture with separate browser worker
+
+### Frontend API Configuration
+
+- Environment-based backend URL via VITE_API_BASE_URL
+- Development: http://127.0.0.1:8000/api (default)
+- Production: https://<hosted-api>/api (configurable)
+- No hardcoded localhost in production frontend code
+- Frontend build passes TypeScript compilation
+- Frontend build: 267.10 kB JS, 28.43 kB CSS
+
+### Security Considerations
+
+- CORS origins configured, no wildcard in production
+- Error responses don't expose stack traces or internal details
+- Logging redacts sensitive information automatically
+- Configuration properties don't expose API keys or secrets
+- API responses never return credentials or sensitive configuration
+- No filesystem paths in API responses
+- No environment variables in API responses
+- No secrets in logs or error messages
+
+---
+
 ## Cloud Readiness Architecture
 
 The application includes runtime and storage abstractions to support future cloud deployment while maintaining local-first V1 operation:
