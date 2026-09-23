@@ -82,7 +82,7 @@ export function AnalyticsDashboard() {
       <section className="status-panel">
         <div>
           <p className="eyebrow">ANALYTICS</p>
-          <p>Loading analytics data...</p>
+          <p className="text-sm text-[var(--color-text-secondary)]">Loading analytics data...</p>
         </div>
       </section>
     );
@@ -93,7 +93,7 @@ export function AnalyticsDashboard() {
       <section className="status-panel">
         <div>
           <p className="eyebrow">ANALYTICS</p>
-          <p className="error-text">{error}</p>
+          <p className="error-text">Analytics data is temporarily unavailable. Please try again.</p>
         </div>
       </section>
     );
@@ -104,7 +104,7 @@ export function AnalyticsDashboard() {
       <section className="status-panel">
         <div>
           <p className="eyebrow">ANALYTICS</p>
-          <p>No analytics data available</p>
+          <p className="text-sm text-[var(--color-text-secondary)]">No analytics data available yet. Start the agent to begin tracking performance.</p>
         </div>
       </section>
     );

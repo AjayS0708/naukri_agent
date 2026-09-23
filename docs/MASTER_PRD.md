@@ -1270,7 +1270,111 @@ CRITICAL_ERROR
 
 ---
 
-# 40. Agent Intelligence and Decision Quality
+# 40. Frontend UX/UI Design
+
+The frontend dashboard has been redesigned to provide a polished, modern SaaS experience with the following improvements:
+
+## Design Principles
+
+- **Professional SaaS aesthetic**: Modern dashboard layout with clean visual hierarchy
+- **User-centric language**: All development-phase terminology removed from user-facing UI
+- **Accessibility-first**: Keyboard navigation, focus states, and screen reader support
+- **Responsive design**: Works seamlessly across desktop, tablet, and mobile devices
+- **Graceful degradation**: Handles backend unavailability with clear user messaging
+
+## Navigation Structure
+
+The dashboard uses a sidebar navigation with the following sections:
+
+- **Overview**: Main command center with agent status, controls, and key metrics
+- **Activity**: Timeline of agent actions and events
+- **Jobs**: Job discovery interface (coming soon)
+- **Applications**: Application tracking dashboard (coming soon)
+- **Analytics**: Performance metrics and decision analytics
+- **Profile**: Resume and profile management with completion tracking
+- **Preferences**: Job search criteria and automation settings
+
+## Visual Language
+
+The design uses a Naukri-inspired color palette:
+
+- Primary Blue: #0073E6
+- Deep Blue: #0056B3
+- Accent Orange: #FF8A00
+- Light Blue: #EAF4FF
+- Background: #F7F9FC
+- Success: #16A34A
+- Warning: #F59E0B
+- Error: #DC2626
+
+Design elements include:
+- Rounded corners (8-12px) for modern feel
+- Subtle shadows for depth
+- Smooth transitions and hover states
+- Clear typography hierarchy
+- Consistent spacing (4px, 8px, 16px, 24px, 32px system)
+
+## User Experience Improvements
+
+### Error Handling
+- Technical error messages replaced with user-friendly alternatives
+- Backend connection status clearly indicated
+- Retry actions provided where appropriate
+- Empty states with helpful guidance
+
+### Profile Onboarding
+- Visual profile completion indicator
+- Clear section organization
+- Progress tracking for setup completion
+- Guided upload process
+
+### Preferences
+- Organized into logical sections (Target Roles, Locations, Compensation, etc.)
+- Clear descriptions for each setting
+- User-friendly dropdowns with explanations
+- Save confirmation feedback
+
+### Analytics
+- Compact, readable charts
+- Key metrics at a glance
+- Decision breakdown visualization
+- Skip reasons tracking
+
+### Backend Connection States
+The frontend gracefully handles different backend states:
+
+- **Connected**: Agent backend is running and accessible
+- **Local agent offline**: Clear message to start the local Windows agent
+- **Cloud backend unavailable**: Temporary service disruption message
+- **Checking**: Connection verification in progress
+
+## Accessibility Features
+
+- Skip-to-content link for keyboard navigation
+- Proper ARIA labels on interactive elements
+- Visible focus states on all interactive elements
+- Semantic HTML structure
+- Sufficient color contrast
+- Keyboard-friendly navigation
+
+## Responsive Design
+
+- Desktop: Full sidebar with all navigation items
+- Tablet: Collapsed sidebar with icons only
+- Mobile: Off-canvas sidebar with hamburger menu
+- Card layouts reflow appropriately
+- Tables become scrollable on smaller screens
+
+## Performance
+
+- Minimal dependencies (React, TypeScript, Tailwind CSS)
+- Optimized build output
+- Efficient API calls with proper error handling
+- Loading states for better perceived performance
+
+---
+
+# 41. Agent Intelligence and Decision Quality
 
 The agent should provide explainable decision-making with structured priority levels:
 

@@ -414,3 +414,47 @@ Recent decision activity:
 ```
 
 `AnalyticsService` owns analytics and reporting. It uses existing Job, Application, DecisionQualityRecord, and JobFeedback data to provide comprehensive analytics without creating fake historical data. All analytics respect configurable time periods and provide aggregate metrics for decision-making and performance monitoring.
+
+## Frontend Architecture
+
+The frontend is built with modern React architecture for production-ready SaaS dashboard experience:
+
+```text
+React 19.1.0 + TypeScript 5.8.3
+    ↓
+Vite 6.3.5 (build tooling)
+    ↓
+Tailwind CSS 4.1.4 (styling)
+    ↓
+Lucide React 0.468.0 (icons)
+    ↓
+Component-based architecture
+```
+
+**Component Structure:**
+- App shell with navigation and layout
+- Reusable state components (LoadingState, EmptyState, ErrorState, BackendState)
+- Feature-specific components (AnalyticsDashboard, AgentControl, ProfileWorkspace, JobPreferences)
+- Type-safe API integration with TypeScript
+- Modern React patterns with hooks
+
+**Design System:**
+- Naukri-inspired color palette (primary blue, deep blue, accent orange)
+- Consistent spacing system (4px, 8px, 16px, 24px, 32px)
+- Responsive design (desktop, tablet, mobile)
+- Accessibility-first approach (ARIA labels, keyboard navigation, focus states)
+- Modern visual language with rounded corners, shadows, and transitions
+
+**Build Pipeline:**
+- TypeScript compilation for type safety
+- Vite production build with code splitting
+- CSS bundling with Tailwind
+- Optimized bundle size (267.10 kB JS, 28.43 kB CSS)
+- Fast build times (17.59s)
+
+**API Integration:**
+- RESTful API communication with FastAPI backend
+- Type-safe API contracts with TypeScript interfaces
+- Error handling and loading states
+- Backend connection state management
+- Graceful degradation for offline scenarios

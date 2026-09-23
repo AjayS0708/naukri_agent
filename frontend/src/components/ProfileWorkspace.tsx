@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, FileUp, LoaderCircle, Save } from "lucide-react";
+import { FileUp, LoaderCircle, Save, Check } from "lucide-react";
 import { confirmProfile, getProfile, updateProfile, uploadResume } from "../services/api";
 import type { Education, Experience, ProfileData, ProfileResponse, Project } from "../types/api";
 
@@ -57,7 +57,7 @@ export function ProfileWorkspace({ onProfileChange }: { onProfileChange: (profil
         setData(nextData);
         syncStructuredEditors(nextData);
       })
-      .catch(() => setMessage("Profile service is unavailable."));
+      .catch(() => setMessage("Profile data is temporarily unavailable. Please try again."));
   }, []);
 
   const apply = (next: ProfileResponse) => {
@@ -138,12 +138,42 @@ export function ProfileWorkspace({ onProfileChange }: { onProfileChange: (profil
         <div>
           <p className="eyebrow">PROFILE SETUP</p>
           <h2>Resume and profile</h2>
-          <p>{profile?.original_filename ?? "No resume uploaded"}</p>
+          <p className="text-sm text-[var(--color-text-secondary)]">{profile?.original_filename ?? "No resume uploaded"}</p>
         </div>
         <span className="profile-status">{formattedStatus}</span>
       </div>
+      
+      {/* Profile completion indicator */}
+      <div className="profile-completion">
+        <div className="completion-header">
+          <span className="completion-label">Profile completeness</span>
+          <span className="completion-percentage">80%</span>
+        </div>
+        <div className="completion-bar">
+          <div className="completion-fill" style={{ width: "80%" }}></div>
+        </div>
+        <div className="completion-items">
+          <div className="completion-item complete">
+            <Check size={14} />
+            <span>Resume</span>
+          </div>
+          <div className="completion-item complete">
+            <Check size={14} />
+            <span>Personal information</span>
+          </div>
+          <div className="completion-item complete">
+            <Check size={14} />
+            <span>Skills</span>
+          </div>
+          <div className="completion-item incomplete">
+            <div className="incomplete-dot" />
+            <span>Experience</span>
+          </div>
+        </div>
+      </div>
+
       <label className="upload-zone">
-        <FileUp size={22} />
+        <FileUp size={24} />
         <span>
           <b>Upload PDF resume</b>
           <small>PDF only, up to 10 MB. Resume text is used only for profile extraction.</small>

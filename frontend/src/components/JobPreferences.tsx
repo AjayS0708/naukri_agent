@@ -32,7 +32,7 @@ export function JobPreferences() {
                 });
             }
         } catch {
-            setMessage("Could not load preferences.");
+            setMessage("Preferences are temporarily unavailable. Please try again.");
         } finally {
             setBusy(false);
         }
@@ -75,15 +75,16 @@ export function JobPreferences() {
             <div className="section-heading">
                 <div>
                     <p className="eyebrow">AUTOMATION SETTINGS</p>
-                    <h2>Job Preferences & Matching Engine</h2>
-                    <p>Define strict limits and scopes for AI evaluation.</p>
+                    <h2>Job Preferences</h2>
+                    <p className="text-sm text-[var(--color-text-secondary)]">Configure job search criteria and automation behavior</p>
                 </div>
                 <span className="profile-status"><Settings2 size={16} /> Configured</span>
             </div>
 
-            <div className="profile-form mt-4">
+            <div className="profile-form">
                 <div className="profile-section">
-                    <h3>Target Configuration</h3>
+                    <h3>TARGET ROLES</h3>
+                    <p className="section-description">Job titles and search terms the agent will look for</p>
                     <div className="form-grid">
                         <label className="field">
                             <span>Job Titles / Scope (comma separated)</span>
@@ -93,6 +94,13 @@ export function JobPreferences() {
                                 placeholder="e.g. Data Analyst, Business Analyst"
                             />
                         </label>
+                    </div>
+                </div>
+
+                <div className="profile-section">
+                    <h3>LOCATIONS</h3>
+                    <p className="section-description">Preferred work locations for job search</p>
+                    <div className="form-grid">
                         <label className="field">
                             <span>Locations (comma separated)</span>
                             <input
@@ -101,6 +109,13 @@ export function JobPreferences() {
                                 placeholder="e.g. Bengaluru, Remote"
                             />
                         </label>
+                    </div>
+                </div>
+
+                <div className="profile-section">
+                    <h3>COMPENSATION</h3>
+                    <p className="section-description">Only jobs with a disclosed salary below this threshold will be excluded</p>
+                    <div className="form-grid">
                         <label className="field">
                             <span>Minimum Salary (LPA)</span>
                             <input
@@ -110,6 +125,13 @@ export function JobPreferences() {
                                 placeholder="e.g. 4"
                             />
                         </label>
+                    </div>
+                </div>
+
+                <div className="profile-section">
+                    <h3>EMPLOYMENT TYPE</h3>
+                    <p className="section-description">Types of employment arrangements to consider</p>
+                    <div className="form-grid">
                         <label className="field">
                             <span>Employment Types (comma separated)</span>
                             <input
@@ -122,17 +144,16 @@ export function JobPreferences() {
                 </div>
 
                 <div className="profile-section">
-                    <h3>Application Aggressiveness</h3>
-                    <div className="field" style={{ maxWidth: '300px' }}>
+                    <h3>APPLICATION STRATEGY</h3>
+                    <p className="section-description">How aggressively the agent should apply to matching jobs</p>
+                    <div className="field">
                         <select
                             value={data.aggressiveness}
                             onChange={(e) => setData({ ...data, aggressiveness: e.target.value })}
-                            className="w-full border border-[var(--color-border)] p-2 rounded text-[var(--color-text)] bg-white"
-                            style={{ padding: '8px 10px', border: '1px solid var(--color-border)', borderRadius: '4px' }}
                         >
-                            <option value="CONSERVATIVE">Conservative</option>
-                            <option value="BALANCED">Balanced</option>
-                            <option value="AGGRESSIVE">Aggressive</option>
+                            <option value="CONSERVATIVE">Conservative - Only high-confidence matches</option>
+                            <option value="BALANCED">Balanced - Good matches with moderate confidence</option>
+                            <option value="AGGRESSIVE">Aggressive - Broad matching including lower confidence</option>
                         </select>
                     </div>
                 </div>
@@ -140,12 +161,12 @@ export function JobPreferences() {
                 <div className="profile-actions">
                     <button className="button" type="button" onClick={savePreferences} disabled={busy}>
                         {busy ? <LoaderCircle size={16} className="animate-spin" /> : <Save size={16} />}
-                        Save Automation Settings
+                        Save Preferences
                     </button>
                 </div>
             </div>
 
-            {message && <p className="inline-message mt-4">{message}</p>}
+            {message && <p className="inline-message">{message}</p>}
         </section>
     );
 }
