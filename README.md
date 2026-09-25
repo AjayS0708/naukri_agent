@@ -4,6 +4,8 @@ Windows-first, local-first foundation for a controlled job-application agent. De
 
 ## Status
 
+Phase 8.2 Checkpoint is complete: PostgreSQL + Production Persistence. Backend seamlessly hosts configurations for SQLite and scaling instances with PostgreSQL `psycopg` integration and connection pooling metrics.
+
 Phase 8.1 Checkpoint is complete: Production Backend Preparation. 401 tests passing. Backend is production-hosting ready with enhanced configuration, security, and monitoring.
 
 Phase 7 Checkpoint 4 is complete: Agent intelligence, decision quality, job prioritization, feedback/learning, and application analytics.

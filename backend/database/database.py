@@ -46,7 +46,21 @@ def create_database_engine() -> Engine:
         )
     
     # PostgreSQL and other databases don't need special handling
-    return create_engine(database_url)
+    # Convert postgresql:// to postgresql+psycopg:// to use the new driver
+    if database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+
+    engine_kwargs = {}
+    if database_url.startswith("postgresql"):
+        # Connection pooling settings for production PostgreSQL
+        engine_kwargs = {
+            "pool_size": 20,
+            "max_overflow": 10,
+            "pool_pre_ping": True,
+            "pool_recycle": 3600
+        }
+
+    return create_engine(database_url, **engine_kwargs)
 
 
 engine = create_database_engine()

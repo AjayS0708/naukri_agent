@@ -71,7 +71,8 @@ Browser/API Separation (no auto-start)
 ### Database Configuration
 
 - SQLite default for local development (sqlite:///./data/naukri_agent.db)
-- PostgreSQL support via DATABASE_URL (postgresql://user:pass@host:port/db)
+- PostgreSQL support via DATABASE_URL, with transparent `postgresql://` to `postgresql+psycopg://` conversion (Phase 8.2)
+- PostgreSQL connection pooling enabled for cloud deployment (`pool_size`, `max_overflow`)
 - SQLite directory creation for both relative and absolute paths
 - No SQLite-only assumptions preventing hosted operation
 - Database initialization works correctly in both modes

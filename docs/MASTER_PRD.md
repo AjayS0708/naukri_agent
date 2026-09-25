@@ -11,7 +11,7 @@
 **Primary Automation:** Playwright
 **Backend:** Python + FastAPI
 **Frontend:** React + TypeScript
-**Database:** SQLite (V1), PostgreSQL-ready
+**Database:** SQLite (V1), PostgreSQL (Production Integration Supported)
 
 ---
 
@@ -159,7 +159,7 @@ Cloud readiness infrastructure has been implemented to support future cloud depl
 - `RuntimeContext` abstraction for environment-specific behavior
 - `StorageService` abstraction for file operations (enables future object storage)
 - Environment variable configuration with `NAUKRI_AGENT_` prefix
-- Database abstraction supporting both SQLite and PostgreSQL
+- Database abstraction supporting both SQLite and natively connecting to PostgreSQL using `psycopg` drivers with connection pooling (Phase 8.2)
 - No changes to existing V1 functionality or public APIs
 
 Future architecture:
