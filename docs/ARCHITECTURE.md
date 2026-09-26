@@ -1,6 +1,6 @@
 # Architecture
 
-## Production Readiness Architecture (Phase 8.1)
+## Hosted FastAPI Deployment Architecture (Phase 8.3)
 
 The backend has been prepared for production hosting with enhanced configuration, security, and monitoring:
 
@@ -28,8 +28,8 @@ Browser/API Separation (no auto-start)
 
 - Environment detection: LOCAL_WINDOWS (V1) vs CLOUD (future)
 - Production mode detection: development vs production
-- CORS origins: configurable via FRONTEND_ORIGINS (comma-separated)
-- Database URL: supports SQLite (default) and PostgreSQL
+- CORS origins: configurable via `NAUKRI_AGENT_FRONTEND_ORIGINS` (comma-separated)
+- Database URL: SQLite locally and external PostgreSQL required for production readiness
 - Runtime environment: configurable via RUNTIME_ENVIRONMENT
 - All configuration driven by environment variables with NAUKRI_AGENT_ prefix
 
@@ -44,11 +44,11 @@ Browser/API Separation (no auto-start)
 
 ### Health and Readiness
 
-- Liveness endpoint (/api/health): simple API process status
+- Liveness endpoint (/api/health): process-only status; no database or Gemini work
 - Readiness endpoint (/api/readiness): detailed component status
 - Readiness checks: database, configuration, storage, AI provider, runtime environment
-- Production mode validates required API keys
-- Component status: healthy/unhealthy with detailed error messages
+- Production mode requires PostgreSQL, Gemini configuration, and explicit non-wildcard frontend origins
+- Component status uses safe machine-readable values without raw exception details
 - Ready for container orchestration and health checks
 
 ### Error Handling
@@ -63,7 +63,7 @@ Browser/API Separation (no auto-start)
 
 - Development mode: standard JsonFormatter for debugging
 - Production mode: SafeJsonFormatter with automatic redaction
-- Sensitive keys redacted: api_key, password, token, secret, credential, auth
+- Sensitive keys, nested structures, credential URLs, authorization headers, cookies, sessions, and exception details are redacted or omitted
 - Structured logging with timestamp, level, message, and component
 - Extra fields: component, event, error_category, request_id, job_id, application_id
 - Logs never contain API keys, credentials, or sensitive user data
@@ -71,7 +71,7 @@ Browser/API Separation (no auto-start)
 ### Database Configuration
 
 - SQLite default for local development (sqlite:///./data/naukri_agent.db)
-- PostgreSQL support via DATABASE_URL, with transparent `postgresql://` to `postgresql+psycopg://` conversion (Phase 8.2)
+- PostgreSQL support via `NAUKRI_AGENT_DATABASE_URL`, with transparent `postgresql://` to `postgresql+psycopg://` conversion (Phase 8.2)
 - PostgreSQL connection pooling enabled for cloud deployment (`pool_size`, `max_overflow`)
 - SQLite directory creation for both relative and absolute paths
 - No SQLite-only assumptions preventing hosted operation
@@ -105,6 +105,13 @@ Browser/API Separation (no auto-start)
 - No hardcoded localhost in production frontend code
 - Frontend build passes TypeScript compilation
 - Frontend build: 267.10 kB JS, 28.43 kB CSS
+
+### Hosted Service Configuration
+
+- `Procfile` runs `uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}`.
+- `render.yaml` defines a Python web service using root `requirements.txt` and the platform-provided `PORT`.
+- Render configuration contains only environment-variable placeholders for PostgreSQL, Gemini, and frontend origins; it contains no secret values.
+- `python run.py` remains the local-development entry point and binds to its configured local host/port.
 
 ### Security Considerations
 

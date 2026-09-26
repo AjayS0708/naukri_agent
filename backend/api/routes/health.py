@@ -12,9 +12,8 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("/health", response_model=HealthResponse)
-def health_check(db: Session = Depends(get_db)) -> HealthResponse:
-    """Liveness check - simple API process status."""
-    db.execute(text("SELECT 1"))
+def health_check() -> HealthResponse:
+    """Liveness check; deliberately independent of database and Gemini."""
     settings = get_settings()
     return HealthResponse(status="ok", service=settings.service_slug, version=settings.app_version, agent_state=AgentStateManager().current_state)
 
@@ -30,20 +29,20 @@ def readiness_check(db: Session = Depends(get_db)) -> ReadinessResponse:
     try:
         db.execute(text("SELECT 1"))
         components["database"] = "healthy"
-    except Exception as e:
-        components["database"] = f"unhealthy: {str(e)}"
+    except Exception:
+        components["database"] = "unhealthy"
         overall_status = "not_ready"
 
     # Check configuration
     try:
-        # Validate required configuration
-        if settings.is_production and not settings.gemini_api_key:
-            components["configuration"] = "missing_required_api_key"
+        errors = settings.production_configuration_errors
+        if errors:
+            components["configuration"] = ",".join(errors)
             overall_status = "not_ready"
         else:
             components["configuration"] = "valid"
-    except Exception as e:
-        components["configuration"] = f"invalid: {str(e)}"
+    except Exception:
+        components["configuration"] = "invalid"
         overall_status = "not_ready"
 
     # Check storage
@@ -51,8 +50,8 @@ def readiness_check(db: Session = Depends(get_db)) -> ReadinessResponse:
         storage = get_storage_service()
         storage.get_data_storage_path()
         components["storage"] = "available"
-    except Exception as e:
-        components["storage"] = f"unavailable: {str(e)}"
+    except Exception:
+        components["storage"] = "unavailable"
         overall_status = "not_ready"
 
     # Check AI provider (optional - can run without AI)

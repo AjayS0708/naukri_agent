@@ -14,13 +14,14 @@ Tests for production-ready configuration behavior including:
 import pytest
 import asyncio
 from fastapi.testclient import TestClient
+from fastapi import FastAPI
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 import tempfile
 import os
 
 from backend.core.config import Settings, get_settings
-from backend.main import app
+from backend.main import app, configure_cors
 from backend.core.storage import get_storage_service
 from backend.core.runtime import RuntimeContext, RuntimeEnvironment
 
@@ -83,6 +84,24 @@ class TestProductionConfiguration:
         assert "http://localhost:5173" in origins
         assert "https://example.com" in origins
         assert len(origins) == 2
+
+    def test_production_configuration_requires_hosted_values(self):
+        settings = Settings(app_env="production", _env_file=None)
+        assert settings.production_configuration_errors == [
+            "database_url_must_use_postgresql",
+            "gemini_api_key_is_required",
+            "frontend_origins_is_required",
+        ]
+
+    def test_production_configuration_accepts_postgresql_and_explicit_origins(self):
+        settings = Settings(
+            app_env="production",
+            database_url="postgresql://user:password@db.example.com/naukri",
+            gemini_api_key="configured-only-for-test",
+            frontend_origins="https://app.example.com,https://admin.example.com",
+            _env_file=None,
+        )
+        assert settings.production_configuration_errors == []
 
     def test_database_url_sqlite_default(self):
         """Test SQLite is default database URL."""
@@ -189,6 +208,49 @@ class TestHealthAndReadiness:
         data = response.json()
         assert "runtime_environment" in data["components"]
         assert data["components"]["runtime_environment"] in ["local_windows", "cloud"]
+
+
+class TestCorsMiddleware:
+    @staticmethod
+    def _client(settings: Settings) -> TestClient:
+        cors_app = FastAPI()
+
+        @cors_app.get("/ping")
+        def ping() -> dict[str, bool]:
+            return {"ok": True}
+
+        configure_cors(cors_app, settings)
+        return TestClient(cors_app)
+
+    def test_configured_production_origin_is_accepted_without_credentials(self):
+        client = self._client(Settings(app_env="production", frontend_origins="https://app.example.com", _env_file=None))
+        response = client.options(
+            "/ping",
+            headers={"Origin": "https://app.example.com", "Access-Control-Request-Method": "GET"},
+        )
+
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == "https://app.example.com"
+        assert "access-control-allow-credentials" not in response.headers
+
+    def test_unconfigured_production_origin_is_not_allowed(self):
+        client = self._client(Settings(app_env="production", frontend_origins="https://app.example.com", _env_file=None))
+        response = client.get("/ping", headers={"Origin": "https://untrusted.example.com"})
+
+        assert "access-control-allow-origin" not in response.headers
+
+    def test_multiple_production_origins_are_accepted(self):
+        client = self._client(Settings(app_env="production", frontend_origins="https://app.example.com,https://admin.example.com", _env_file=None))
+
+        for origin in ("https://app.example.com", "https://admin.example.com"):
+            response = client.get("/ping", headers={"Origin": origin})
+            assert response.headers["access-control-allow-origin"] == origin
+
+    def test_development_keeps_local_vite_origin_usable(self):
+        client = self._client(Settings(app_env="development", frontend_origins="", _env_file=None))
+        response = client.get("/ping", headers={"Origin": "http://127.0.0.1:5173"})
+
+        assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
 
 
 class TestErrorHandling:

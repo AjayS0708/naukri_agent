@@ -18,7 +18,7 @@ from backend.api.routes.system import router as system_router, set_autostart_ser
 from backend.api.routes.decision import router as decision_router
 from backend.api.routes.feedback import router as feedback_router
 from backend.api.routes.analytics import router as analytics_router
-from backend.core.config import get_settings
+from backend.core.config import Settings, get_settings
 from backend.core.exceptions import ApplicationError
 from backend.core.logging import configure_logging, configure_production_logging, get_logger
 from backend.database.database import initialize_database, SessionLocal
@@ -101,21 +101,28 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title=settings.app_name, version=settings.app_version, docs_url="/api/docs" if settings.is_development else None, redoc_url=None, lifespan=lifespan)
 
-# CORS configuration - production-safe with configurable origins
-# In development, allow all origins for convenience
-# In production, use only configured origins
-cors_origins = settings.cors_origins
-if settings.is_development:
-    # In development, allow localhost for convenience
-    cors_origins = ["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:3000", "http://localhost:3000"]
+def configure_cors(application: FastAPI, app_settings: Settings) -> None:
+    """Apply explicit browser origins; credentials are intentionally disabled."""
+    origins = app_settings.cors_origins
+    if app_settings.is_development:
+        origins = list(dict.fromkeys([
+            *origins,
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://localhost:3000",
+        ]))
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "OPTIONS", "DELETE"],
-    allow_headers=["Content-Type", "X-Request-ID", "Authorization"],
-)
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "OPTIONS", "DELETE"],
+        allow_headers=["Content-Type", "X-Request-ID", "Authorization"],
+    )
+
+
+configure_cors(app, settings)
 
 
 @app.exception_handler(ApplicationError)

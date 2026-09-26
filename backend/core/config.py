@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     # Frontend configuration - supports multiple origins for CORS
     frontend_url: str = Field(default="http://127.0.0.1:5173")
-    frontend_origins: str = Field(default="http://127.0.0.1:5173")  # Comma-separated list for CORS
+    frontend_origins: str = Field(default="")  # Comma-separated list for CORS
 
     # Storage directories - environment variable driven
     # Can be absolute paths or relative to PROJECT_ROOT
@@ -90,6 +90,23 @@ class Settings(BaseSettings):
         if not origins_str:
             return []
         return [origin.strip() for origin in origins_str.split(",") if origin.strip()]
+
+    @property
+    def production_configuration_errors(self) -> list[str]:
+        """Return safe, actionable readiness errors for hosted production."""
+        if not self.is_production:
+            return []
+
+        errors: list[str] = []
+        if not self.database_url.startswith("postgresql"):
+            errors.append("database_url_must_use_postgresql")
+        if not self.gemini_api_key:
+            errors.append("gemini_api_key_is_required")
+        if not self.cors_origins:
+            errors.append("frontend_origins_is_required")
+        if "*" in self.cors_origins:
+            errors.append("frontend_origins_must_not_include_wildcard")
+        return errors
 
     @property
     def resume_storage_path(self) -> Path:

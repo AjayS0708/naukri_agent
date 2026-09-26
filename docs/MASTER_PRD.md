@@ -3113,4 +3113,26 @@ These belong to future Phase 8 checkpoints.
 
 ---
 
+# 82. Hosted FastAPI Deployment Preparation (Phase 8.3)
+
+Phase 8.3 prepares the existing API for normal hosted web-service operation. It does not deploy the service and does not move browser automation to the cloud.
+
+```text
+React frontend
+      ↓
+Hosted FastAPI API
+      ↓
+PostgreSQL
+```
+
+The hosted process is started with `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`. The repository provides a `Procfile` with a local port fallback and a minimal `render.yaml`; neither contains secrets.
+
+Production configuration uses the existing `NAUKRI_AGENT_` environment prefix. A production instance must set `NAUKRI_AGENT_APP_ENV=production`, `NAUKRI_AGENT_DATABASE_URL` to PostgreSQL, `NAUKRI_AGENT_GEMINI_API_KEY`, and explicit comma-separated `NAUKRI_AGENT_FRONTEND_ORIGINS`. Readiness reports configuration as not ready when these values are absent or origins include a wildcard. Local development remains SQLite-capable.
+
+`GET /api/health` is a cheap liveness endpoint and does not contact the database or Gemini. `GET /api/readiness` checks database connectivity and safe application configuration. Production CORS accepts only configured origins and does not enable browser credentials.
+
+Production JSON logging centrally redacts API keys, passwords, tokens, secrets, credentials, authorization headers, cookies, session data, nested values, URL userinfo, and exception details. The frontend continues to use `VITE_API_BASE_URL`, with its localhost default only for development.
+
+Known limitations: no Render/Railway deployment has been performed; PostgreSQL provisioning, frontend hosting, object storage, remote browser workers, and 24/7 cloud automation are not included.
+
 # END OF MASTER PRD

@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: naukri-agent-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: NAUKRI_AGENT_APP_ENV
+        value: production
+      - key: NAUKRI_AGENT_DATABASE_URL
+        sync: false
+      - key: NAUKRI_AGENT_GEMINI_API_KEY
+        sync: false
+      - key: NAUKRI_AGENT_FRONTEND_ORIGINS
+        sync: false

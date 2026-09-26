@@ -1,5 +1,21 @@
 # Development Status
 
+## Phase 8.3: COMPLETE - Hosted FastAPI Deployment Preparation
+
+Implemented deployment preparation for the existing FastAPI API without deploying any infrastructure:
+
+- Added `Procfile` and a minimal `render.yaml` with root dependency installation, Uvicorn startup, platform-provided `PORT`, and secret-free environment placeholders.
+- Preserved `python run.py` for local Windows development; hosted services run `backend.main:app` on `0.0.0.0`.
+- Production readiness now requires PostgreSQL, Gemini configuration, and explicit non-wildcard frontend origins using the existing `NAUKRI_AGENT_` prefix.
+- Liveness (`/api/health`) is independent of database and Gemini. Readiness (`/api/readiness`) reports safe database/configuration/storage/AI/runtime status without raw exception text.
+- Production CORS supports one or more configured origins and leaves credentialed browser requests disabled.
+- Hardened `SafeJsonFormatter` with centralized recursive sanitization for message text, extras, nested containers, credential URLs, auth/cookie/session data, and exceptions.
+- Confirmed the existing frontend `VITE_API_BASE_URL` configuration remains separate from backend environment configuration.
+
+Known limitations: no hosting provider deployment, managed PostgreSQL provisioning, frontend deployment, object storage, remote browser worker, or cloud automation was implemented.
+
+---
+
 ## Phase 8.1: COMPLETE - Production Backend Preparation (Checkpoint 8.1)
 
 Implemented Phase 8.1 - Production Backend Preparation to make the FastAPI backend production-hosting ready without actual deployment:

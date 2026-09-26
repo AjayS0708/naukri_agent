@@ -6,6 +6,8 @@ Windows-first, local-first foundation for a controlled job-application agent. De
 
 Phase 8.2 Checkpoint is complete: PostgreSQL + Production Persistence. Backend seamlessly hosts configurations for SQLite and scaling instances with PostgreSQL `psycopg` integration and connection pooling metrics.
 
+Phase 8.3 Checkpoint is complete: hosted FastAPI deployment preparation. The repository includes Render and Procfile service definitions, explicit production configuration validation, secure structured logs, and environment-driven CORS/frontend API configuration. This is preparation only; no service has been deployed.
+
 Phase 8.1 Checkpoint is complete: Production Backend Preparation. 401 tests passing. Backend is production-hosting ready with enhanced configuration, security, and monitoring.
 
 Phase 7 Checkpoint 4 is complete: Agent intelligence, decision quality, job prioritization, feedback/learning, and application analytics.
@@ -57,7 +59,24 @@ python -m pytest backend/tests
 
 ## Current Limitations
 
-Phase 8.1 production backend preparation is complete. Backend is production-hosting ready with enhanced configuration, security, and monitoring. Cloud execution NOT implemented (future phase). LinkedIn/Indeed NOT implemented (future phase). CAPTCHA solving, anti-bot bypass, stealth, fingerprint spoofing, proxy rotation, rate-limit bypass NOT implemented. The dashboard includes decision analytics and feedback management, but complex automated learning and external application submission remain future features.
+Phase 8.3 prepares only the hosted FastAPI API. Cloud browser execution, object storage, database provisioning, frontend deployment, and platform automation remain out of scope.
+
+## Hosted FastAPI Deployment (Phase 8.3)
+
+Run the API on a hosting platform with:
+
+```text
+uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+```
+
+`Procfile` provides a local-port fallback and `render.yaml` describes an equivalent Render web service. Set these host environment variables; do not commit their values:
+
+- `NAUKRI_AGENT_APP_ENV=production`
+- `NAUKRI_AGENT_DATABASE_URL` — external PostgreSQL URL
+- `NAUKRI_AGENT_GEMINI_API_KEY`
+- `NAUKRI_AGENT_FRONTEND_ORIGINS` — one or more comma-separated frontend origins
+
+Production readiness rejects SQLite, a missing Gemini key, missing origins, and wildcard origins. `GET /api/health` is process-only and does not query the database or Gemini; `GET /api/readiness` reports whether database, configuration, storage, AI configuration, and runtime are ready. CORS allows only configured production origins and deliberately disables credentialed browser requests. `SafeJsonFormatter` recursively redacts credentials, API keys, authorization headers, cookies, sessions, nested values, and database URL userinfo.
 
 ## Production Readiness (Phase 8.1)
 
@@ -88,7 +107,7 @@ Future cloud deployment will require: remote browser automation, object storage 
 
 ## Profile Setup
 
-Set `GEMINI_API_KEY` in a local `.env`, start the backend and frontend, then open the Profile section. Upload a PDF no larger than 10 MB, review the extracted facts, save any edits, and explicitly confirm the profile. A resume is not usable by future automation until it is confirmed.
+Set `NAUKRI_AGENT_GEMINI_API_KEY` in a local `.env`, start the backend and frontend, then open the Profile section. Upload a PDF no larger than 10 MB, review the extracted facts, save any edits, and explicitly confirm the profile. A resume is not usable by future automation until it is confirmed.
 
 The Phase 2 backend tests pass. In this environment the frontend build is currently blocked by a malformed native Vite dependency tree; remove `frontend/node_modules` and reinstall dependencies once Windows releases that generated directory.
 
