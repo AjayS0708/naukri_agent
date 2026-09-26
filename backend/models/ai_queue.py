@@ -14,16 +14,21 @@ def utc_now() -> datetime:
 class AIQueueItem(Base):
     """
     Persistent AI work queue for jobs requiring Gemini analysis.
-    
+
     The queue allows discovery to continue collecting/filtering jobs without
     immediately performing uncontrolled Gemini calls. Jobs are enqueued and
     processed sequentially with proper quota handling and retry logic.
+
+    In distributed worker scenarios, coordination fields track ownership:
+    - claimed_by: identifies the worker currently processing this item
+    - last_heartbeat_at: timestamp of latest worker heartbeat
+    - available_at: timestamp after which item is eligible for claiming
     """
     __tablename__ = "ai_queue"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), nullable=False, index=True)
-    
+
     # Queue status
     status: Mapped[str] = mapped_column(
         String(32),
@@ -31,29 +36,40 @@ class AIQueueItem(Base):
         index=True,
         nullable=False
     )  # QUEUED, PROCESSING, COMPLETED, RETRY_PENDING, QUOTA_BLOCKED, NEEDS_ATTENTION, FAILED
-    
+
     # Priority handling (deterministic only)
     priority: Mapped[int] = mapped_column(Integer, default=0, index=True)  # Higher = higher priority
     priority_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    
+
     # Retry handling
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     next_retry_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    
+
     # Failure tracking
     failure_reason: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    
+
     # AI analysis result (when completed)
     analysis_id: Mapped[Optional[int]] = mapped_column(ForeignKey("job_analyses.id"), nullable=True)
-    
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    
+
     # Metadata
     queue_source: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # SCHEDULER, MANUAL, etc.
     processing_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Distributed worker coordination (Phase 8.5B)
+    # claimed_by: worker_id of worker currently owning this item (null if unclaimed)
+    claimed_by: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+
+    # last_heartbeat_at: timestamp of latest heartbeat from claiming worker
+    last_heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # available_at: timestamp after which item is eligible for claiming again
+    # used for backoff/release behavior - if set and in future, item cannot be claimed
+    available_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)

@@ -1,6 +1,31 @@
 # Development Status
 
+## Phase 8.5B: COMPLETE - Distributed Work Coordination
+
+Implemented distributed worker work coordination to safely queue and claim AI analysis work among multiple workers:
+
+- Extended AIQueueItem model with three coordination fields: `claimed_by` (worker_id ownership), `last_heartbeat_at` (stale detection), `available_at` (backoff/release timing).
+- Implemented WorkCoordinationService with atomic work claiming, ownership verification, heartbeat tracking, stale detection, and safe recovery.
+- PostgreSQL claiming uses atomic SELECT...FOR UPDATE SKIP LOCKED to prevent race conditions.
+- SQLite uses transaction-safe fallback (without row-level locking) with clear documentation of semantic differences.
+- Heartbeat prevents stale detection and requires ownership verification.
+- Stale detection identifies work items without heartbeat for 30+ minutes.
+- Stale recovery preserves existing safety: if max_attempts exceeded, escalates to NEEDS_ATTENTION (human review required) rather than blindly retrying.
+- Release, complete, and fail operations verify ownership and are terminal/idempotent where appropriate.
+- Worker load tracking (claimed_count, processing_count).
+- Deterministic claiming: priority descending, then created_at ascending.
+- Comprehensive test suite: 49 focused tests covering claiming, ownership, heartbeat, stale detection, recovery, release/complete/fail, worker load, priority ordering, database compatibility, edge cases, and safety preservation.
+- All 49 tests pass; 475 total backend tests pass (previously 426, +49 coordination tests).
+- No regression: existing AI queue, application runner, safety gates, duplicate detection, and application limits remain unchanged and authoritative.
+- Frontend unchanged.
+- Safety preserved: stale recovery with exhausted attempts does not bypass duplicate protection or safety gates; uncertain outcomes require human review.
+
+Known limitations: Cloud browser execution, browser session migration, cloud browser providers (Browserless, Browserbase), persistent cloud sessions, remote browser execution, Kubernetes, Redis, Celery, RabbitMQ, Kafka, multi-region infrastructure are all deferred to Phase 8.5C and later.
+
+---
+
 ## Phase 8.5A: COMPLETE - Worker Foundation and Registration
+
 
 Implemented persistent worker identity layer to support future cloud browser coordination without modifying current execution:
 

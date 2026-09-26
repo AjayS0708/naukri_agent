@@ -1,6 +1,145 @@
 # Architecture
 
+## Distributed Work Coordination Architecture (Phase 8.5B)
+
+Multiple workers safely claim and process distributed AI queue work without race conditions:
+
+```text
+AI Queue Work Items (Jobs requiring Gemini analysis)
+    ↓
+Work Coordination Fields (claimed_by, last_heartbeat_at, available_at)
+    ↓
+Worker Claiming (PostgreSQL: SELECT...FOR UPDATE SKIP LOCKED, SQLite: transaction-safe)
+    ↓
+Ownership Verification (only claiming worker can heartbeat/release/complete/fail)
+    ↓
+Heartbeat Tracking (prevents stale detection, updates last_heartbeat_at)
+    ↓
+Stale Detection (items without heartbeat > 30min)
+    ↓
+Stale Recovery (safe escalation to NEEDS_ATTENTION if max_attempts exceeded)
+    ↓
+Release/Complete/Fail Operations (terminal states, idempotent where appropriate)
+    ↓
+Existing Application Safety Gates (duplicate detection, safety gate, application limits) - UNCHANGED
+```
+
+### Work Coordination Fields (AIQueueItem Extensions)
+
+- `claimed_by` (String, nullable, indexed): worker_id currently owning this item
+- `last_heartbeat_at` (DateTime UTC, nullable): timestamp of latest heartbeat from claiming worker
+- `available_at` (DateTime UTC, nullable, indexed): timestamp after which item is eligible for claiming again
+
+### Work Coordination Service
+
+**Claiming:**
+- `claim_next_work(worker_id)` → atomically select next eligible item and assign to worker
+  - Selection: QUEUED or RETRY_PENDING status, no owner, available_at null or past
+  - Ordering: priority descending, then created_at ascending (deterministic)
+  - PostgreSQL: SELECT...FOR UPDATE SKIP LOCKED (prevents race conditions)
+  - SQLite: transaction-safe selection (see compatibility below)
+  - Returns work dict or None if no eligible work
+
+**Ownership:**
+- `heartbeat_work(worker_id, work_id)` → update last_heartbeat_at if owner
+  - Requires: worker owns item, item not in terminal state (COMPLETED/FAILED/NEEDS_ATTENTION)
+  - Updates: last_heartbeat_at = now
+  - Raises: WorkNotOwnedError if worker doesn't own, WorkStateError if terminal state
+
+**Stale Detection & Recovery:**
+- `detect_stale_work()` → find items with owner but no heartbeat > 30min
+  - Returns: list of stale work dicts
+  - Does not modify state
+  - Ignores: completed, failed, needs_attention, unclaimed items
+
+- `recover_stale_work(work_id)` → clear ownership and advance stale item safely
+  - Safety: if max_attempts NOT exceeded → RETRY_PENDING (eligible immediately)
+  - Safety: if max_attempts exceeded → NEEDS_ATTENTION (human review required)
+  - Preserves: existing duplicate detection, safety gates, application limits
+  - Never blindly retries with uncertain execution outcome
+
+**Lifecycle:**
+- `release_work(worker_id, work_id)` → release ownership with 5min backoff
+  - Requires: worker owns item
+  - Result: claimed_by cleared, available_at set to now+5min
+  - Use case: worker cannot process now, defer to later or different worker
+
+- `complete_work(worker_id, work_id)` → mark COMPLETED, clear ownership
+  - Requires: worker owns item (idempotent if already completed)
+  - Allows: repeated calls (idempotent)
+  - Result: status = COMPLETED, ownership cleared, terminal
+
+- `fail_work(worker_id, work_id, error, reason)` → mark FAILED, clear ownership
+  - Requires: worker owns item
+  - Result: status = FAILED, ownership cleared, terminal
+  - Captures: error details for debugging
+
+**Worker Load:**
+- `get_worker_load(worker_id)` → current work stats
+  - Returns: claimed_count (all owned items), processing_count (PROCESSING status)
+
+### Database Compatibility
+
+**PostgreSQL (Production):**
+- Uses atomic `SELECT...FOR UPDATE SKIP LOCKED`
+- Prevents race conditions: one worker locks the best item, others skip to next
+- Guarantees: no two workers claim the same item
+- Transactions: isolation level READ COMMITTED sufficient
+- Best for: high concurrency, multiple workers
+
+**SQLite (Development/Testing):**
+- Uses transaction-safe fallback without row-level locking
+- Fallback: deterministic selection + commit within transaction
+- Limitation: multiple workers may briefly see the same item (no SKIP LOCKED)
+- Workaround: deterministic ordering ensures consistent behavior across runs
+- Testing: all 49 coordination tests pass with SQLite
+- Note: for production multi-worker scenarios, PostgreSQL required
+
+### Safety Preservation
+
+**Existing Application Safety is Authoritative:**
+- Duplicate detection: existing ApplicationService.check_duplicate_application() unchanged
+- Safety gate: existing ApplicationService.run_final_safety_gate() unchanged
+- Application limits: existing ApplicationLimitService.check_limits() unchanged
+- Stale recovery never bypasses these gates
+
+**Stale Recovery Safety:**
+- If execution outcome is uncertain (browser crash, no heartbeat, max_attempts exceeded):
+  - Recovery escalates to NEEDS_ATTENTION (requires human review)
+  - Never blindly retries application
+  - Preserves existing safety architecture
+
+**Ownership Rules:**
+- Only claiming worker can heartbeat/release/complete/fail
+- Different worker attempting operation raises WorkNotOwnedError
+- Prevents accidental work theft or overlap
+
+### Current Scope (Phase 8.5B)
+
+- Atomic work claiming
+- Ownership verification
+- Heartbeat tracking
+- Stale detection
+- Stale recovery (safety-preserving)
+- Release/complete/fail operations
+- Worker load tracking
+- PostgreSQL and SQLite support
+
+### Future Scope (Phase 8.5C+)
+
+- Cloud browser execution
+- Browser session migration
+- Remote browser lifecycle management
+- Cloud browser providers (Browserless, Browserbase)
+- Persistent cloud browser sessions
+- Kubernetes orchestration
+- Redis/Celery/RabbitMQ integration
+- Multi-region infrastructure
+
+---
+
 ## Worker Foundation Architecture (Phase 8.5A)
+
 
 Persistent worker identity layer enabling future cloud coordination:
 
