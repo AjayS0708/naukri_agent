@@ -7,5 +7,6 @@ from backend.models.application import Application, ApplicationAnswer
 from backend.models.scheduler import SchedulerConfig
 from backend.models.ai_queue import AIQueueItem
 from backend.models.feedback import JobFeedback, DecisionQualityRecord
+from backend.models.worker import Worker
 
-__all__ = ["Profile", "Resume", "AIUsage", "JobAnalysisModel", "Job", "JobPreference", "MatchResult", "DiscoveryRun", "Application", "ApplicationAnswer", "SchedulerConfig", "AIQueueItem", "JobFeedback", "DecisionQualityRecord"]
+__all__ = ["Profile", "Resume", "AIUsage", "JobAnalysisModel", "Job", "JobPreference", "MatchResult", "DiscoveryRun", "Application", "ApplicationAnswer", "SchedulerConfig", "AIQueueItem", "JobFeedback", "DecisionQualityRecord", "Worker"]

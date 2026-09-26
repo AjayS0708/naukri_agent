@@ -18,6 +18,7 @@ from backend.api.routes.system import router as system_router, set_autostart_ser
 from backend.api.routes.decision import router as decision_router
 from backend.api.routes.feedback import router as feedback_router
 from backend.api.routes.analytics import router as analytics_router
+from backend.api.routes.worker import router as worker_router
 from backend.core.config import Settings, get_settings
 from backend.core.exceptions import ApplicationError
 from backend.core.logging import configure_logging, configure_production_logging, get_logger
@@ -157,3 +158,4 @@ app.include_router(system_router, prefix="/api")
 app.include_router(decision_router)
 app.include_router(feedback_router)
 app.include_router(analytics_router)
+app.include_router(worker_router, prefix="/api")
