@@ -1,5 +1,64 @@
 # Architecture
 
+## Worker Foundation Architecture (Phase 8.5A)
+
+Persistent worker identity layer enabling future cloud coordination:
+
+```text
+Worker Registration & Identity
+    ↓
+Worker Types (LOCAL_WINDOWS, CLOUD_BROWSER)
+    ↓
+Worker Status Lifecycle (STARTING, IDLE, RUNNING, PAUSED, STOPPING, STOPPED, ERROR)
+    ↓
+Worker Service Layer (register, get, list, update_status)
+    ↓
+Worker API Endpoints (status, register, get by ID)
+    ↓
+Future: Distributed Task Claiming, Heartbeat, Stale Recovery (Phase 8.5B+)
+```
+
+### Worker Model
+
+- `worker_id` (UUID, unique, indexed): persistent identity across sessions
+- `worker_type` (Enum): LOCAL_WINDOWS (current) or CLOUD_BROWSER (future)
+- `status` (Enum): STARTING, IDLE, RUNNING, PAUSED, STOPPING, STOPPED, ERROR
+- `runtime_environment` (String): identifies deployment context
+- `created_at`, `updated_at`, `started_at`, `stopped_at` (DateTime UTC): lifecycle tracking
+- No sensitive data: passwords, cookies, sessions, API keys, or Naukri credentials never stored
+
+### Worker Service
+
+- `register_worker(request)`: safely repeatable; same type+environment returns same worker_id
+- `get_worker(worker_id)`: retrieve by ID; returns None if not found
+- `list_workers()`: all workers with active count (excludes STOPPED/ERROR)
+- `update_worker_status(worker_id, status)`: transitions status; tracks started_at on RUNNING, stopped_at on STOPPED/ERROR
+
+### Worker API
+
+- `GET /api/worker/status`: list all workers with active count
+- `POST /api/worker/register`: register new or return existing worker
+- `GET /api/worker/{worker_id}`: retrieve specific worker; 404 if not found
+
+### Current Scope
+
+- Worker identity and registration
+- Status lifecycle tracking
+- Persistent database storage (SQLite/PostgreSQL)
+- No task claiming, heartbeat, or stale recovery
+- No browser lifecycle refactoring
+- No cloud execution
+
+### Future Scope (Phase 8.5B-D)
+
+- Distributed task claiming with PostgreSQL row locking
+- Worker heartbeat and stale-worker detection/recovery
+- Browser lifecycle refactoring (currently direct)
+- Cloud browser worker execution
+- Task assignment and worker coordination
+
+---
+
 ## Hosted FastAPI Deployment Architecture (Phase 8.3)
 
 The backend has been prepared for production hosting with enhanced configuration, security, and monitoring:

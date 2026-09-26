@@ -1,5 +1,27 @@
 # Development Status
 
+## Phase 8.5A: COMPLETE - Worker Foundation and Registration
+
+Implemented persistent worker identity layer to support future cloud browser coordination without modifying current execution:
+
+- Added Worker SQLAlchemy model with identity (worker_id, unique), type, status, runtime_environment, and lifecycle timestamps (created_at, updated_at, started_at, stopped_at).
+- Defined WorkerType enum: LOCAL_WINDOWS (current), CLOUD_BROWSER (future identity-only, not execution).
+- Defined WorkerStatus enum: STARTING, IDLE, RUNNING, PAUSED, STOPPING, STOPPED, ERROR (separate from AgentState).
+- Implemented WorkerRegisterRequest and WorkerStatusResponse Pydantic schemas.
+- Implemented WorkerListResponse with worker list, total_count, and active_count.
+- Implemented WorkerService with four core operations: register_worker (safely repeatable by type+environment), get_worker (by ID), list_workers (all with active count), update_worker_status (with lifecycle tracking).
+- Added three minimal API endpoints: GET /api/worker/status (list), POST /api/worker/register (register new or return existing), GET /api/worker/{worker_id} (get by ID).
+- Registration is idempotent: same worker_type + runtime_environment returns the same worker_id.
+- No sensitive data stored: Worker model contains identity and status only, never stores passwords, cookies, sessions, API keys, or Naukri credentials.
+- Comprehensive test suite: type validation, status validation, registration, repeat registration, retrieval, status updates, persistence, listing, active count calculation, API endpoints, unknown worker handling.
+- 12 focused tests all pass; 426 total backend tests pass; no regression.
+- Frontend build passes with no changes.
+- Current Windows/Naukri execution path unchanged; scheduler, Playwright, NaukriAdapter, ApplicationRunner all untouched.
+
+Known limitations: Task claiming, heartbeat, stale-worker detection, PostgreSQL row locking, browser lifecycle refactoring, and cloud browser execution are all deferred to Phase 8.5B-D. Worker registration does not yet trigger any background services or lifecycle hooks.
+
+---
+
 ## Phase 8.4.1: COMPLETE - Responsive Mobile Naukri-Inspired UX
 
 Implemented a fully responsive mobile-first frontend experience inspired by Naukri's mobile UX patterns:

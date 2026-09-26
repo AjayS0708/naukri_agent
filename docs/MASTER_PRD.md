@@ -3195,4 +3195,61 @@ Phase 8.4.1 implements a fully responsive mobile-first frontend experience inspi
 
 Known limitations: responsive layout tested via CSS audit and logical verification; actual device/browser simulation testing at critical breakpoints (320px, 375px, 480px, etc.) was not performed. Mobile UX patterns are Naukri-inspired (patterns only, not assets or proprietary UI); all implementation is original Naukri Agent code.
 
+# 85. Worker Foundation and Registration (Phase 8.5A)
+
+Phase 8.5A introduces a persistent worker identity layer to support future cloud browser coordination without modifying current Windows/Naukri execution.
+
+**Worker Identity Model:**
+- Worker model with persistent worker_id (UUID, unique, indexed).
+- WorkerType enum: LOCAL_WINDOWS (current V1), CLOUD_BROWSER (future identity-only, not execution).
+- WorkerStatus enum: STARTING, IDLE, RUNNING, PAUSED, STOPPING, STOPPED, ERROR.
+- Runtime environment identifier for deployment context.
+- Lifecycle timestamps: created_at, updated_at, started_at, stopped_at (UTC).
+- No sensitive data: passwords, cookies, sessions, API keys, or Naukri credentials never stored.
+
+**Worker Service Operations:**
+- `register_worker(type, environment)`: safely repeatable; same type+environment returns same worker_id.
+- `get_worker(worker_id)`: retrieve by ID; returns None if not found.
+- `list_workers()`: list all workers with active count (excludes STOPPED/ERROR states).
+- `update_worker_status(worker_id, status)`: transition status with lifecycle tracking.
+
+**Worker API Endpoints:**
+- `GET /api/worker/status`: list all registered workers and active count.
+- `POST /api/worker/register`: register new worker or return existing registration.
+- `GET /api/worker/{worker_id}`: retrieve specific worker status; 404 if not found.
+
+**Database Integration:**
+- SQLAlchemy ORM model following existing patterns (Mapped types, mapped_column, UTC timestamps).
+- Compatible with both SQLite (V1) and PostgreSQL (production).
+- Worker table registered in metadata; no migration framework added.
+
+**Testing & Verification:**
+- 12 focused tests: type validation, status validation, registration, repeat registration, retrieval, status updates, persistence, listing, active count, API endpoints.
+- All 426 existing backend tests pass; no regression.
+- Frontend build passes with no changes.
+- No changes to existing scheduler, Playwright, NaukriAdapter, or ApplicationRunner.
+
+**Current Scope (8.5A):**
+- Worker identity and registration.
+- Status lifecycle and transitions.
+- Persistent database storage.
+- Minimal API for registration and retrieval.
+- Idempotent registration behavior.
+
+**Deferred to Future Phases (8.5B-D):**
+- Distributed task claiming with PostgreSQL row locking.
+- Worker heartbeat and stale-worker detection/recovery.
+- Browser lifecycle refactoring (currently direct Playwright calls).
+- Cloud browser worker execution.
+- Task assignment and worker coordination.
+
+**Architectural Guarantee:**
+- Current Windows/local execution path remains exactly as implemented.
+- Scheduler-driven execution continues without change.
+- Naukri discovery and automation untouched.
+- No changes to AgentState lifecycle or state machine.
+- No changes to existing API contracts.
+
+Known limitations: Registration does not yet trigger background services or lifecycle hooks. Task claiming, heartbeat, and cloud execution are deferred. Worker identity is persistent but does not yet coordinate work or execute jobs.
+
 # END OF MASTER PRD
