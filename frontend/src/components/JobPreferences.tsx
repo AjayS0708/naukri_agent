@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
 import { Save, Settings2, LoaderCircle } from "lucide-react";
+import { apiRequest } from "../services/api";
+
+interface JobPreferencesResponse {
+    locations: string[];
+    job_titles: string[];
+    employment_types: string[];
+    min_salary_lpa: number | null;
+    aggressiveness: string;
+}
 
 export function JobPreferences() {
     const [busy, setBusy] = useState(false);
@@ -19,18 +28,14 @@ export function JobPreferences() {
     const fetchPreferences = async () => {
         setBusy(true);
         try {
-            const BASE_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-            const res = await fetch(`${BASE_URL}/api/matching/preferences`);
-            if (res.ok) {
-                const pref = await res.json();
-                setData({
-                    locations: (pref.locations || []).join(", "),
-                    job_titles: (pref.job_titles || []).join(", "),
-                    employment_types: (pref.employment_types || []).join(", "),
-                    min_salary_lpa: pref.min_salary_lpa?.toString() || "",
-                    aggressiveness: pref.aggressiveness || "BALANCED",
-                });
-            }
+            const pref = await apiRequest<JobPreferencesResponse>("/matching/preferences");
+            setData({
+                locations: (pref.locations || []).join(", "),
+                job_titles: (pref.job_titles || []).join(", "),
+                employment_types: (pref.employment_types || []).join(", "),
+                min_salary_lpa: pref.min_salary_lpa?.toString() || "",
+                aggressiveness: pref.aggressiveness || "BALANCED",
+            });
         } catch {
             setMessage("Preferences are temporarily unavailable. Please try again.");
         } finally {
@@ -42,7 +47,6 @@ export function JobPreferences() {
         setBusy(true);
         setMessage(null);
         try {
-            const BASE_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
             const splitStr = (str: string) => str.split(",").map(i => i.trim()).filter(Boolean);
 
             const payload = {
@@ -55,16 +59,15 @@ export function JobPreferences() {
                 max_hourly_applications: 4,
             };
 
-            const res = await fetch(`${BASE_URL}/api/matching/preferences`, {
+            await apiRequest("/matching/preferences", {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
             });
 
-            if (!res.ok) throw new Error("Failed to save.");
             setMessage("Preferences saved successfully.");
-        } catch (err: any) {
-            setMessage(err.message || "Failed to save preferences.");
+        } catch {
+            setMessage("Preferences could not be saved. Please try again.");
         } finally {
             setBusy(false);
         }

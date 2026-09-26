@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Play, Square, Pause, RotateCcw, Power, Clock, Layers, Database } from "lucide-react";
+import { apiRequest } from "../services/api";
 
 interface LifecycleStatus {
   agent_state: string;
@@ -38,22 +39,15 @@ export function AgentControl() {
 
   const fetchStatus = async () => {
     try {
-      const [lifecycleRes, autoStartRes] = await Promise.all([
-        fetch("/api/agent/status"),
-        fetch("/api/system/autostart")
+      const [lifecycle, autoStart] = await Promise.all([
+        apiRequest<LifecycleStatus>("/agent/status"),
+        apiRequest<AutoStartStatus>("/system/autostart")
       ]);
-      
-      if (lifecycleRes.ok) {
-        const lifecycle = await lifecycleRes.json();
-        setLifecycleStatus(lifecycle);
-      }
-      
-      if (autoStartRes.ok) {
-        const autoStart = await autoStartRes.json();
-        setAutoStartStatus(autoStart);
-      }
-    } catch (error) {
-      console.error("Failed to fetch status:", error);
+      setLifecycleStatus(lifecycle);
+      setAutoStartStatus(autoStart);
+    } catch {
+      setLifecycleStatus(null);
+      setAutoStartStatus(null);
     } finally {
       setLoading(false);
     }
@@ -68,12 +62,10 @@ export function AgentControl() {
   const handleAction = async (action: string) => {
     setActionLoading(action);
     try {
-      const res = await fetch(`/api/agent/${action}`, { method: "POST" });
-      if (res.ok) {
-        await fetchStatus();
-      }
-    } catch (error) {
-      console.error(`Failed to ${action}:`, error);
+      await apiRequest(`/agent/${action}`, { method: "POST" });
+      await fetchStatus();
+    } catch {
+      // Backend availability is represented by the existing status UI.
     } finally {
       setActionLoading(null);
     }
@@ -84,17 +76,15 @@ export function AgentControl() {
     
     setActionLoading("autostart");
     try {
-      const endpoint = autoStartStatus.enabled ? "/api/system/autostart/disable" : "/api/system/autostart/enable";
-      const res = await fetch(endpoint, { 
+      const endpoint = autoStartStatus.enabled ? "/system/autostart/disable" : "/system/autostart/enable";
+      await apiRequest(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({})
       });
-      if (res.ok) {
-        await fetchStatus();
-      }
-    } catch (error) {
-      console.error("Failed to toggle auto-start:", error);
+      await fetchStatus();
+    } catch {
+      // Backend availability is represented by the existing status UI.
     } finally {
       setActionLoading(null);
     }

@@ -3135,4 +3135,16 @@ Production JSON logging centrally redacts API keys, passwords, tokens, secrets, 
 
 Known limitations: no Render/Railway deployment has been performed; PostgreSQL provisioning, frontend hosting, object storage, remote browser workers, and 24/7 cloud automation are not included.
 
+# 83. Vercel Frontend to Hosted FastAPI Preparation (Phase 8.4)
+
+Phase 8.4 prepares the existing Vite dashboard to be hosted on Vercel and connect to the hosted FastAPI service. It does not deploy a Vercel project, a backend, or a database.
+
+The frontend uses public `VITE_API_BASE_URL` configuration. In local development, an omitted value falls back to `http://127.0.0.1:8000`; in production an API URL must be provided, and the client never silently targets localhost. The client normalizes trailing slashes, accepts either an origin or an existing `/api` suffix, and sends requests to the backend API paths exactly once.
+
+All dashboard API consumers use the same client. It applies a request timeout and translates network failure, timeout, HTTP failure, and malformed responses into safe user-facing messages without showing raw backend details. `VITE_` variables are browser-visible and may contain only public values such as the API URL. They must never contain Gemini keys, database credentials, Naukri credentials, cookies, sessions, or private tokens.
+
+The existing root `vercel.json` installs the `frontend` dependencies, runs its Vite build, and publishes `frontend/dist`. The dashboard uses hash links and in-page state, not browser-path client-side routing, so no SPA rewrite is required. The eventual Vercel origin must be configured on the hosted backend through `NAUKRI_AGENT_FRONTEND_ORIGINS`; production CORS remains explicit and credentialed browser requests remain disabled.
+
+Known limitations: no Vercel deployment, hosted URL verification, PostgreSQL provisioning, remote browser worker, or cloud automation is included.
+
 # END OF MASTER PRD

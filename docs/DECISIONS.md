@@ -41,3 +41,5 @@
 | Hosted FastAPI Entrypoint | Phase 8.3 uses platform-neutral Uvicorn commands, a Procfile local fallback, and a minimal Render descriptor; actual hosting remains an operational step outside the repository. |
 | Production Readiness Validation | Production readiness requires an external PostgreSQL URL, Gemini API key, and explicit non-wildcard frontend origins while liveness stays available for platform diagnostics. |
 | Recursive Log Sanitization | Production JSON logs sanitize free-form messages, extras, nested collections, credential URLs, auth headers, cookies, sessions, and exceptions in one centralized formatter. |
+| Centralized Frontend API Client | Phase 8.4 routes every frontend API request through one Vite-configured client so hosted deployments cannot accidentally mix relative URLs, legacy variables, and localhost URLs. |
+| Vercel Subproject Build | The existing root Vercel descriptor explicitly installs and builds `frontend/` and publishes `frontend/dist`, avoiding duplicate frontend deployment configuration. |

@@ -1,5 +1,21 @@
 # Development Status
 
+## Phase 8.4: COMPLETE - Vercel Frontend to Hosted FastAPI Preparation
+
+Prepared the existing Vite dashboard for Vercel hosting and hosted API connectivity without deploying either service:
+
+- Centralized all frontend API requests in `frontend/src/services/api.ts` using public `VITE_API_BASE_URL` configuration.
+- Development retains `http://127.0.0.1:8000` as an omitted-variable fallback. Production requires a configured API URL and never silently uses localhost.
+- Normalized configured origins and `/api` suffixes, added a 15-second request timeout, and mapped network, HTTP, timeout, and malformed-response errors to safe user-facing messages.
+- Replaced direct/relative frontend `fetch` calls in agent control, analytics, preferences, and AI status with the shared client.
+- Updated the existing root `vercel.json` to install/build `frontend/` and publish `frontend/dist`.
+- Verified no rewrite is needed because the dashboard uses hash links and in-page state rather than browser-path routes.
+- Preserved backend Phase 8.3 CORS; a deployed Vercel origin must be supplied through `NAUKRI_AGENT_FRONTEND_ORIGINS`.
+
+Known limitations: Vercel and the hosted backend have not been deployed; no production URL, managed database, remote browser worker, or cloud automation was added.
+
+---
+
 ## Phase 8.3: COMPLETE - Hosted FastAPI Deployment Preparation
 
 Implemented deployment preparation for the existing FastAPI API without deploying any infrastructure:

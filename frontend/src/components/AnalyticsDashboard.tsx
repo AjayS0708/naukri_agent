@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { BarChart3, TrendingUp, AlertCircle, CheckCircle, XCircle, Clock } from "lucide-react";
+import { apiRequest } from "../services/api";
 
 interface AnalyticsSummary {
   period_days: number;
@@ -46,29 +47,18 @@ export function AnalyticsDashboard() {
     const fetchAnalytics = async () => {
       try {
         setLoading(true);
-        const [analyticsRes, breakdownRes, skipRes] = await Promise.all([
-          fetch("http://127.0.0.1:8000/api/analytics/summary?days=30"),
-          fetch("http://127.0.0.1:8000/api/analytics/decision-breakdown?days=30"),
-          fetch("http://127.0.0.1:8000/api/analytics/skip-reasons?days=30&limit=5")
-        ]);
-
-        if (!analyticsRes.ok || !breakdownRes.ok || !skipRes.ok) {
-          throw new Error("Failed to fetch analytics data");
-        }
-
         const [analyticsData, breakdownData, skipData] = await Promise.all([
-          analyticsRes.json(),
-          breakdownRes.json(),
-          skipRes.json()
+          apiRequest<AnalyticsSummary>("/analytics/summary?days=30"),
+          apiRequest<DecisionBreakdown>("/analytics/decision-breakdown?days=30"),
+          apiRequest<SkipReason[]>("/analytics/skip-reasons?days=30&limit=5")
         ]);
 
         setAnalytics(analyticsData);
         setDecisionBreakdown(breakdownData);
         setSkipReasons(skipData);
         setError(null);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load analytics");
-        console.error("Analytics fetch error:", err);
+      } catch {
+        setError("Failed to load analytics");
       } finally {
         setLoading(false);
       }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Activity, AlertTriangle, CheckCircle, Database, ServerCrash } from "lucide-react";
+import { apiRequest } from "../services/api";
 
 export type AIProviderStatus =
     | "AVAILABLE"
@@ -21,19 +22,16 @@ export interface AIStatusResponse {
 
 export function AIStatus() {
     const [status, setStatus] = useState<AIStatusResponse | null>(null);
-    const [error, setError] = useState<Error | null>(null);
+    const [error, setError] = useState(false);
     const [loading, setLoading] = useState(true);
 
     const fetchStatus = async () => {
         try {
-            const BASE_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-            const res = await fetch(`${BASE_URL}/api/ai/status`);
-            if (!res.ok) throw new Error("Failed to fetch AI Status");
-            const data = await res.json();
+            const data = await apiRequest<AIStatusResponse>("/ai/status");
             setStatus(data);
-            setError(null);
-        } catch (err: any) {
-            setError(err);
+            setError(false);
+        } catch {
+            setError(true);
         } finally {
             setLoading(false);
         }
@@ -81,7 +79,7 @@ export function AIStatus() {
 
             <div className="p-4 flex flex-col gap-4">
                 {error ? (
-                    <div className="text-red-600 text-sm">{error.message}</div>
+                    <div className="text-red-600 text-sm">AI status is temporarily unavailable. Please try again.</div>
                 ) : (
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                         <div className="flex flex-col">

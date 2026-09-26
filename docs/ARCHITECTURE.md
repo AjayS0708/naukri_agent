@@ -100,11 +100,18 @@ Browser/API Separation (no auto-start)
 ### Frontend API Configuration
 
 - Environment-based backend URL via VITE_API_BASE_URL
-- Development: http://127.0.0.1:8000/api (default)
-- Production: https://<hosted-api>/api (configurable)
-- No hardcoded localhost in production frontend code
-- Frontend build passes TypeScript compilation
-- Frontend build: 267.10 kB JS, 28.43 kB CSS
+- Development: `http://127.0.0.1:8000` fallback when the variable is absent
+- Production: a required public HTTPS `VITE_API_BASE_URL`; production never falls back to localhost
+- The centralized client normalizes a trailing slash and appends `/api` once, so either an API origin or an existing `/api` URL is accepted
+- All frontend API consumers use the centralized client, with timeout, network, HTTP, and malformed-response handling that does not expose backend details
+
+### Vercel Frontend Configuration (Phase 8.4)
+
+- The existing root `vercel.json` builds the `frontend` subproject with `npm --prefix frontend ci`, `npm --prefix frontend run build`, and output `frontend/dist`.
+- `VITE_API_BASE_URL` is public browser configuration only. It must not contain API keys, credentials, cookies, session data, or private tokens.
+- The Vercel origin is configured on the backend through `NAUKRI_AGENT_FRONTEND_ORIGINS`; multiple explicit origins remain supported.
+- The current dashboard uses in-page state and hash links rather than client-side browser-path routes, so no Vercel SPA rewrite is required.
+- This configuration is deployment preparation; no Vercel site has been deployed or verified.
 
 ### Hosted Service Configuration
 
