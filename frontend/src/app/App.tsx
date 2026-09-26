@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell } from "lucide-react";
+import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal } from "lucide-react";
 import { getHealth } from "../services/api";
 import type { HealthResponse, ProfileResponse } from "../types/api";
 import { ProfileWorkspace } from "../components/ProfileWorkspace";
@@ -16,9 +16,10 @@ export function App() {
   const [failed, setFailed] = useState(false);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
   const [currentPage, setCurrentPage] = useState<"overview" | "profile" | "preferences" | "analytics" | "activity">("overview");
-  
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
   useEffect(() => { getHealth().then(setHealth).catch(() => setFailed(true)); }, []);
-  
+
   const connection = failed ? "local_offline" : health ? "connected" : "checking";
   const profileSummary = profile?.status ? profile.status.replaceAll("_", " ") : "Not configured";
   const agentState = health?.agent_state.replaceAll("_", " ") ?? "NOT RUNNING";
@@ -28,18 +29,45 @@ export function App() {
     getHealth().then(setHealth).catch(() => setFailed(true));
   };
 
+  const handleNavClick = (page: typeof currentPage) => {
+    setCurrentPage(page);
+    setSidebarOpen(false);
+  };
+
+  const closeSidebar = () => setSidebarOpen(false);
+
   return <main className="app-shell">
     <a href="#main-content" className="skip-to-content">Skip to main content</a>
-    <aside className="sidebar">
+
+    {/* Mobile Header */}
+    <header className="mobile-header">
+      <button
+        className="mobile-menu-button"
+        onClick={() => setSidebarOpen(!sidebarOpen)}
+        aria-label={sidebarOpen ? "Close navigation menu" : "Open navigation menu"}
+      >
+        {sidebarOpen ? <X size={24} /> : <Menu size={24} />}
+      </button>
+      <div className="mobile-header-brand">
+        <Bot size={20} />
+        <span>Naukri Agent</span>
+      </div>
+      <button className="icon-button" aria-label="Notifications"><Bell size={20} /></button>
+    </header>
+
+    {/* Sidebar Backdrop for Mobile */}
+    {sidebarOpen && <div className="sidebar-backdrop" onClick={closeSidebar} role="presentation" />}
+
+    <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
       <div className="brand"><Bot size={24} /><span>Naukri Agent</span></div>
       <nav aria-label="Primary navigation">
-        <a className={`nav-item ${currentPage === "overview" ? "active" : ""}`} href="#overview" onClick={(e) => { e.preventDefault(); setCurrentPage("overview"); }}><LayoutDashboard size={18} />Overview</a>
-        <a className={`nav-item ${currentPage === "activity" ? "active" : ""}`} href="#activity" onClick={(e) => { e.preventDefault(); setCurrentPage("activity"); }}><Activity size={18} />Activity</a>
+        <a className={`nav-item ${currentPage === "overview" ? "active" : ""}`} href="#overview" onClick={(e) => { e.preventDefault(); handleNavClick("overview"); }}><LayoutDashboard size={18} />Overview</a>
+        <a className={`nav-item ${currentPage === "activity" ? "active" : ""}`} href="#activity" onClick={(e) => { e.preventDefault(); handleNavClick("activity"); }}><Activity size={18} />Activity</a>
         <span className="nav-item disabled"><BriefcaseBusiness size={18} />Jobs</span>
         <span className="nav-item disabled"><ChartNoAxesColumn size={18} />Applications</span>
-        <a className={`nav-item ${currentPage === "analytics" ? "active" : ""}`} href="#analytics" onClick={(e) => { e.preventDefault(); setCurrentPage("analytics"); }}><BarChart3 size={18} />Analytics</a>
-        <a className={`nav-item ${currentPage === "profile" ? "active" : ""}`} href="#profile" onClick={(e) => { e.preventDefault(); setCurrentPage("profile"); }}><User size={18} />Profile</a>
-        <a className={`nav-item ${currentPage === "preferences" ? "active" : ""}`} href="#preferences" onClick={(e) => { e.preventDefault(); setCurrentPage("preferences"); }}><Settings size={18} />Preferences</a>
+        <a className={`nav-item ${currentPage === "analytics" ? "active" : ""}`} href="#analytics" onClick={(e) => { e.preventDefault(); handleNavClick("analytics"); }}><BarChart3 size={18} />Analytics</a>
+        <a className={`nav-item ${currentPage === "profile" ? "active" : ""}`} href="#profile" onClick={(e) => { e.preventDefault(); handleNavClick("profile"); }}><User size={18} />Profile</a>
+        <a className={`nav-item ${currentPage === "preferences" ? "active" : ""}`} href="#preferences" onClick={(e) => { e.preventDefault(); handleNavClick("preferences"); }}><Settings size={18} />Preferences</a>
       </nav>
       <div className="sidebar-footer">
         <div className="agent-status-indicator">
@@ -48,7 +76,7 @@ export function App() {
         </div>
       </div>
     </aside>
-    
+
     <section className="main-content">
       <header className="topbar">
         <div className="page-header">
@@ -76,9 +104,9 @@ export function App() {
                 <b>{health ? `${health.service} v${health.version}` : "Not available"}</b>
               </div>
             </section>
-            
+
             <section id="agent-control"><AgentControl /></section>
-            
+
             <section className="metrics">
               {metrics.map(([label, value, Icon]) => (
                 <article className="metric" key={label}>
@@ -138,5 +166,41 @@ export function App() {
         )}
       </div>
     </section>
+
+    {/* Mobile Bottom Navigation */}
+    <nav className="bottom-navigation">
+      <button
+        className={`bottom-nav-item ${currentPage === "overview" ? "active" : ""}`}
+        onClick={() => handleNavClick("overview")}
+        aria-label="Overview"
+      >
+        <LayoutDashboard size={20} />
+        <span>Home</span>
+      </button>
+      <button
+        className={`bottom-nav-item ${currentPage === "activity" ? "active" : ""}`}
+        onClick={() => handleNavClick("activity")}
+        aria-label="Activity"
+      >
+        <Activity size={20} />
+        <span>Activity</span>
+      </button>
+      <button className="bottom-nav-item" disabled aria-label="Jobs (disabled)">
+        <BriefcaseBusiness size={20} />
+        <span>Jobs</span>
+      </button>
+      <button className="bottom-nav-item" disabled aria-label="Applications (disabled)">
+        <ChartNoAxesColumn size={20} />
+        <span>Apps</span>
+      </button>
+      <button
+        className={`bottom-nav-item ${["analytics", "profile", "preferences"].includes(currentPage) ? "active" : ""}`}
+        onClick={() => setCurrentPage("analytics")}
+        aria-label="More options"
+      >
+        <MoreHorizontal size={20} />
+        <span>More</span>
+      </button>
+    </nav>
   </main>;
 }

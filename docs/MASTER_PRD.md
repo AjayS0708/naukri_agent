@@ -3147,4 +3147,52 @@ The existing root `vercel.json` installs the `frontend` dependencies, runs its V
 
 Known limitations: no Vercel deployment, hosted URL verification, PostgreSQL provisioning, remote browser worker, or cloud automation is included.
 
+# 84. Responsive Mobile Naukri-Inspired UX (Phase 8.4.1)
+
+Phase 8.4.1 implements a fully responsive mobile-first frontend experience inspired by Naukri's mobile UX patterns and interaction hierarchy.
+
+**Mobile Architecture:**
+- Mobile header (56px sticky) with hamburger menu, brand, and notifications.
+- Sidebar converted to a mobile drawer that slides in from the left with semi-transparent backdrop overlay.
+- Bottom navigation bar (56px sticky) with 5 primary destinations: Home (Overview), Activity, Jobs (disabled), Applications (disabled), More (secondary routes).
+- All touch targets minimum ~44x44px for accessibility.
+
+**Responsive Design:**
+- Mobile-first CSS with breakpoints at 320px, 360px, 375px, 390px, 414px, 480px, 768px, 1024px, 1280px, 1440px+.
+- Desktop layout preserved: sidebar (260px fixed) + topbar + content on screens >768px; mobile header/bottom nav hidden.
+- Tablet layout (768px-1024px): sidebar collapses to icons; mobile navigation available.
+- Responsive grids: metrics 4-col → 2-col → 1-col; analytics 3-col → 2-col → 1-col; forms 2-col → 1-col.
+- Responsive component layouts: cards, buttons, forms, upload zones, status panels all adapt to viewport width.
+
+**Mobile UX Pattern (Naukri-inspired, not copied):**
+- Compact mobile header with contextual actions.
+- Drawer navigation for secondary menu (auto-closes on selection).
+- Bottom navigation for primary destinations.
+- Touch-optimized spacing and controls.
+- Efficient vertical scrolling information hierarchy.
+- Clear status indicators and agent state display.
+- Inspired by Naukri's mobile app interaction patterns; uses original Naukri Agent branding and design system.
+
+**Touch & Typography:**
+- Form inputs 16px font on mobile (prevents iOS auto-zoom).
+- Focus states preserved with visible outline and background.
+- No hover states required for mobile interaction.
+- Responsive typography: h1 26px (desktop) → 20px (small mobile); h2 18px → 16px.
+- Body text readable at all sizes with appropriate line-height and letter-spacing.
+
+**No Backend Changes:**
+- Jobs and Applications routes remain disabled (pages do not exist).
+- All API contracts unchanged.
+- Gemini, scheduler, matching, automation logic unchanged.
+- Database, Vercel configuration, Render configuration unchanged.
+- No environment variables changed.
+
+**Verification & Testing:**
+- CSS logic verified for all breakpoints.
+- Build passes with no TypeScript errors.
+- Desktop layout and functionality preserved.
+- Known limitation: responsive behavior has been CSS-verified and logically tested, but browser-based device simulation at actual viewport sizes was not performed.
+
+Known limitations: responsive layout tested via CSS audit and logical verification; actual device/browser simulation testing at critical breakpoints (320px, 375px, 480px, etc.) was not performed. Mobile UX patterns are Naukri-inspired (patterns only, not assets or proprietary UI); all implementation is original Naukri Agent code.
+
 # END OF MASTER PRD

@@ -113,6 +113,78 @@ Browser/API Separation (no auto-start)
 - The current dashboard uses in-page state and hash links rather than client-side browser-path routes, so no Vercel SPA rewrite is required.
 - This configuration is deployment preparation; no Vercel site has been deployed or verified.
 
+### Responsive Mobile Frontend Architecture (Phase 8.4.1)
+
+**Mobile-First Responsive Design:**
+- Responsive CSS with mobile-first breakpoints: 320px, 360px, 375px, 390px, 414px, 480px, 768px, 1024px, 1280px, 1440px+
+- Desktop layout (>768px): Sidebar (260px fixed) + topbar + content; mobile header and bottom nav hidden
+- Tablet layout (768px-1024px): Sidebar collapses to icons only (80px); mobile nav available
+- Mobile layout (<768px): Mobile header (56px) + content + bottom navigation (56px)
+
+**Mobile Header (56px, sticky):**
+- Hamburger menu button (44x44px touch target)
+- Brand text and icon ("Naukri Agent")
+- Notifications bell button (44x44px)
+- Hidden on desktop (>768px)
+
+**Sidebar Drawer (Mobile):**
+- Positioned fixed, slides in from left (left: -100% → left: 0)
+- Semi-transparent backdrop overlay (rgba(0,0,0,0.5), z-index 99)
+- Auto-closes when navigation item clicked or backdrop clicked
+- Full navigation menu maintained (Overview, Activity, Analytics, Profile, Preferences)
+- Jobs and Applications remain disabled (routes not implemented)
+
+**Bottom Navigation (56px, sticky, mobile only):**
+- 5 primary destinations: Home (Overview), Activity, Jobs (disabled), Apps (disabled), More (Analytics)
+- Active state indicator (color: primary-blue)
+- 44x44px+ touch targets per navigation item
+- Icon + label layout, vertically stacked
+- Hidden on desktop (>768px)
+
+**Responsive Component Layouts:**
+- Metrics: 4-column (desktop) → 2-column (tablet) → 1-column (mobile)
+- Analytics: 3-column (desktop) → 2-column (tablet) → 1-column (mobile)
+- Forms: 2-column (desktop/tablet) → 1-column (mobile)
+- Buttons: flex-wrap (desktop) → stack vertically (mobile)
+- Profile upload zone: horizontal layout → vertical stacking (mobile)
+- Status panels, cards, activity sections: responsive padding and margins
+
+**Touch-Friendly Controls:**
+- All interactive elements minimum ~44x44px
+- Form inputs on mobile: 16px font size (prevents iOS zoom-on-focus)
+- Focus states preserved with blue outline and light background
+- No hover states required for mobile interaction
+
+**Typography Responsiveness:**
+- h1: 26px (desktop) → 20px (small mobile)
+- h2: 18px (desktop) → 16px (small mobile)
+- Body text: 14px with responsive adjustments
+- Labels and badges: readable at all sizes
+
+**Content Safety:**
+- No accidental horizontal scrolling at critical breakpoints (320px, 360px, 375px, 390px, 414px)
+- All cards and components constrained to viewport width
+- Long text wraps properly
+- Tables/charts contained or scrollable within component bounds
+- Content padding-bottom accounts for fixed bottom nav (80px total)
+
+**Mobile UX Inspiration (Naukri-inspired, not copied):**
+- Compact mobile header with contextual actions
+- Drawer navigation pattern for secondary menu
+- Bottom navigation for primary destinations
+- Card-based presentation for jobs/applications/activity
+- Efficient vertical scrolling information hierarchy
+- Touch-optimized spacing and controls
+- Clear status indicators and agent state display
+
+**Desktop Preservation:**
+- Sidebar remains 260px fixed left on desktop (>1024px)
+- Topbar remains visible with page header and backend state
+- Content area max-width 1200px maintained
+- All desktop metrics/analytics/form layouts preserved
+- No mobile header or bottom nav on desktop
+- No functional regressions
+
 ### Hosted Service Configuration
 
 - `Procfile` runs `uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}`.
