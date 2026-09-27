@@ -31,20 +31,38 @@ class GeminiProvider(AIProvider):
                 http_options={'timeout': self.settings.gemini_timeout_seconds * 1000}
             )
 
+    def _clean_schema_for_gemini(self, schema_dict: dict) -> dict:
+        """Remove additionalProperties from schema recursively at all levels."""
+        def clean_recursive(obj):
+            if isinstance(obj, dict):
+                obj.pop('additionalProperties', None)
+                for value in obj.values():
+                    clean_recursive(value)
+            elif isinstance(obj, list):
+                for item in obj:
+                    clean_recursive(item)
+
+        clean_recursive(schema_dict)
+        return schema_dict
+
     def _generate_structured(self, prompt: str, schema: type[BaseModel]) -> Optional[BaseModel]:
         if not self.client:
             logger.error("Attempted to call Gemini but client is not initialized.")
             return None
-            
+
         retries = getattr(self.settings, 'gemini_request_retries', 2)
         for attempt in range(retries):
             try:
+                # Convert Pydantic model to JSON schema and clean it
+                schema_dict = schema.model_json_schema()
+                cleaned_schema = self._clean_schema_for_gemini(schema_dict)
+
                 response = self.client.models.generate_content(
                     model=self.settings.gemini_model,
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
-                        response_schema=schema,
+                        response_schema=cleaned_schema,
                         temperature=0.0,
                     ),
                 )
