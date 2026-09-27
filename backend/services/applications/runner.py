@@ -31,7 +31,7 @@ class ApplicationRunner:
     Processes jobs sequentially with safety gate enforcement.
     """
 
-    def __init__(self, session: Session, state_manager: AgentStateManager):
+    def __init__(self, session: Session, state_manager: AgentStateManager, dry_run: bool = False):
         self.session = session
         self.state_manager = state_manager
         self.application_service = ApplicationService(session)
@@ -40,17 +40,24 @@ class ApplicationRunner:
         self.ai_provider = GeminiProvider()
         self._stop_requested = False
         self._session_started = False
+        self.dry_run = dry_run
+        self.dry_run_result = None
 
     async def stop_safely(self):
         """Request a graceful stop to the application runner."""
         self._stop_requested = True
         logger.info("application_runner_stop_requested")
 
-    async def run_applications(self, job_ids: list[int]) -> dict:
+    async def run_applications(self, job_ids: list[int], dry_run: bool = False) -> dict:
         """
         Process a list of eligible job IDs sequentially.
         Returns statistics about the run.
+
+        Args:
+            job_ids: List of job IDs to process
+            dry_run: If True, inspect application form but do not submit (default: False)
         """
+        self.dry_run = dry_run
         if self.state_manager.current_state != AgentState.IDLE:
             logger.warning("Application runner can only start from IDLE state")
             return {"error": "Invalid state"}
@@ -66,7 +73,9 @@ class ApplicationRunner:
             "needs_attention": 0,
             "external": 0,
             "failed": 0,
-            "errors": 0
+            "errors": 0,
+            "dry_run": 0,
+            "dry_run_mode": dry_run
         }
 
         try:
@@ -117,6 +126,8 @@ class ApplicationRunner:
                         stats["failed"] += 1
                     elif result == "ERROR":
                         stats["errors"] += 1
+                    elif result == "DRY_RUN_COMPLETE":
+                        stats["dry_run"] += 1
 
                     # Small delay between applications
                     await asyncio.sleep(2)
@@ -254,6 +265,8 @@ class ApplicationRunner:
 
             # Detect and answer questions
             questions = await self.adapter.detect_application_questions(page)
+            prepared_answers = []
+
             for q in questions:
                 question_text = q.get("question", "")
                 if not question_text:
@@ -261,12 +274,23 @@ class ApplicationRunner:
 
                 # Try to answer from profile
                 answer = self._get_answer_from_profile(question_text, profile)
+                answer_source = "PROFILE" if answer else None
+
                 if not answer:
                     # Try AI-generated answer
                     answer = self._get_ai_answer(question_text, job, profile)
+                    if answer:
+                        answer_source = "GEMINI"
 
                 if answer:
-                    await self.adapter.answer_question(page, question_text, answer)
+                    prepared_answers.append({
+                        "question": question_text,
+                        "answer": answer,
+                        "source": answer_source,
+                        "required": q.get("required", False)
+                    })
+                    if not self.dry_run:
+                        await self.adapter.answer_question(page, question_text, answer)
                 else:
                     # Cannot answer - needs attention
                     self.application_service.update_application(
@@ -278,7 +302,35 @@ class ApplicationRunner:
                     )
                     return "NEEDS_ATTENTION"
 
-            # Submit application
+            # DRY RUN: Capture submission state and stop before submit
+            if self.dry_run:
+                self.dry_run_result = {
+                    "job_id": job.id,
+                    "job_title": job.title,
+                    "job_company": job.company,
+                    "job_location": job.location,
+                    "job_external_id": job.external_job_id,
+                    "job_url": job.url,
+                    "application_type": app_type,
+                    "questions_count": len(questions),
+                    "questions": prepared_answers,
+                    "safety_gate_passed": True,
+                    "duplicate_check_passed": True,
+                    "limits_check_passed": True,
+                    "submission_ready": len(prepared_answers) > 0,
+                    "submit_application_called": False
+                }
+                logger.info(f"DRY RUN: Job {job.id} inspection complete, stopping before submission")
+                self.application_service.update_application(
+                    application.id,
+                    ApplicationUpdate(
+                        status=ApplicationStatus.NEEDS_ATTENTION,
+                        skip_reason="Dry run mode: inspection only, no submission"
+                    )
+                )
+                return "DRY_RUN_COMPLETE"
+
+            # Submit application (production path only)
             submitted = await self.adapter.submit_application(page)
             if not submitted:
                 self.application_service.record_application_failure(

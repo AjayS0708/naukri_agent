@@ -366,3 +366,119 @@ class TestApplicationRunner:
             # Simplified test - full integration requires complex async mocking
             # The core preference validation is tested in safety gate tests
             pass
+
+    @pytest.mark.asyncio
+    async def test_dry_run_mode_stops_before_submission(
+        self,
+        application_runner: ApplicationRunner,
+        eligible_job: Job,
+        confirmed_profile: Profile,
+        job_preferences: JobPreference
+    ):
+        """Test that dry_run=True prevents submit_application() from being called."""
+        # Enable dry_run mode
+        application_runner.dry_run = True
+
+        with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
+             patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
+             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=[]), \
+             patch('backend.services.applications.runner.NaukriAdapter.answer_question', new_callable=AsyncMock), \
+             patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True) as mock_submit:
+
+            mock_page = MagicMock()
+            mock_page.close = AsyncMock()
+            mock_result = JobPageResult(page=mock_page, security_required=False)
+            mock_open_page.return_value = mock_result
+
+            stats = await application_runner.run_applications([eligible_job.id], dry_run=True)
+
+            # Verify dry_run occurred
+            assert stats["dry_run"] == 1
+            assert stats["dry_run_mode"] is True
+
+            # CRITICAL: submit_application() must NOT be called in dry_run mode
+            mock_submit.assert_not_called()
+
+            # Verify dry_run_result was captured
+            assert application_runner.dry_run_result is not None
+            assert application_runner.dry_run_result["submit_application_called"] is False
+            assert application_runner.dry_run_result["job_id"] == eligible_job.id
+
+    @pytest.mark.asyncio
+    async def test_dry_run_mode_with_questions(
+        self,
+        application_runner: ApplicationRunner,
+        eligible_job: Job,
+        confirmed_profile: Profile,
+        job_preferences: JobPreference
+    ):
+        """Test that dry_run mode captures questions without answering/submitting."""
+        application_runner.dry_run = True
+
+        mock_questions = [
+            {"question": "Years of experience", "required": True},
+            {"question": "Current CTC", "required": False}
+        ]
+
+        with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
+             patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
+             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=mock_questions), \
+             patch('backend.services.applications.runner.NaukriAdapter.answer_question', new_callable=AsyncMock) as mock_answer, \
+             patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True) as mock_submit:
+
+            mock_page = MagicMock()
+            mock_page.close = AsyncMock()
+            mock_result = JobPageResult(page=mock_page, security_required=False)
+            mock_open_page.return_value = mock_result
+
+            stats = await application_runner.run_applications([eligible_job.id], dry_run=True)
+
+            # Verify dry_run occurred and questions were detected
+            assert stats["dry_run"] == 1
+            assert application_runner.dry_run_result["questions_count"] == 2
+
+            # CRITICAL: answer_question() and submit_application() must NOT be called
+            mock_answer.assert_not_called()
+            mock_submit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_normal_mode_unchanged_when_dry_run_false(
+        self,
+        application_runner: ApplicationRunner,
+        eligible_job: Job,
+        confirmed_profile: Profile,
+        job_preferences: JobPreference
+    ):
+        """Test that normal mode (dry_run=False) still calls submit_application()."""
+        # Explicitly set dry_run=False
+        application_runner.dry_run = False
+
+        with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
+             patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
+             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=[]), \
+             patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True) as mock_submit, \
+             patch('backend.services.applications.runner.NaukriAdapter.confirm_submission', new_callable=AsyncMock, return_value=True):
+
+            mock_page = MagicMock()
+            mock_page.close = AsyncMock()
+            mock_result = JobPageResult(page=mock_page, security_required=False)
+            mock_open_page.return_value = mock_result
+
+            stats = await application_runner.run_applications([eligible_job.id], dry_run=False)
+
+            # Verify normal execution occurred
+            assert stats["applied"] == 1
+            assert stats["dry_run"] == 0
+
+            # CRITICAL: submit_application() MUST be called in normal mode
+            mock_submit.assert_called_once()
+            pass
