@@ -17,7 +17,8 @@ from backend.services.matching.normalizer import (
     has_overlapping_location,
     extract_lowest_salary_lpa,
     extract_experience_years,
-    is_employment_type_allowed
+    is_employment_type_allowed,
+    compute_profile_experience_years,
 )
 
 
@@ -72,8 +73,9 @@ class MatchEngine:
             # Experience Check (Heuristic: 1 yr per job listed if not explicitly stored)
             exp_min, exp_max = extract_experience_years(job.description)
             if exp_min is not None:
-                user_exp_years = len(profile.data.get("experience", [])) if isinstance(profile.data, dict) else len(getattr(profile.data, "experience", []))
-                if exp_min > user_exp_years + 2: # Adding 2 years grace period since we approximate
+                exp_list = profile.data.get("experience", []) if isinstance(profile.data, dict) else getattr(profile.data, "experience", [])
+                user_exp_years = compute_profile_experience_years(exp_list)
+                if exp_min > user_exp_years + 2:  # +2 years grace for approximation
                     return MatchDecision(
                         decision=MatchDecisionEnum.SKIP, 
                         reason=f"Experience required ({exp_min}y) is greater than user profile approx ({user_exp_years}y).", 

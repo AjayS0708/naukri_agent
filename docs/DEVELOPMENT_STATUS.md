@@ -1,5 +1,28 @@
 # Development Status
 
+## Phase 9B-2B Defect Fix: COMPLETE
+
+Two runtime defects discovered during live dry-run attempts were fixed:
+
+**Defect 1 — prompt_version NOT NULL persistence:**
+- `AIQueueService.process_item()` in `backend/services/gemini/queue.py` hardcoded `prompt_version="v1"` — a disconnected literal not tied to the prompt versioning architecture.
+- Fix: import `JOB_ANALYSIS_PROMPT_V1` from `backend/services/gemini/prompts.py` and use it when creating `JobAnalysisModel`.
+- 6 regression tests added in `backend/tests/test_job_analysis_persistence.py`.
+
+**Defect 2 — Experience year computation:**
+- `MatchEngine.evaluate_job()` computed `user_exp_years = len(profile.data.get("experience", []))` — counting experience list entries as a proxy for years.
+- For the actual user profile (1 ANZ entry, start: July 2026, end: Present), this returned 1 year when the actual elapsed time is ~0 years.
+- Fix: added `compute_profile_experience_years()` to `backend/services/matching/normalizer.py` which parses `start_date`/`end_date` fields and computes actual elapsed years. Falls back to entry count when dates are unparseable.
+- 8 regression tests added in `backend/tests/test_matching_rules.py`.
+
+**Hard-filter architecture preserved:** Jobs rejected by experience hard filter never reach Gemini. The 0–1 year RR Groups job correctly passes the hard filter (0-year minimum is reachable by a fresher) and Gemini's advisory SKIP is also correct.
+
+**Test results:** 497 backend tests passing (previously 483, +14). No regressions.
+
+**No live Naukri activity in this checkpoint.** Phase 9B-2B live dry-run re-execution pending.
+
+---
+
 ## Phase 9A: COMPLETE - Scheduler Automation Loop
 
 Implemented complete Phase 9A scheduler automation loop connecting all existing components into one automatic local execution flow:

@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from typing import Optional
 
 
@@ -150,3 +151,62 @@ def is_employment_type_allowed(job_emp: str, allowed_emps: list[str]) -> bool:
         if allowed in normalized_job or normalized_job in allowed:
             return True
     return False
+
+
+def compute_profile_experience_years(experience_list: list) -> float:
+    """
+    Compute total years of work experience from a list of Experience dicts/objects.
+
+    For each entry, attempts to parse start_date and end_date (or 'Present').
+    Falls back to counting entries (1 year each) when dates are unparseable.
+
+    Returns total years as a float (0.0 if no experience).
+    """
+    if not experience_list:
+        return 0.0
+
+    _DATE_FORMATS = ["%B %Y", "%b %Y", "%Y-%m", "%Y/%m", "%m/%Y", "%Y"]
+
+    def _parse_date(s: str) -> Optional[datetime]:
+        if not s:
+            return None
+        s = s.strip()
+        if s.lower() in ("present", "current", "now", "ongoing"):
+            return datetime.now()
+        for fmt in _DATE_FORMATS:
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        return None
+
+    total_years = 0.0
+    any_parsed = False
+
+    for entry in experience_list:
+        # Support both dict and object representations
+        if isinstance(entry, dict):
+            start_str = entry.get("start_date") or ""
+            end_str = entry.get("end_date") or ""
+        else:
+            start_str = getattr(entry, "start_date", "") or ""
+            end_str = getattr(entry, "end_date", "") or ""
+
+        start = _parse_date(start_str)
+        end = _parse_date(end_str)
+
+        if start and end:
+            delta_years = (end - start).days / 365.25
+            if delta_years > 0:
+                total_years += delta_years
+            any_parsed = True
+        elif start:
+            # start known, end unknown — count as 1 year
+            total_years += 1.0
+            any_parsed = True
+
+    # If no dates were parseable at all, fall back to entry count
+    if not any_parsed:
+        return float(len(experience_list))
+
+    return total_years

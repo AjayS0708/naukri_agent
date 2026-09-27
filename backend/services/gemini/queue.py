@@ -12,6 +12,7 @@ from backend.schemas.ai_queue import (
     AIQueueItemResponse, AIQueueStatusResponse, AIQueueProcessingResult
 )
 from backend.services.gemini.provider import GeminiProvider, APIQuotaExhaustedError
+from backend.services.gemini.prompts import JOB_ANALYSIS_PROMPT_V1
 from backend.schemas.ai import JobAnalysis
 from backend.core.logging import get_logger
 
@@ -418,7 +419,7 @@ class AIQueueService:
                 recommendation=analysis.recommendation.value,
                 short_reason=analysis.short_reason,
                 model="gemini",
-                prompt_version="v1"
+                prompt_version=JOB_ANALYSIS_PROMPT_V1
             )
             
             self.session.add(analysis_model)

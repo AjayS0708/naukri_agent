@@ -1,5 +1,49 @@
 # Architecture
 
+## Phase 9B-2B Defect Fixes
+
+### prompt_version Persistence (Issue 1)
+
+`AIQueueService.process_item()` now uses `JOB_ANALYSIS_PROMPT_V1` from `prompts.py`:
+
+```text
+Gemini analysis completes
+    ↓
+JobAnalysisModel created with prompt_version=JOB_ANALYSIS_PROMPT_V1
+    ↓
+Persisted to database (non-null, traceable to actual prompt)
+```
+
+### Experience Year Computation (Issue 2)
+
+`compute_profile_experience_years()` in `normalizer.py` replaces `len(experience_list)`:
+
+```text
+Experience list from profile
+    ↓
+For each entry: parse start_date + end_date
+    ↓
+Compute elapsed years (positive deltas only)
+    ↓
+Sum across all entries
+    ↓
+Fallback: len(list) if no dates parseable
+```
+
+Hard-filter flow unchanged:
+
+```text
+MatchEngine.evaluate_job()
+    ↓
+compute_profile_experience_years(profile.experience)
+    ↓
+if exp_min > user_exp_years + 2 → SKIP (never reaches Gemini)
+    ↓
+else → Gemini analysis (advisory)
+```
+
+---
+
 ## Phase 9A: Scheduler Automation Loop (Complete Pipeline)
 
 The scheduler now orchestrates the complete Phase 9A automation loop:
