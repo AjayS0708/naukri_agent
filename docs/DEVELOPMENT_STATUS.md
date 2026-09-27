@@ -1,5 +1,43 @@
 # Development Status
 
+## Phase 9A: COMPLETE - Scheduler Automation Loop
+
+Implemented complete Phase 9A scheduler automation loop connecting all existing components into one automatic local execution flow:
+
+- **Gap C1 Fixed**: Scheduler automatically processes AI queue after discovery completes.
+- **Gap C2 Fixed**: Scheduler invokes ApplicationRunner for jobs with completed AI analysis.
+- **Gap C3 Fixed**: Deterministic hard filters integrated into runtime discovery/matching path.
+
+Implementation details:
+
+- Added `_apply_hard_filters_and_enqueue()` method that evaluates each discovered job through MatchEngine hard filters before queueing for AI analysis. Jobs failing hard filters are blocked from entering the application path.
+- Added `_process_ai_queue_items()` method that processes eligible jobs through Gemini analysis, respecting quota exhaustion (stops processing without applying), retry policies, and stale item recovery.
+- Added `_invoke_application_runner()` method that passes jobs with completed AI analysis to ApplicationRunner for execution, ensuring final safety gates always run.
+- Updated main `_run_discovery_task()` to orchestrate full Phase 9A cycle: Discovery → Hard Filters → AI Queue → ApplicationRunner, with failure isolation so single job failures don't kill entire cycle.
+- Updated scheduler routes to provide manual cycle execution endpoint `/scheduler/run-cycle`.
+- Scheduler now logs cycle statistics: discovered, hard_filtered, queued, ai_processed, ai_blocked, application_candidates, applied, skipped, needs_attention, failed.
+
+Safety preservation:
+
+- Hard filters remain deterministic and authoritative (Gemini is advisory only).
+- ApplicationRunner remains the sole executor of applications.
+- Final safety gate in ApplicationService continues to run before every application submission.
+- Application limits checked before and during execution.
+- Duplicate protection enforced at multiple stages.
+- AI quota exhaustion stops processing gracefully without applying jobs.
+- Failure isolation: errors in individual jobs don't cascade; processing continues safely.
+
+Testing:
+
+- 5 new Phase 9A integration tests verify cycle orchestration, hard filter enforcement, AI queue processing, ApplicationRunner invocation, and failure isolation.
+- All 480 backend tests pass (previously 475, +5 Phase 9A tests).
+- Frontend builds successfully.
+- No regression: all existing services, safety gates, and limitations remain unchanged and authoritative.
+
+Known limitations: Real Naukri browser submission validation deferred to Phase 9B. Cloud workers, browser execution, and infrastructure changes deferred to Phase 8.5C and later.
+
+---
+
 ## Phase 8.5B: COMPLETE - Distributed Work Coordination
 
 Implemented distributed worker work coordination to safely queue and claim AI analysis work among multiple workers:
@@ -23,8 +61,6 @@ Implemented distributed worker work coordination to safely queue and claim AI an
 Known limitations: Cloud browser execution, browser session migration, cloud browser providers (Browserless, Browserbase), persistent cloud sessions, remote browser execution, Kubernetes, Redis, Celery, RabbitMQ, Kafka, multi-region infrastructure are all deferred to Phase 8.5C and later.
 
 ---
-
-## Phase 8.5A: COMPLETE - Worker Foundation and Registration
 
 
 Implemented persistent worker identity layer to support future cloud browser coordination without modifying current execution:

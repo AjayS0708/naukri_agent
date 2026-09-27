@@ -1,5 +1,60 @@
 # Architecture
 
+## Phase 9A: Scheduler Automation Loop (Complete Pipeline)
+
+The scheduler now orchestrates the complete Phase 9A automation loop:
+
+```text
+Scheduler Cycle (triggered every N minutes or manually)
+    ↓
+1. Discover Jobs (NaukriAdapter: search, fetch descriptions, deduplicate)
+    ↓
+2. Persist Jobs (Database: store in Job table with status=DISCOVERED)
+    ↓
+3. Apply Hard Filters (MatchEngine: deterministic rules on location, salary, experience, employment type)
+    ↓
+4. Enqueue Eligible Jobs (AIQueueService: jobs passing hard filters → AI queue)
+    ↓
+5. Process AI Queue (GeminiProvider: analyze jobs, validate Pydantic schema)
+    ↓
+6. AI Results Persist (JobAnalysisModel: store match_score, recommendation, etc.)
+    ↓
+7. Identify Completed Jobs (AIQueueItem.status = COMPLETED)
+    ↓
+8. Invoke ApplicationRunner (pass job IDs to ApplicationRunner.run_applications)
+    ↓
+9. Application Runner Flow (described below - unchanged from Phase 8)
+    ↓
+10. Record Results (Application model: status, applied_at, failure_reason, etc.)
+```
+
+### Key Guarantees
+
+- **Hard filters are authoritative**: Gemini analysis is advisory only. Hard filters block jobs from entering the application path.
+- **ApplicationRunner remains sole executor**: All application submission goes through ApplicationRunner, which runs the final safety gate.
+- **Failure isolation**: Single job failures don't cascade; processing continues safely.
+- **Quota enforcement**: If Gemini quota is exhausted, queue processing stops gracefully without applying jobs.
+- **No live submissions in Phase 9A**: Infrastructure ready, but real Naukri submissions deferred to Phase 9B.
+
+### Scheduler Methods
+
+- `_apply_hard_filters_and_enqueue(db)` → Apply MatchEngine hard filters to DISCOVERED jobs, enqueue eligible ones
+  - Returns stats: discovered, hard_filtered, queued, errors
+  - Skips jobs already analyzed or queued
+  - Continues on individual job failures
+
+- `_process_ai_queue_items(db)` → Process up to 5 queue items per cycle through Gemini
+  - Returns stats: processed, completed, retry_pending, quota_blocked, needs_attention, failed, errors
+  - Recovers stale items first
+  - Stops gracefully on quota exhaustion
+
+- `_invoke_application_runner(db)` → Find jobs with completed AI analysis, pass to ApplicationRunner
+  - Returns stats: candidates, applied, skipped, needs_attention, failed, errors
+  - Skips jobs without AI analysis (final safety gate requires analysis)
+  - ApplicationRunner runs in same database session
+
+---
+
 ## Distributed Work Coordination Architecture (Phase 8.5B)
 
 Multiple workers safely claim and process distributed AI queue work without race conditions:

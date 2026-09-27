@@ -4,6 +4,20 @@ Windows-first, local-first foundation for a controlled job-application agent. De
 
 ## Status
 
+Phase 9A Checkpoint is complete: Scheduler Automation Loop. Implemented complete Phase 9A orchestration connecting all existing components into one automatic local execution flow. Scheduler now:
+1. Discovers jobs via NaukriAdapter
+2. Applies deterministic hard filters (MatchEngine) before queueing
+3. Processes AI queue with Gemini analysis
+4. Invokes ApplicationRunner for jobs with completed analysis
+5. Records results with cycle statistics
+
+Fixed all three audit gaps:
+- **GAP-C1**: Scheduler automatically processes AI queue after discovery
+- **GAP-C2**: Scheduler invokes ApplicationRunner for completed AI jobs  
+- **GAP-C3**: Hard filters integrated into runtime discovery/matching path
+
+Safety preserved: hard filters authoritative, ApplicationRunner sole executor, final safety gate always runs. Failure isolation ensures single job failures don't cascade. 480 total backend tests passing (previously 475, +5 Phase 9A tests). Frontend builds successfully. No live Naukri submissions (infrastructure only; Phase 9B will add live validation).
+
 Phase 8.5B Checkpoint is complete: Distributed Work Coordination. Implemented worker-owned AI queue work claiming and coordination without race conditions. PostgreSQL uses atomic SELECT...FOR UPDATE SKIP LOCKED; SQLite uses transaction-safe fallback with explicit documentation of semantic differences. Stale work detection (30+ minutes without heartbeat) and safe recovery (escalates to NEEDS_ATTENTION if max_attempts exceeded) preserve existing application safety gates. Work ownership is strict: only claiming worker can heartbeat/release/complete/fail. 49 focused coordination tests passing; 475 total backend tests (previously 426, +49 coordination). No regression in existing AI queue, application runner, duplicate detection, or safety gates. Frontend unchanged.
 
 Phase 8.5A Checkpoint is complete: Worker Foundation and Registration. Persistent worker identity layer introduced to support future cloud browser coordination without modifying current Naukri execution. WorkerType (LOCAL_WINDOWS, CLOUD_BROWSER) and WorkerStatus (STARTING, IDLE, RUNNING, PAUSED, STOPPING, STOPPED, ERROR) enums defined. Worker model persists identity, type, status, runtime environment, and lifecycle timestamps. WorkerService provides registration (safely repeatable), retrieval, listing, and status updates. Minimal worker API endpoints: GET /api/worker/status (list), POST /api/worker/register (register), GET /api/worker/{worker_id} (get). 12 focused tests; 426 total tests passing. No changes to existing scheduler, Playwright, or NaukriAdapter.
