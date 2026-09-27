@@ -528,3 +528,188 @@ class TestSchedulerService:
 
                 with patch('backend.services.scheduler.service.logger'):
                     await scheduler_service._run_discovery_task()
+
+
+class TestPhase9ASchedulerIntegration:
+    """Integration tests for Phase 9A scheduler automation loop."""
+
+    @pytest.fixture
+    def state_manager(self):
+        """Create an AgentStateManager for testing."""
+        return AgentStateManager(initial_state=AgentState.IDLE)
+
+    @pytest.fixture
+    def mock_discovery_service(self):
+        """Create a mock DiscoveryService."""
+        service = MagicMock(spec=DiscoveryService)
+        service.run_discovery = AsyncMock()
+        return service
+
+    @pytest.fixture
+    def scheduler_service(self, state_manager, mock_discovery_service):
+        """Create a SchedulerService."""
+        return SchedulerService(
+            state_manager=state_manager,
+            discovery_service=mock_discovery_service
+        )
+
+    @pytest.fixture
+    def mock_db(self):
+        """Create a mock database session."""
+        db = MagicMock(spec=Session)
+        db.execute = MagicMock()
+        db.add = MagicMock()
+        db.commit = MagicMock()
+        db.refresh = MagicMock()
+        db.close = MagicMock()
+        db.get = MagicMock(return_value=None)
+        return db
+
+    @pytest.mark.asyncio
+    async def test_phase_9a_cycle_runs_without_error(self, scheduler_service, state_manager, mock_db):
+        """
+        Test that Phase 9A cycle executes without error and calls discovery.
+        """
+        scheduler_service._config = MagicMock()
+
+        with patch('backend.services.scheduler.service.SessionLocal') as mock_session_local:
+            mock_session_local.return_value = mock_db
+
+            with patch('backend.services.scheduler.service.ApplicationLimitService') as mock_limit_class:
+                mock_limit_service = MagicMock()
+                mock_limit_service.check_limits.return_value = MagicMock(allowed=True)
+                mock_limit_class.return_value = mock_limit_service
+
+                # Run the full cycle
+                await scheduler_service._run_discovery_task()
+
+                # Verify discovery was called (first step of Phase 9A)
+                scheduler_service.discovery_service.run_discovery.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_phase_9a_hard_filter_method_exists(self, scheduler_service, mock_db):
+        """
+        Test that hard filter integration method (GAP-C3) exists and can be called.
+        """
+        # Mock database to return empty results
+        def mock_execute(stmt):
+            result = MagicMock()
+            result.scalars.return_value.first.return_value = None
+            result.scalars.return_value.all.return_value = []
+            return result
+
+        mock_db.execute = mock_execute
+
+        # Should not raise error
+        stats = await scheduler_service._apply_hard_filters_and_enqueue(mock_db)
+
+        # Should return valid stats dict
+        assert isinstance(stats, dict)
+        assert "discovered" in stats
+        assert "hard_filtered" in stats
+        assert "queued" in stats
+
+    @pytest.mark.asyncio
+    async def test_phase_9a_ai_queue_processing_method_exists(self, scheduler_service, mock_db):
+        """
+        Test that AI queue processing method (GAP-C1) exists and can be called.
+        """
+        from backend.models.profile import Profile
+
+        profile = Profile(id=1, confirmed=True, data={})
+
+        def mock_execute(stmt):
+            result = MagicMock()
+            if "Profile" in str(stmt):
+                result.scalars.return_value.first.return_value = profile
+            else:
+                result.scalars.return_value.first.return_value = None
+            return result
+
+        mock_db.execute = mock_execute
+
+        with patch('backend.services.scheduler.service.AIQueueService'):
+            # Should not raise error
+            stats = await scheduler_service._process_ai_queue_items(mock_db)
+
+            # Should return valid stats dict
+            assert isinstance(stats, dict)
+            assert "processed" in stats
+            assert "quota_blocked" in stats
+
+    @pytest.mark.asyncio
+    async def test_phase_9a_application_runner_method_exists(self, scheduler_service, mock_db):
+        """
+        Test that ApplicationRunner invocation method (GAP-C2) exists and can be called.
+        """
+        def mock_execute(stmt):
+            result = MagicMock()
+            result.scalars.return_value.all.return_value = []
+            result.scalars.return_value.first.return_value = None
+            return result
+
+        mock_db.execute = mock_execute
+
+        with patch('backend.services.scheduler.service.ApplicationRunner'):
+            # Should not raise error
+            stats = await scheduler_service._invoke_application_runner(mock_db)
+
+            # Should return valid stats dict
+            assert isinstance(stats, dict)
+            assert "candidates" in stats
+            assert "applied" in stats
+
+    @pytest.mark.asyncio
+    async def test_phase_9a_full_cycle_orchestrates_all_steps(self, scheduler_service, state_manager, mock_db):
+        """
+        Test that Phase 9A cycle orchestrates discovery → filtering → AI → application.
+        Verifies the integration of all components.
+        """
+        scheduler_service._config = MagicMock()
+
+        def mock_execute(stmt):
+            result = MagicMock()
+            result.scalars.return_value.first.return_value = None
+            result.scalars.return_value.all.return_value = []
+            return result
+
+        mock_db.execute = mock_execute
+
+        with patch('backend.services.scheduler.service.SessionLocal') as mock_session_local:
+            mock_session_local.return_value = mock_db
+
+            with patch('backend.services.scheduler.service.ApplicationLimitService') as mock_limit_class:
+                mock_limit_service = MagicMock()
+                mock_limit_service.check_limits.return_value = MagicMock(allowed=True)
+                mock_limit_class.return_value = mock_limit_service
+
+                # Patch internal methods to verify they're called
+                with patch.object(scheduler_service, '_apply_hard_filters_and_enqueue', new_callable=AsyncMock) as mock_filter:
+                    mock_filter.return_value = {
+                        "discovered": 0,
+                        "hard_filtered": 0,
+                        "queued": 0,
+                        "errors": []
+                    }
+
+                    with patch.object(scheduler_service, '_process_ai_queue_items', new_callable=AsyncMock) as mock_ai:
+                        mock_ai.return_value = {
+                            "processed": 0,
+                            "quota_blocked": 0,
+                            "errors": []
+                        }
+
+                        with patch.object(scheduler_service, '_invoke_application_runner', new_callable=AsyncMock) as mock_app:
+                            mock_app.return_value = {
+                                "candidates": 0,
+                                "applied": 0,
+                                "errors": []
+                            }
+
+                            await scheduler_service._run_discovery_task()
+
+                            # Verify all phases were called in order
+                            scheduler_service.discovery_service.run_discovery.assert_called_once()
+                            mock_filter.assert_called_once()
+                            mock_ai.assert_called_once()
+                            mock_app.assert_called_once()

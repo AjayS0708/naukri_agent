@@ -154,23 +154,24 @@ async def update_scheduler_config(
         raise HTTPException(status_code=500, detail=f"Failed to update scheduler config: {str(e)}")
 
 
-@router.post("/process-ai-queue")
-async def process_ai_queue(
-    profile_context: str,
+@router.post("/run-cycle")
+async def run_scheduler_cycle(
+    db: Session = Depends(get_session),
     service: SchedulerService = Depends(get_scheduler_service)
 ):
     """
-    Process the AI queue by analyzing queued jobs.
+    Manually trigger a complete scheduler cycle (discovery + filtering + AI + application).
 
-    This method processes queue items sequentially, respecting quota limits
-    and retry policies. It's designed to be called from the scheduler or
-    manually from the API.
-
-    Returns statistics about the processing run.
+    This endpoint is provided for testing and manual control.
+    In production, cycles run automatically at the configured interval.
     """
     try:
-        stats = await service.process_ai_queue(profile_context)
-        return stats
+        # Call the internal discovery task which now handles the full Phase 9A cycle
+        await service._run_discovery_task()
+        return {
+            "success": True,
+            "message": "Scheduler cycle completed"
+        }
     except Exception as e:
-        logger.error("process_ai_queue_failed", extra={"error": str(e)})
-        raise HTTPException(status_code=500, detail=f"Failed to process AI queue: {str(e)}")
+        logger.error("scheduler_cycle_failed", extra={"error": str(e)})
+        raise HTTPException(status_code=500, detail=f"Failed to run scheduler cycle: {str(e)}")

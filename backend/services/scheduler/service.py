@@ -9,11 +9,17 @@ from backend.core.config import get_settings
 from backend.core.logging import get_logger
 from backend.models.scheduler import SchedulerConfig, utc_now
 from backend.models.ai_queue import AIQueueItem
+from backend.models.job import Job
+from backend.models.profile import Profile
+from backend.models.matching import JobPreference
+from backend.models.ai import JobAnalysisModel
 from backend.services.discovery.service import DiscoveryService
 from backend.services.agent_state import AgentStateManager
 from backend.services.applications.limits import ApplicationLimitService
+from backend.services.applications.runner import ApplicationRunner
 from backend.services.gemini.queue import AIQueueService
 from backend.services.gemini.provider import GeminiProvider
+from backend.services.matching.engine import MatchEngine
 from backend.database.database import SessionLocal
 
 logger = get_logger(__name__)
@@ -234,11 +240,19 @@ class SchedulerService:
             
     async def _run_discovery_task(self) -> None:
         """
-        Execute scheduled discovery task.
+        Execute complete Phase 9A scheduler automation loop.
 
-        This method is called by the scheduler core on each scheduled run.
-        It integrates with existing DiscoveryService - business rules are there.
-        The scheduler only handles timing/orchestration.
+        This is the main orchestration method called by the scheduler core.
+        It implements the full flow:
+        1. Discover jobs
+        2. Persist discovered jobs
+        3. Evaluate deterministic matching (hard filters)
+        4. Enqueue eligible jobs to AI queue
+        5. Process AI queue items
+        6. Pass completed analysis to ApplicationRunner
+        7. Record cycle statistics
+
+        Failure isolation: Single job failures do not kill the entire cycle.
         """
         if not self.state_manager:
             logger.warning("scheduler_no_state_manager")
@@ -266,110 +280,209 @@ class SchedulerService:
         finally:
             db.close()
 
-        try:
-            logger.info("scheduler_starting_discovery")
+        # Initialize cycle statistics
+        cycle_stats = {
+            "discovered": 0,
+            "hard_filtered": 0,
+            "queued": 0,
+            "ai_processed": 0,
+            "ai_blocked": 0,
+            "application_candidates": 0,
+            "applied": 0,
+            "skipped": 0,
+            "needs_attention": 0,
+            "failed": 0,
+            "errors": []
+        }
 
-            await self.discovery_service.run_discovery()
+        db = SessionLocal()
+        try:
+            logger.info("scheduler_phase_9a_cycle_starting")
+
+            # ===== STEP 1-2: DISCOVER & PERSIST JOBS =====
+            logger.info("scheduler_step_1_discovery")
+            await self.discovery_service.run_discovery(db)
 
             if self._config:
                 self._config.last_run_at = utc_now()
+                db.commit()
 
             logger.info("scheduler_discovery_completed")
 
-            # Enqueue newly discovered jobs for AI analysis
-            await self._enqueue_discovered_jobs(db)
+            # ===== STEP 3: APPLY DETERMINISTIC HARD FILTERS & ENQUEUE =====
+            logger.info("scheduler_step_2_hard_filter_and_enqueue")
+            enqueue_stats = await self._apply_hard_filters_and_enqueue(db)
+            cycle_stats["discovered"] = enqueue_stats["discovered"]
+            cycle_stats["hard_filtered"] = enqueue_stats["hard_filtered"]
+            cycle_stats["queued"] = enqueue_stats["queued"]
+            cycle_stats["errors"].extend(enqueue_stats.get("errors", []))
+
+            # ===== STEP 4: PROCESS AI QUEUE =====
+            logger.info("scheduler_step_3_process_ai_queue")
+            ai_stats = await self._process_ai_queue_items(db)
+            cycle_stats["ai_processed"] = ai_stats["processed"]
+            cycle_stats["ai_blocked"] = ai_stats["quota_blocked"]
+            cycle_stats["errors"].extend(ai_stats.get("errors", []))
+
+            # ===== STEP 5: INVOKE APPLICATION RUNNER =====
+            logger.info("scheduler_step_4_invoke_application_runner")
+            app_stats = await self._invoke_application_runner(db)
+            cycle_stats["application_candidates"] = app_stats["candidates"]
+            cycle_stats["applied"] = app_stats["applied"]
+            cycle_stats["skipped"] = app_stats["skipped"]
+            cycle_stats["needs_attention"] = app_stats["needs_attention"]
+            cycle_stats["failed"] = app_stats["failed"]
+            cycle_stats["errors"].extend(app_stats.get("errors", []))
+
+            logger.info("scheduler_phase_9a_cycle_completed", extra=cycle_stats)
 
         except Exception as e:
             logger.error("scheduler_discovery_failed", extra={"error": str(e)}, exc_info=True)
+            cycle_stats["errors"].append(str(e))
+        finally:
+            db.close()
 
-    async def _enqueue_discovered_jobs(self, db: Session) -> None:
+    async def _apply_hard_filters_and_enqueue(self, db: Session) -> dict:
         """
-        Enqueue newly discovered jobs for AI analysis.
+        Apply deterministic hard filters to discovered jobs and enqueue eligible ones.
 
-        This method finds jobs that have been discovered but not yet analyzed
-        and enqueues them in the AI queue for processing.
+        This method:
+        1. Finds all DISCOVERED jobs not yet processed
+        2. Evaluates deterministic matching (hard filters)
+        3. Enqueues jobs that pass hard filters to AI queue
+
+        Returns statistics about the filtering and queueing process.
         """
+        stats = {
+            "discovered": 0,
+            "hard_filtered": 0,
+            "queued": 0,
+            "errors": []
+        }
+
         try:
-            from backend.models.job import Job
-            from backend.models.ai import JobAnalysisModel
+            # Get profile and preferences (required for matching)
+            profile = db.execute(select(Profile)).scalars().first()
+            if not profile or not profile.confirmed:
+                logger.warning("scheduler_no_confirmed_profile_for_matching")
+                return stats
 
-            # Initialize AI queue service with current session
-            ai_queue_service = AIQueueService(db)
+            preference = db.execute(select(JobPreference)).scalars().first()
+            if not preference:
+                logger.warning("scheduler_no_preferences_for_matching")
+                return stats
 
-            # Find jobs without analysis
+            # Find jobs that need to be processed
             stmt = select(Job).where(
                 Job.status == "DISCOVERED"
             ).order_by(Job.discovered_at.desc())
 
             jobs = db.execute(stmt).scalars().all()
+            stats["discovered"] = len(jobs)
 
-            enqueued_count = 0
+            if len(jobs) == 0:
+                logger.info("scheduler_no_discovered_jobs_to_process")
+                return stats
+
+            # Initialize services
+            match_engine = MatchEngine(db)
+            ai_queue_service = AIQueueService(db)
+
             for job in jobs:
-                # Check if job already has analysis
-                existing_analysis = db.execute(
-                    select(JobAnalysisModel).where(JobAnalysisModel.job_id == job.id)
-                ).scalars().first()
+                try:
+                    # Check if job already has analysis or is queued
+                    existing_analysis = db.execute(
+                        select(JobAnalysisModel).where(JobAnalysisModel.job_id == job.id)
+                    ).scalars().first()
 
-                if existing_analysis:
-                    continue
+                    if existing_analysis:
+                        logger.debug(f"Job {job.id} already analyzed, skipping")
+                        stats["hard_filtered"] += 1
+                        continue
 
-                # Check if job is already in queue
-                existing_queue = db.execute(
-                    select(AIQueueItem).where(AIQueueItem.job_id == job.id)
-                ).scalars().first()
+                    existing_queue = db.execute(
+                        select(AIQueueItem).where(AIQueueItem.job_id == job.id)
+                    ).scalars().first()
 
-                if existing_queue:
-                    continue
+                    if existing_queue:
+                        logger.debug(f"Job {job.id} already in queue, skipping")
+                        stats["hard_filtered"] += 1
+                        continue
 
-                # Enqueue the job
-                queue_item = ai_queue_service.enqueue_job(
-                    job_id=job.id,
-                    priority=50,  # Default priority
-                    priority_reason="Discovered by scheduler",
-                    queue_source="SCHEDULER"
-                )
+                    # Evaluate hard filters using MatchEngine
+                    match_decision = match_engine.evaluate_job(job, profile, preference)
 
-                if queue_item:
-                    enqueued_count += 1
+                    # If hard filters pass, enqueue for AI analysis
+                    if match_decision.decision.value == "APPLY":
+                        queue_item = ai_queue_service.enqueue_job(
+                            job_id=job.id,
+                            priority=match_decision.match_score if match_decision.match_score else 50,
+                            priority_reason="Hard filters passed, ready for AI analysis",
+                            queue_source="SCHEDULER"
+                        )
 
-            if enqueued_count > 0:
-                logger.info(f"scheduler_enqueued_jobs_for_ai", extra={"count": enqueued_count})
+                        if queue_item:
+                            stats["queued"] += 1
+                            logger.debug(f"Job {job.id} queued for AI analysis")
+                        else:
+                            logger.warning(f"Failed to enqueue job {job.id}")
+                    else:
+                        # Hard filters failed - mark as filtered out
+                        stats["hard_filtered"] += 1
+                        logger.debug(f"Job {job.id} failed hard filters: {match_decision.reason}")
+
+                except Exception as e:
+                    error_msg = f"Error processing job {job.id}: {str(e)}"
+                    logger.error(error_msg, exc_info=True)
+                    stats["errors"].append(error_msg)
+                    # Continue processing other jobs
+
+            logger.info("scheduler_hard_filter_complete", extra={
+                "discovered": stats["discovered"],
+                "hard_filtered": stats["hard_filtered"],
+                "queued": stats["queued"]
+            })
 
         except Exception as e:
-            logger.error("scheduler_enqueue_failed", extra={"error": str(e)}, exc_info=True)
+            error_msg = f"Error in hard filter and enqueue: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            stats["errors"].append(error_msg)
 
-    async def process_ai_queue(self, db: Session) -> dict:
+        return stats
+
+    async def _process_ai_queue_items(self, db: Session) -> dict:
         """
-        Process the AI queue by analyzing queued jobs.
+        Process queued jobs through Gemini analysis.
 
-        This method processes queue items sequentially, respecting quota limits
-        and retry policies. It's designed to be called from the scheduler or
-        manually from the API.
+        This method:
+        1. Recovers stale items
+        2. Gets profile context
+        3. Processes queue items sequentially
+        4. Respects quota limits and retry policies
 
         Returns statistics about the processing run.
         """
+        stats = {
+            "processed": 0,
+            "completed": 0,
+            "retry_pending": 0,
+            "quota_blocked": 0,
+            "needs_attention": 0,
+            "failed": 0,
+            "errors": []
+        }
+
         try:
-            # Initialize AI queue service with current session
+            # Initialize AI queue service
             ai_queue_service = AIQueueService(db)
-            
+
             # Recover stale items first
             recovered = ai_queue_service.recover_stale_items()
+            logger.info("scheduler_recovered_stale_queue_items", extra={"count": recovered})
 
-            # Get profile context from database
-            from backend.models.profile import Profile
+            # Get profile context
             profile = db.execute(select(Profile)).scalars().first()
             profile_context = str(profile.data) if profile and profile.data else ""
-
-            stats = {
-                "recovered": recovered,
-                "processed": 0,
-                "completed": 0,
-                "retry_pending": 0,
-                "quota_blocked": 0,
-                "needs_attention": 0,
-                "failed": 0,
-                "errors": 0
-            }
 
             # Process up to 5 items per run to avoid long-running tasks
             max_items_per_run = 5
@@ -402,13 +515,88 @@ class SchedulerService:
                     items_processed += 1
 
                 except Exception as e:
-                    logger.error(f"Error processing queue item {next_item.id}: {e}", exc_info=True)
-                    stats["errors"] += 1
+                    error_msg = f"Error processing queue item {next_item.id}: {str(e)}"
+                    logger.error(error_msg, exc_info=True)
+                    stats["errors"].append(error_msg)
+                    stats["failed"] += 1
                     items_processed += 1
 
             logger.info("scheduler_ai_queue_processing_completed", extra=stats)
-            return stats
 
         except Exception as e:
-            logger.error("scheduler_ai_queue_processing_failed", extra={"error": str(e)}, exc_info=True)
-            return {"error": str(e)}
+            error_msg = f"Error processing AI queue: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            stats["errors"].append(error_msg)
+
+        return stats
+
+    async def _invoke_application_runner(self, db: Session) -> dict:
+        """
+        Invoke ApplicationRunner for jobs with completed AI analysis.
+
+        This method:
+        1. Finds jobs with completed AI analysis
+        2. Filters out jobs with failed analysis
+        3. Passes them to ApplicationRunner for execution
+
+        Returns statistics about application execution.
+        """
+        stats = {
+            "candidates": 0,
+            "applied": 0,
+            "skipped": 0,
+            "needs_attention": 0,
+            "failed": 0,
+            "errors": []
+        }
+
+        try:
+            # Find jobs with completed AI analysis that haven't been applied yet
+            from backend.models.application import Application
+            from backend.schemas.application import ApplicationStatus
+
+            stmt = select(Job).where(
+                Job.id.in_(
+                    select(JobAnalysisModel.job_id)
+                )
+            ).outerjoin(
+                Application, Application.job_id == Job.id
+            ).where(
+                (Application.id == None) |  # Not yet applied
+                (Application.status == ApplicationStatus.SKIPPED.value)  # Previously skipped
+            ).order_by(Job.discovered_at.desc())
+
+            eligible_jobs = db.execute(stmt).scalars().all()
+            stats["candidates"] = len(eligible_jobs)
+
+            if len(eligible_jobs) == 0:
+                logger.info("scheduler_no_eligible_jobs_for_application")
+                return stats
+
+            # Extract job IDs for ApplicationRunner
+            job_ids = [job.id for job in eligible_jobs if job.id]
+
+            if not job_ids:
+                logger.info("scheduler_no_valid_job_ids_for_application")
+                return stats
+
+            logger.info("scheduler_invoking_application_runner", extra={"job_count": len(job_ids)})
+
+            # Invoke ApplicationRunner
+            runner = ApplicationRunner(db, self.state_manager)
+            app_results = await runner.run_applications(job_ids)
+
+            # Extract results from ApplicationRunner
+            stats["applied"] = app_results.get("applied", 0)
+            stats["skipped"] = app_results.get("skipped", 0)
+            stats["needs_attention"] = app_results.get("needs_attention", 0)
+            stats["failed"] = app_results.get("failed", 0)
+
+            logger.info("scheduler_application_runner_completed", extra=app_results)
+
+        except Exception as e:
+            error_msg = f"Error invoking application runner: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            stats["errors"].append(error_msg)
+
+        return stats
