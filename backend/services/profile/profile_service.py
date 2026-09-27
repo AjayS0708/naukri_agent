@@ -23,6 +23,24 @@ class ProfileService:
             self.session.execute(update(Resume).values(is_current=False))
             existing.is_current = True
             profile = self.session.scalar(select(Profile).where(Profile.resume_id == existing.id))
+            if ProfileStatus(profile.status) is not ProfileStatus.ERROR:
+                self.session.commit()
+                return ResumeUploadResponse(profile_id=profile.id, status=ProfileStatus(profile.status), resume_hash=digest, duplicate=True)
+            # ERROR recovery: re-run extraction against the already-stored file
+            settings = get_settings()
+            stored_bytes = self.resume_service.read_stored(settings.resume_storage_path, existing.stored_filename)
+            extracted_text = self.resume_service.pdf_extractor.extract(stored_bytes, settings.min_resume_text_chars)
+            profile.status = ProfileStatus.EXTRACTING.value
+            profile.confirmed = False
+            self.session.flush()
+            try:
+                profile_data = self._extract_profile_with_retry(extracted_text)
+                profile.data = profile_data.model_dump(mode="json")
+                profile.status = ProfileStatus.REVIEW_REQUIRED.value
+            except ProfileExtractionError:
+                profile.status = ProfileStatus.ERROR.value
+                self.session.commit()
+                raise
             self.session.commit()
             return ResumeUploadResponse(profile_id=profile.id, status=ProfileStatus(profile.status), resume_hash=digest, duplicate=True)
 

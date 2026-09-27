@@ -4,6 +4,8 @@ Windows-first, local-first foundation for a controlled job-application agent. De
 
 ## Status
 
+Phase 9B-2C Checkpoint is complete: Profile Duplicate ERROR Recovery. Fixed a live-validation blocker where uploading a PDF whose existing profile was in ERROR state returned the broken profile without re-running extraction. The duplicate path now checks profile status: CONFIRMED/REVIEW_REQUIRED duplicates are reused as before; ERROR duplicates re-read the stored PDF and re-run the full extraction pipeline against the existing profile record (no new records created). On success: ERROR → REVIEW_REQUIRED, confirmed remains false. On failure: remains ERROR. 6 regression tests added. 503 total backend tests passing (+6). No live Naukri activity.
+
 Phase 9B-2B Defect Fix Checkpoint is complete: Two runtime defects discovered during live dry-run attempts were fixed. (1) `prompt_version` NOT NULL persistence defect in `AIQueueService.process_item()` — now uses `JOB_ANALYSIS_PROMPT_V1` constant from `prompts.py` instead of a disconnected literal. (2) Experience year computation in `MatchEngine` replaced `len(experience_list)` with `compute_profile_experience_years()` which calculates actual elapsed years from `start_date`/`end_date` fields. 497 total backend tests passing (+14). No live Naukri activity in this checkpoint.
 
 Phase 9A Checkpoint is complete: Scheduler Automation Loop. Implemented complete Phase 9A orchestration connecting all existing components into one automatic local execution flow. Scheduler now:

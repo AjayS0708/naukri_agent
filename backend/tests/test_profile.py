@@ -160,3 +160,101 @@ def test_prepare_resume_text_for_ai_truncates_large_payload() -> None:
     prepared = prepare_resume_text_for_ai(long_text, 1000)
     assert len(prepared) <= 1000
     assert "[TRUNCATED]" in prepared
+
+
+# --- Duplicate ERROR recovery regression tests ---
+
+class CountingExtractor:
+    def __init__(self, delegate) -> None:
+        self.calls = 0
+        self._delegate = delegate
+
+    def extract(self, text: str) -> ProfileData:
+        self.calls += 1
+        return self._delegate.extract(text)
+
+
+def test_duplicate_confirmed_profile_reused_without_extraction(
+    profile_session: Session, resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
+    inner = FakeExtractor()
+    counter = CountingExtractor(inner)
+    service = ProfileService(profile_session, extractor=counter)
+    service.upload_resume("r.pdf", "application/pdf", resume_bytes)
+    service.confirm_current_profile()
+    calls_before = counter.calls
+    second = service.upload_resume("r2.pdf", "application/pdf", resume_bytes)
+    assert second.duplicate is True
+    assert second.status is ProfileStatus.CONFIRMED
+    assert counter.calls == calls_before  # no re-extraction
+
+
+def test_duplicate_review_required_profile_reused_without_extraction(
+    profile_session: Session, resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
+    counter = CountingExtractor(FakeExtractor())
+    service = ProfileService(profile_session, extractor=counter)
+    service.upload_resume("r.pdf", "application/pdf", resume_bytes)
+    calls_before = counter.calls
+    second = service.upload_resume("r2.pdf", "application/pdf", resume_bytes)
+    assert second.duplicate is True
+    assert second.status is ProfileStatus.REVIEW_REQUIRED
+    assert counter.calls == calls_before  # no re-extraction
+
+
+def test_duplicate_error_profile_triggers_extraction_retry(
+    profile_session: Session, resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
+    # First upload fails extraction → ERROR
+    with pytest.raises(ProfileExtractionError):
+        ProfileService(profile_session, extractor=FailingExtractor()).upload_resume("r.pdf", "application/pdf", resume_bytes)
+    # Second upload with same bytes but working extractor → should recover
+    counter = CountingExtractor(FakeExtractor())
+    second = ProfileService(profile_session, extractor=counter).upload_resume("r2.pdf", "application/pdf", resume_bytes)
+    assert second.duplicate is True
+    assert second.status is ProfileStatus.REVIEW_REQUIRED
+    assert counter.calls >= 1
+
+
+def test_duplicate_error_recovery_transitions_to_review_required(
+    profile_session: Session, resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
+    with pytest.raises(ProfileExtractionError):
+        ProfileService(profile_session, extractor=FailingExtractor()).upload_resume("r.pdf", "application/pdf", resume_bytes)
+    result = ProfileService(profile_session, extractor=FakeExtractor()).upload_resume("r.pdf", "application/pdf", resume_bytes)
+    assert result.status is ProfileStatus.REVIEW_REQUIRED
+    assert result.duplicate is True
+    profile = ProfileService(profile_session, extractor=FakeExtractor()).get_current_profile()
+    assert profile.confirmed is False
+    assert profile.data.name == "Asha Rao"
+
+
+def test_duplicate_error_recovery_failed_extraction_remains_error(
+    profile_session: Session, resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
+    with pytest.raises(ProfileExtractionError):
+        ProfileService(profile_session, extractor=FailingExtractor()).upload_resume("r.pdf", "application/pdf", resume_bytes)
+    with pytest.raises(ProfileExtractionError):
+        ProfileService(profile_session, extractor=FailingExtractor()).upload_resume("r.pdf", "application/pdf", resume_bytes)
+    profile = ProfileService(profile_session, extractor=FakeExtractor()).get_current_profile()
+    assert profile.status is ProfileStatus.ERROR
+
+
+def test_duplicate_error_recovery_no_new_records_created(
+    profile_session: Session, resume_bytes: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy import func, select as sa_select
+    from backend.models.profile import Profile, Resume
+    monkeypatch.setattr(get_settings(), "resume_storage_dir", str(tmp_path))
+    with pytest.raises(ProfileExtractionError):
+        ProfileService(profile_session, extractor=FailingExtractor()).upload_resume("r.pdf", "application/pdf", resume_bytes)
+    ProfileService(profile_session, extractor=FakeExtractor()).upload_resume("r.pdf", "application/pdf", resume_bytes)
+    resume_count = profile_session.scalar(sa_select(func.count()).select_from(Resume))
+    profile_count = profile_session.scalar(sa_select(func.count()).select_from(Profile))
+    assert resume_count == 1
+    assert profile_count == 1

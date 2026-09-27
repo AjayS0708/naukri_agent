@@ -270,6 +270,20 @@ User reviews
 Profile updated
 ```
 
+If the resume upload finds an existing profile in ERROR state (extraction previously failed):
+
+```text
+Same PDF re-uploaded
+      ↓
+Re-run extraction against stored file
+      ↓
+User reviews
+      ↓
+Profile recovered
+```
+
+No new resume or profile records are created during ERROR recovery. The existing record is updated in-place.
+
 The system must not automatically invent or modify actual profile information.
 
 The application may refresh/re-upload an existing Naukri resume/profile timestamp where technically supported, but it must never alter factual information without user input.

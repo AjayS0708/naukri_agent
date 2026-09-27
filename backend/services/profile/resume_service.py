@@ -50,6 +50,14 @@ class ResumeService:
         if not content.startswith(b"%PDF-"):
             raise ValidationError("The uploaded file is not a valid PDF.")
 
+    def read_stored(self, directory: Path, filename: str) -> bytes:
+        """Read back a previously stored resume file."""
+        path = directory / filename
+        try:
+            return path.read_bytes()
+        except OSError as exc:
+            raise ValidationError("The stored resume file could not be read.") from exc
+
     def store_resume(self, directory: Path, filename: str, content: bytes) -> None:
         """Store resume using storage service abstraction."""
         try:

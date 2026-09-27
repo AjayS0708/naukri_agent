@@ -1,5 +1,32 @@
 # Architecture
 
+## Profile Duplicate ERROR Recovery (Phase 9B-2C)
+
+When a duplicate resume upload finds an existing profile in `ERROR` status, the pipeline recovers:
+
+```text
+Duplicate resume upload (same SHA-256)
+    ↓
+Existing Resume record found
+    ↓
+Check existing Profile status
+    ↓
+CONFIRMED / REVIEW_REQUIRED → reuse existing profile (no extraction)
+    ↓
+ERROR → read stored PDF bytes from disk
+    ↓
+Re-run PDF text extraction (PdfTextExtractor)
+    ↓
+Re-run Gemini profile extraction (_extract_profile_with_retry)
+    ↓
+Update existing Profile record in-place (no new records)
+    ↓
+Success: ERROR → REVIEW_REQUIRED, confirmed=false
+Failure: remains ERROR
+```
+
+---
+
 ## Phase 9B-2B Defect Fixes
 
 ### prompt_version Persistence (Issue 1)

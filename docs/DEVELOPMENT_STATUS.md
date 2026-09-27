@@ -1,5 +1,36 @@
 # Development Status
 
+## Phase 9B-2C Profile Duplicate ERROR Recovery: COMPLETE
+
+Fixed a live-validation blocker in the resume/profile upload pipeline.
+
+**Root cause:** `ProfileService.upload_resume()` duplicate path returned the existing profile unconditionally, regardless of its status. A profile in `ERROR` state (empty data, `confirmed=false`) was returned as-is, making it impossible to recover by re-uploading the same PDF.
+
+**Fix — `backend/services/profile/resume_service.py`:**
+- Added `read_stored(directory, filename) -> bytes` method to read back a previously stored PDF file.
+
+**Fix — `backend/services/profile/profile_service.py`:**
+- Duplicate path now checks `ProfileStatus` of the existing profile.
+- `CONFIRMED` and `REVIEW_REQUIRED` duplicates: reused as before (no extraction).
+- `ERROR` duplicate: re-reads stored PDF via `ResumeService.read_stored()`, re-runs PDF text extraction + Gemini extraction pipeline, updates the existing profile record in-place.
+- On successful recovery: profile transitions `ERROR → REVIEW_REQUIRED`, `confirmed` remains `false`.
+- On failed recovery: profile remains `ERROR`.
+- No new resume or profile records are created.
+
+**Regression tests — `backend/tests/test_profile.py` (+6 tests):**
+- `test_duplicate_confirmed_profile_reused_without_extraction`
+- `test_duplicate_review_required_profile_reused_without_extraction`
+- `test_duplicate_error_profile_triggers_extraction_retry`
+- `test_duplicate_error_recovery_transitions_to_review_required`
+- `test_duplicate_error_recovery_failed_extraction_remains_error`
+- `test_duplicate_error_recovery_no_new_records_created`
+
+**Test results:** 503 backend tests passing (previously 497, +6). No regressions.
+
+**No live Naukri activity in this checkpoint.** Phase 9B-2B live dry-run re-execution pending (requires confirmed profile).
+
+---
+
 ## Phase 9B-2B Defect Fix: COMPLETE
 
 Two runtime defects discovered during live dry-run attempts were fixed:
