@@ -15,7 +15,7 @@
 
 ## Current Phase 9B-3 Validation Note
 
-The bounded live diagnostic now fetches each selected job's description through the existing `NaukriAdapter.fetch_job_description()` path, persists it in `Job.description`, and passes the actual value to Gemini instead of using a `(not fetched)` placeholder. This was an offline-only diagnostic change; no live search or Gemini request was run, and Phase 9B-3 live validation remains incomplete.
+The bounded live diagnostic now fetches each selected job's description through the existing `NaukriAdapter.fetch_job_description()` path, persists it in `Job.description`, and passes the actual value to Gemini instead of using a `(not fetched)` placeholder. It inspects bounded candidates before choosing a native APPLY candidate, excludes external jobs, reuses persisted analyses, stops on quota exhaustion, reports description status/length, and emits ASCII-safe output. This was an offline-only diagnostic change; no live search or Gemini request was run, and Phase 9B-3 live validation remains incomplete.
 
 Live inspection found a genuine Naukri-native job page whose stable application control is `button#apply-button` / `button.apply-button` with visible exact text `Apply`. The adapter previously missed those selectors and returned `EXTERNAL`; the targeted detection and native-start selector fix is now implemented and covered by focused tests. This checkpoint does not include another live run, does not claim the native application boundary has been reached, and no application submission occurred.
 

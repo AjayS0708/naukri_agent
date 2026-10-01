@@ -21,6 +21,25 @@ def _load_diagnostic_module():
     return module
 
 
+def test_live_diagnostic_selects_only_native_apply_candidates():
+    diagnostic = _load_diagnostic_module()
+    external = {"application_mode": "EXTERNAL", "recommendation": "APPLY"}
+    native_skip = {"application_mode": "NAUKRI_NATIVE", "recommendation": "SKIP"}
+    native_apply = {"application_mode": "NAUKRI_NATIVE", "recommendation": "APPLY"}
+
+    assert diagnostic._select_native_apply_candidate(
+        [external, native_skip, native_apply]
+    ) is native_apply
+
+
+def test_live_diagnostic_rejects_external_apply_candidate():
+    diagnostic = _load_diagnostic_module()
+
+    assert diagnostic._select_native_apply_candidate(
+        [{"application_mode": "EXTERNAL", "recommendation": "APPLY"}]
+    ) is None
+
+
 @pytest.mark.asyncio
 async def test_live_diagnostic_fetches_and_persists_job_description():
     diagnostic = _load_diagnostic_module()
