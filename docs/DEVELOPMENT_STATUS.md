@@ -1,5 +1,9 @@
 # Development Status
 
+## Roadmap Reconciliation
+
+`docs/MASTER_PRD.md` is the authoritative product roadmap. Its next formal product phase after the current Phase 9B checkpoint work is **Phase 9 — Notifications**, followed by Phase 10 testing/security/Windows packaging and Phase 11 integration/production hardening. The README phase list now follows that numbering. The custom Phase 9B-3 native application-boundary validation remains unresolved and is not marked complete; Phase 9B-4 safety hardening remains implemented and committed. Cloud deployment preparation remains supporting infrastructure rather than a separately numbered product phase.
+
 ## Phase 9B-4 — Application Dry-Run and Lifecycle Safety: IMPLEMENTED OFFLINE
 
 The dry-run boundary is hardened to stop before native Apply, external Apply, question answering, submission, and confirmation. Dry-run application records now include an explicit `is_dry_run` marker and remain eligible for future real attempts because duplicate protection still blocks only APPLIED and SUBMITTED. Lifecycle data includes PRE_APPLY and FORM_OPENED distinctions; the adapter does not claim FORM_OPENED from a click alone and reports NEEDS_ATTENTION when the form is unverified. Focused offline tests passed (118 tests across application, duplicate-protection, and adapter suites). No browser, Naukri, Gemini, ApplicationRunner live run, Apply click, or database manual write occurred. Native Apply semantics remain UNKNOWN and Phase 9B-3 is incomplete.

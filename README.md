@@ -164,19 +164,20 @@ The Phase 2 backend tests pass. In this environment the frontend build is curren
 
 ## Development Phases
 
+The formal product roadmap is defined by `docs/MASTER_PRD.md`.
+
 1. Foundation and architecture - complete
 2. Resume and user profile - complete
 3. Gemini AI engine - complete
 4. Matching and rules engine - complete
 5. Naukri job discovery - complete
-6. Naukri-native application automation - complete
+6. Naukri application automation - implementation complete; live native form-boundary validation remains unresolved
 7. Scheduler and continuous agent - complete
-8. Agent intelligence and decision quality - complete
-9. Dashboard expansion - complete
-10. Production backend preparation - complete
-11. Cloud deployment - pending
-12. Notifications - pending
-13. Testing, security, and Windows packaging - pending
-14. Integration and production hardening - pending
+8. Dashboard - complete
+9. Notifications - pending
+10. Testing, security, and Windows packaging - pending
+11. Integration and production hardening - pending
+
+Cloud deployment preparation is documented as supporting Phase 8.x/production-readiness work; it is not a separate formal product phase in the master roadmap.
 
 Note: Cloud readiness infrastructure (runtime/storage abstractions) was implemented as foundational work to support future cloud deployment without changing business logic. This is not a separate phase but enables future cloud execution. Phase 8.1 prepared the backend for production hosting without actual deployment.
