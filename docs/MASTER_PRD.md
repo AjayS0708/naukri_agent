@@ -19,6 +19,10 @@ The Naukri security boundary must use visible rendered page content and must sto
 
 The fix is covered by 77 Naukri adapter tests, and 509 full backend tests are recorded as passing. Another real visible-browser dry-run is required before claiming Phase 9B-3 live validation complete. No application submission occurred during this checkpoint.
 
+## Current Test Database Safety Note
+
+The runtime SQLite database is persistent application data and must never be reset by tests. The backend test fixtures now use a disposable temporary file-backed SQLite engine, redirect application database sessions to that engine for the test session, and perform schema resets only there. The production database at `data/naukri_agent.db` is not a test fixture dependency. Isolation regression tests, focused profile/application tests, and the full 512-test backend suite passed while the existing production profile/resume rows remained present.
+
 ---
 
 # 1. Product Vision

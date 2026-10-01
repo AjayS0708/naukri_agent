@@ -2,6 +2,7 @@
 
 | Decision | Rationale |
 | --- | --- |
+| Test Database Isolation | Backend tests must never reset the local runtime database. The shared pytest fixture uses a disposable temporary file-backed SQLite engine and redirects application/session references before tests run. Schema reset operations are restricted to that test engine; `data/naukri_agent.db` remains runtime-only. |
 | Python + FastAPI | Typed, lightweight local API with strong validation support. |
 | React + TypeScript + Tailwind | Product-ready dashboard foundation with typed frontend contracts. |
 | SQLite + SQLAlchemy | Simple local V1 storage while retaining a route to PostgreSQL. |

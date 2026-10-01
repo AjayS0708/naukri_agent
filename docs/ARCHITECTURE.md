@@ -1,5 +1,11 @@
 # Architecture
 
+## Test Database Isolation Checkpoint
+
+Runtime persistence and test persistence are separate. The application continues to use the configured V1 SQLite database at `data/naukri_agent.db`, while `backend/tests/conftest.py` creates a disposable temporary file-backed SQLite engine for tests. Before tests run, database/session references used by the FastAPI app and directly imported services are redirected to that test engine. `Base.metadata.drop_all()` and `create_all()` therefore operate only on the disposable test database.
+
+This prevents the test suite from deleting profiles, resumes, jobs, analyses, preferences, or applications in the runtime database. Regression coverage verifies that the test path differs from the production path and that resetting the test schema leaves production row counts unchanged. Focused persistence tests passed, and the full backend suite passed with 512 tests.
+
 ## Phase 9B-3 False-Positive Fix Checkpoint
 
 Live Naukri diagnosis found that a normal HTTP 200 job page was incorrectly classified as a security challenge because raw HTML contained Naukri's internal `"showCaptcha":false` state value. `NaukriAdapter._check_security()` now evaluates `page.inner_text("body")` rather than raw `page.content()`. Bare `captcha` is not a standalone visible-text trigger; explicit visible reCAPTCHA/hCAPTCHA labels, human-verification phrases, security challenges, login indicators, and blocked-access indicators remain safety gates. This preserves the rule that actual visible security challenges stop automation without adding bypass or stealth behavior.

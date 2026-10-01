@@ -1,5 +1,24 @@
 # Development Status
 
+## Test Database Isolation Checkpoint: COMPLETE
+
+Fixed a serious test-environment persistence defect. The shared fixture previously imported the application's production `engine` and executed `Base.metadata.drop_all()` against `data/naukri_agent.db`, allowing tests to delete runtime profile and resume data.
+
+Implemented:
+- Added a session-scoped temporary file-backed SQLite test engine.
+- Redirected application and directly imported service session factories to the isolated test engine during tests.
+- Limited `drop_all()` and `create_all()` in the shared fixture to the disposable test engine.
+- Added regression tests proving the test engine path differs from production and test schema resets preserve production row counts.
+
+Verification:
+- Production database: `C:\Users\ajays\Desktop\Naukri Agent\data\naukri_agent.db`
+- Test database: disposable temporary SQLite file under the system temp directory
+- Focused isolation regression tests: 3 passed
+- Full backend suite: 512 passed
+- Production database remained present with its existing profile/resume rows after the full suite.
+
+No application behavior, profile business logic, Naukri automation, Gemini, scheduler, worker coordination, or matching logic was changed.
+
 ## Phase 9B-3 False-Positive Fix Checkpoint: IMPLEMENTED, LIVE RECHECK PENDING
 
 During a real visible-browser dry-run, the selected RR Groups job page was a normal HTTP 200 Naukri page with no actual CAPTCHA. The security gate nevertheless blocked it because raw HTML included Naukri's internal `"showCaptcha":false` value. The defect was isolated to `_check_security()` treating raw HTML text as visible security content.
