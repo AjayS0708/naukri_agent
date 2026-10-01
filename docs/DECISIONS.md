@@ -2,6 +2,7 @@
 
 | Decision | Rationale |
 | --- | --- |
+| Diagnostic JD Fetch Reuses Production Adapter (Phase 9B-3) | The bounded live diagnostic must not analyze card-only jobs with a `(not fetched)` placeholder. It calls the existing `NaukriAdapter.fetch_job_description()` and persists the result in `Job.description` before building Gemini context. This checkpoint changes only diagnostic behavior and remains incomplete until a later live validation. |
 | Stable Naukri Native Apply Detection (Phase 9B-3) | Live Naukri pages can expose native application through stable `#apply-button` / `button.apply-button` controls with exact visible text `Apply`. Detection and start selectors recognize these controls without relying on hashed CSS classes. External indicators are checked first, and the live native dry-run remains pending until revalidated. |
 | Test Database Isolation | Backend tests must never reset the local runtime database. The shared pytest fixture uses a disposable temporary file-backed SQLite engine and redirects application/session references before tests run. Schema reset operations are restricted to that test engine; `data/naukri_agent.db` remains runtime-only. |
 | Python + FastAPI | Typed, lightweight local API with strong validation support. |

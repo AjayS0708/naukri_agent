@@ -1,5 +1,9 @@
 # Architecture
 
+## Phase 9B-3 Diagnostic Job Description Flow
+
+The bounded live diagnostic now reuses `NaukriAdapter.fetch_job_description()` for each selected real job before Gemini analysis. The returned text is assigned to the diagnostic `Job.description`, persisted, and included in the Gemini context. This keeps the diagnostic data flow aligned with production DiscoveryService without changing production discovery, Gemini, matching, scheduler, or application code. The change was validated offline only; no live search or Gemini request was run, and Phase 9B-3 remains incomplete.
+
 ## Phase 9B-3 Native Application Detection Fix
 
 Live inspection of a real First American Data Analyst page found a Naukri-native application surface: a visible `button#apply-button` / `button.apply-button` control with exact text `Apply`, and no `Apply on company site` control. The adapter previously recognized only older selectors and incorrectly returned `EXTERNAL`.

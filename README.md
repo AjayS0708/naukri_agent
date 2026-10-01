@@ -4,6 +4,8 @@ Windows-first, local-first foundation for a controlled job-application agent. De
 
 ## Status
 
+The live diagnostic now reuses `NaukriAdapter.fetch_job_description()` before Gemini analysis, persists the fetched text in `Job.description`, and sends that actual text in the diagnostic Gemini context. This is an offline-tested diagnostic correction only; no live Naukri search was run, Gemini quota was not consumed, and Phase 9B-3 remains incomplete.
+
 Phase 9B-3 native application detection fix is implemented. Live inspection found that a real First American Data Analyst page exposes a visible `button#apply-button` / `button.apply-button` control with exact text `Apply`, but the adapter previously classified it as external. Detection and native start selectors now recognize stable DOM evidence without relying on hashed classes. Focused adapter coverage includes native controls, external application indicators, no-control fallback, and the current native start selector: 84 tests passed. The full backend suite passed with 519 tests and 3 dependency deprecation warnings. The full live native dry-run remains pending; no application was submitted in this checkpoint.
 
 Test database isolation checkpoint is complete. Backend tests now use a disposable temporary SQLite database and never reset the runtime database at `data/naukri_agent.db`. The shared test fixture redirects application database sessions to the isolated engine before tests start; production profile/resume data is not used by or modified by tests. Isolation regression tests passed, focused profile/application tests passed, and the full backend suite passed with 512 tests. The production database remained present with its existing profile/resume rows after the suite.

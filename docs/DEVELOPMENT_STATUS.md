@@ -1,5 +1,9 @@
 # Development Status
 
+## Phase 9B-3 Diagnostic JD Fetch: IMPLEMENTED, LIVE RECHECK PENDING
+
+`diagnose_live_dry_run.py` now calls the existing `NaukriAdapter.fetch_job_description()` for selected real jobs, assigns the result to `Job.description`, commits it, and uses that value in the Gemini context. Focused offline regression tests cover fetching and avoiding unnecessary refetches. No live Naukri search or Gemini request was run in this checkpoint, no application was submitted, and Phase 9B-3 remains incomplete.
+
 ## Test Database Isolation Checkpoint: COMPLETE
 
 ## Phase 9B-3 Native Application Detection Fix: IMPLEMENTED, LIVE RECHECK PENDING
