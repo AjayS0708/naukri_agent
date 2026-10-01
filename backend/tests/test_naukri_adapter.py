@@ -131,24 +131,19 @@ class TestBuildNaukriSearchUrl:
 
 
 class TestSecurityDetection:
-    @pytest.mark.asyncio
-    async def test_check_security_captcha(self):
-        adapter = NaukriAdapter()
+    """Tests for _check_security using visible text (inner_text) not raw HTML."""
+
+    def _make_page(self, visible_text: str, url: str = "https://www.naukri.com/jobs") -> AsyncMock:
+        """Helper: mock page whose inner_text('body') returns visible_text."""
         mock_page = AsyncMock()
-        mock_page.content.return_value = "Please complete the CAPTCHA to continue"
-        mock_page.url = "https://www.naukri.com/jobs"
-
-        with pytest.raises(Exception) as exc_info:
-            await adapter._check_security(mock_page)
-
-        assert "captcha" in str(exc_info.value).lower()
+        mock_page.inner_text.return_value = visible_text
+        mock_page.url = url
+        return mock_page
 
     @pytest.mark.asyncio
     async def test_check_security_verify_human(self):
         adapter = NaukriAdapter()
-        mock_page = AsyncMock()
-        mock_page.content.return_value = "Verify you are human"
-        mock_page.url = "https://www.naukri.com/jobs"
+        mock_page = self._make_page("Verify you are human")
 
         with pytest.raises(Exception) as exc_info:
             await adapter._check_security(mock_page)
@@ -156,11 +151,19 @@ class TestSecurityDetection:
         assert "security verification" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_check_security_recaptcha(self):
+    async def test_check_security_recaptcha_visible(self):
         adapter = NaukriAdapter()
-        mock_page = AsyncMock()
-        mock_page.content.return_value = "reCAPTCHA verification"
-        mock_page.url = "https://www.naukri.com/jobs"
+        mock_page = self._make_page("reCAPTCHA verification")
+
+        with pytest.raises(Exception) as exc_info:
+            await adapter._check_security(mock_page)
+
+        assert "security verification" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_check_security_hcaptcha_visible(self):
+        adapter = NaukriAdapter()
+        mock_page = self._make_page("hCaptcha challenge")
 
         with pytest.raises(Exception) as exc_info:
             await adapter._check_security(mock_page)
@@ -170,9 +173,7 @@ class TestSecurityDetection:
     @pytest.mark.asyncio
     async def test_check_security_login_required_url(self):
         adapter = NaukriAdapter()
-        mock_page = AsyncMock()
-        mock_page.content.return_value = "Job listings"
-        mock_page.url = "https://www.naukri.com/login"
+        mock_page = self._make_page("Job listings", url="https://www.naukri.com/login")
 
         with pytest.raises(Exception) as exc_info:
             await adapter._check_security(mock_page)
@@ -182,9 +183,7 @@ class TestSecurityDetection:
     @pytest.mark.asyncio
     async def test_check_security_sign_in_content(self):
         adapter = NaukriAdapter()
-        mock_page = AsyncMock()
-        mock_page.content.return_value = "Sign in to your account"
-        mock_page.url = "https://www.naukri.com/jobs"
+        mock_page = self._make_page("Sign in to your account")
 
         with pytest.raises(Exception) as exc_info:
             await adapter._check_security(mock_page)
@@ -194,9 +193,7 @@ class TestSecurityDetection:
     @pytest.mark.asyncio
     async def test_check_security_access_denied(self):
         adapter = NaukriAdapter()
-        mock_page = AsyncMock()
-        mock_page.content.return_value = "Access denied"
-        mock_page.url = "https://www.naukri.com/jobs"
+        mock_page = self._make_page("Access denied")
 
         with pytest.raises(Exception) as exc_info:
             await adapter._check_security(mock_page)
@@ -206,12 +203,90 @@ class TestSecurityDetection:
     @pytest.mark.asyncio
     async def test_check_security_no_security_issues(self):
         adapter = NaukriAdapter()
-        mock_page = AsyncMock()
-        mock_page.content.return_value = "Software Engineer job at Tech Corp"
-        mock_page.url = "https://www.naukri.com/jobs"
+        mock_page = self._make_page("Software Engineer job at Tech Corp")
 
         # Should not raise any exception
         await adapter._check_security(mock_page)
+
+    # --- Phase 9B-3 regression: false-positive fix ---
+
+    @pytest.mark.asyncio
+    async def test_show_captcha_false_json_not_flagged(self):
+        """Naukri embeds \"showCaptcha\":false in a Redux script tag.
+        inner_text() strips script content so this must NOT trigger security."""
+        adapter = NaukriAdapter()
+        mock_page = self._make_page(
+            "Data Analyst\nRR Groups\nBengaluru\n0-1 Yrs\nApply"
+        )
+        mock_page.content.return_value = '{"showCaptcha":false}'
+
+        # Must not raise
+        await adapter._check_security(mock_page)
+        mock_page.content.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bare_captcha_word_in_visible_text_not_flagged(self):
+        """The bare word 'captcha' alone in visible text (e.g. a help article
+        mentioning captcha) should NOT trigger the security gate — only
+        explicit CAPTCHA widget labels (recaptcha, hcaptcha, i'm not a robot)
+        or challenge phrases do."""
+        adapter = NaukriAdapter()
+        mock_page = self._make_page(
+            "If you see a captcha on other sites, please contact support."
+        )
+
+        # Must not raise — bare 'captcha' word is not a security indicator
+        await adapter._check_security(mock_page)
+
+    @pytest.mark.asyncio
+    async def test_normal_job_page_content_not_flagged(self):
+        """A realistic Naukri job page visible text must not trigger security."""
+        adapter = NaukriAdapter()
+        mock_page = self._make_page(
+            "Data Analyst\n"
+            "RR Groups\n"
+            "Bengaluru | 0-1 Yrs | 3-5 LPA\n"
+            "Job Description\n"
+            "We are looking for a Data Analyst to join our team.\n"
+            "Skills: Python, SQL, Power BI\n"
+            "Apply Now"
+        )
+
+        # Must not raise
+        await adapter._check_security(mock_page)
+
+    @pytest.mark.asyncio
+    async def test_i_am_not_a_robot_visible_triggers_security(self):
+        """Visible 'I'm not a robot' checkbox label must trigger security."""
+        adapter = NaukriAdapter()
+        mock_page = self._make_page("I'm not a robot")
+
+        with pytest.raises(Exception) as exc_info:
+            await adapter._check_security(mock_page)
+
+        assert "security verification" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_are_you_a_robot_visible_triggers_security(self):
+        """Visible 'are you a robot' text must trigger security."""
+        adapter = NaukriAdapter()
+        mock_page = self._make_page("Are you a robot? Please verify.")
+
+        with pytest.raises(Exception) as exc_info:
+            await adapter._check_security(mock_page)
+
+        assert "security verification" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_security_challenge_visible_triggers_security(self):
+        """Visible 'security challenge' text must trigger security."""
+        adapter = NaukriAdapter()
+        mock_page = self._make_page("Complete the security challenge to continue")
+
+        with pytest.raises(Exception) as exc_info:
+            await adapter._check_security(mock_page)
+
+        assert "security verification" in str(exc_info.value).lower()
 
 
 class TestStartSession:
@@ -926,16 +1001,18 @@ class TestOpenJobPageCaptchaLifecycle:
 class TestSecurityRecheckAfterManualIntervention:
     """Tests for recheck_security_after_manual_intervention method."""
 
+    def _make_page(self, visible_text: str, url: str = "https://www.naukri.com/job/123") -> AsyncMock:
+        mock_page = AsyncMock()
+        mock_page.inner_text.return_value = visible_text
+        mock_page.url = url
+        return mock_page
+
     @pytest.mark.asyncio
     async def test_recheck_security_cleared_after_manual_intervention(self):
         """When security is cleared after manual intervention, should return True."""
         adapter = NaukriAdapter()
-        mock_page = AsyncMock()
-
-        # Mock successful reload and no security check exception
+        mock_page = self._make_page("Job description loaded successfully")
         mock_page.reload.return_value = None
-        mock_page.content.return_value = "Job description loaded successfully"
-        mock_page.url = "https://www.naukri.com/job/123"
 
         result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=1)
 
@@ -946,12 +1023,8 @@ class TestSecurityRecheckAfterManualIntervention:
     async def test_recheck_security_still_required_after_manual_intervention(self):
         """When security is still required after manual intervention, should return False."""
         adapter = NaukriAdapter()
-        mock_page = AsyncMock()
-
-        # Mock reload but security check still fails
+        mock_page = self._make_page("reCAPTCHA verification")
         mock_page.reload.return_value = None
-        mock_page.content.return_value = "Please complete the CAPTCHA to continue"
-        mock_page.url = "https://www.naukri.com/job/123"
 
         result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=1)
 
@@ -962,12 +1035,8 @@ class TestSecurityRecheckAfterManualIntervention:
     async def test_recheck_security_login_required_still_blocks(self):
         """When login is still required after manual intervention, should return False."""
         adapter = NaukriAdapter()
-        mock_page = AsyncMock()
-
-        # Mock reload but login required
+        mock_page = self._make_page("Job listings", url="https://www.naukri.com/login")
         mock_page.reload.return_value = None
-        mock_page.content.return_value = "Job listings"
-        mock_page.url = "https://www.naukri.com/login"
 
         result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=1)
 
@@ -978,12 +1047,8 @@ class TestSecurityRecheckAfterManualIntervention:
     async def test_recheck_security_access_blocked_still_blocks(self):
         """When access is still blocked after manual intervention, should return False."""
         adapter = NaukriAdapter()
-        mock_page = AsyncMock()
-
-        # Mock reload but still blocked
+        mock_page = self._make_page("Access denied")
         mock_page.reload.return_value = None
-        mock_page.content.return_value = "Access denied"
-        mock_page.url = "https://www.naukri.com/job/123"
 
         result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=1)
 
@@ -995,8 +1060,6 @@ class TestSecurityRecheckAfterManualIntervention:
         """When page reload fails, should return False."""
         adapter = NaukriAdapter()
         mock_page = AsyncMock()
-
-        # Mock reload failure
         mock_page.reload.side_effect = Exception("Network error during reload")
 
         result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=1)
@@ -1008,11 +1071,8 @@ class TestSecurityRecheckAfterManualIntervention:
     async def test_recheck_security_custom_wait_time(self):
         """Should respect custom wait_seconds parameter."""
         adapter = NaukriAdapter()
-        mock_page = AsyncMock()
-
+        mock_page = self._make_page("Job description loaded successfully")
         mock_page.reload.return_value = None
-        mock_page.content.return_value = "Job description loaded successfully"
-        mock_page.url = "https://www.naukri.com/job/123"
 
         with patch('asyncio.sleep') as mock_sleep:
             result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=10)
@@ -1024,16 +1084,12 @@ class TestSecurityRecheckAfterManualIntervention:
     async def test_recheck_security_preserves_page_object(self):
         """Should not close the page during re-evaluation."""
         adapter = NaukriAdapter()
-        mock_page = AsyncMock()
-
+        mock_page = self._make_page("Job description loaded successfully")
         mock_page.reload.return_value = None
-        mock_page.content.return_value = "Job description loaded successfully"
-        mock_page.url = "https://www.naukri.com/job/123"
 
         result = await adapter.recheck_security_after_manual_intervention(mock_page, wait_seconds=1)
 
         assert result is True
-        # Page should NOT be closed
         mock_page.close.assert_not_called()
 
 

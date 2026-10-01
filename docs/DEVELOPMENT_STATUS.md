@@ -1,5 +1,22 @@
 # Development Status
 
+## Phase 9B-3 False-Positive Fix Checkpoint: IMPLEMENTED, LIVE RECHECK PENDING
+
+During a real visible-browser dry-run, the selected RR Groups job page was a normal HTTP 200 Naukri page with no actual CAPTCHA. The security gate nevertheless blocked it because raw HTML included Naukri's internal `"showCaptcha":false` value. The defect was isolated to `_check_security()` treating raw HTML text as visible security content.
+
+Implemented fix in `backend/services/naukri/adapter.py`:
+- Inspect rendered `page.inner_text("body")` instead of raw `page.content()`.
+- Remove bare `captcha` as a standalone trigger.
+- Preserve visible human-verification, security-challenge, reCAPTCHA/hCAPTCHA, login, and blocked-access indicators.
+
+Regression coverage in `backend/tests/test_naukri_adapter.py` verifies:
+- Raw `"showCaptcha":false` does not block a normal page.
+- Bare visible `captcha` does not block.
+- Visible reCAPTCHA, hCAPTCHA, and security-verification indicators still block.
+- A normal Naukri job page is allowed.
+
+**Recorded test results:** 77 Naukri adapter tests passed; 509 full backend tests passed. No application was submitted. Phase 9B-3 live validation remains incomplete until another real visible-browser Naukri dry-run confirms the corrected behavior.
+
 ## Phase 9B-2C Profile Duplicate ERROR Recovery: COMPLETE
 
 Fixed a live-validation blocker in the resume/profile upload pipeline.

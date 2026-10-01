@@ -1,5 +1,11 @@
 # Architecture
 
+## Phase 9B-3 False-Positive Fix Checkpoint
+
+Live Naukri diagnosis found that a normal HTTP 200 job page was incorrectly classified as a security challenge because raw HTML contained Naukri's internal `"showCaptcha":false` state value. `NaukriAdapter._check_security()` now evaluates `page.inner_text("body")` rather than raw `page.content()`. Bare `captcha` is not a standalone visible-text trigger; explicit visible reCAPTCHA/hCAPTCHA labels, human-verification phrases, security challenges, login indicators, and blocked-access indicators remain safety gates. This preserves the rule that actual visible security challenges stop automation without adding bypass or stealth behavior.
+
+The targeted regression suite covers the raw `showCaptcha:false` value, bare visible `captcha`, explicit visible security indicators, and a normal Naukri job page. 77 Naukri adapter tests and 509 full backend tests are recorded as passing. A second real visible-browser Naukri dry-run remains the next validation step; this checkpoint does not claim Phase 9B-3 live validation is complete, and no application submission occurred.
+
 ## Profile Duplicate ERROR Recovery (Phase 9B-2C)
 
 When a duplicate resume upload finds an existing profile in `ERROR` status, the pipeline recovers:

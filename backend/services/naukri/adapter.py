@@ -86,14 +86,27 @@ class NaukriAdapter(JobPlatformAdapter):
             await self.playwright.stop()
 
     async def _check_security(self, page: Page):
-        """Detect boundaries where agent needs to stop safely per PRD."""
-        content = await page.content()
-        content_lower = content.lower()
+        """Detect boundaries where agent needs to stop safely per PRD.
+
+        Uses visible rendered text (inner_text) rather than raw HTML to avoid
+        false positives from JSON script blobs such as Naukri's
+        ``"showCaptcha":false`` Redux state flag.
+        """
+        # Wait briefly for JS-rendered content to settle before inspecting
+        # visible text.  Uses a short bounded wait on a known Naukri element;
+        # if it never appears we proceed with whatever is visible.
+        try:
+            await page.wait_for_selector("body", timeout=3000)
+        except Exception:
+            pass
+
+        # Visible text only — ignores raw HTML / embedded JSON script blobs.
+        visible_text = await page.inner_text("body")
+        visible_lower = visible_text.lower()
         url_lower = page.url.lower()
 
-        # Security verification indicators
+        # Security verification indicators (must be visible to the user)
         security_indicators = [
-            "captcha",
             "verify you are human",
             "security challenge",
             "security verification",
@@ -101,17 +114,30 @@ class NaukriAdapter(JobPlatformAdapter):
             "human verification",
             "we need to verify",
             "please verify",
-            "recaptcha",
-            "hcaptcha",
             "are you a robot",
         ]
 
         for indicator in security_indicators:
-            if indicator in content_lower:
+            if indicator in visible_lower:
+                raise Exception(f"Security Verification Required: {indicator}")
+
+        # CAPTCHA widget presence: check for visible CAPTCHA text or known
+        # widget labels.  Bare "captcha" is intentionally excluded to avoid
+        # matching Naukri's "showCaptcha":false JSON flag in script tags;
+        # inner_text() already strips script content, but this makes the
+        # intent explicit.
+        captcha_visible_indicators = [
+            "recaptcha",
+            "hcaptcha",
+            "i'm not a robot",
+            "i am not a robot",
+        ]
+        for indicator in captcha_visible_indicators:
+            if indicator in visible_lower:
                 raise Exception(f"Security Verification Required: {indicator}")
 
         # Login required indicators
-        if "login" in url_lower or "sign in" in content_lower:
+        if "login" in url_lower or "sign in" in visible_lower:
             raise Exception("Naukri login required")
 
         # Blocked access indicators
@@ -124,7 +150,7 @@ class NaukriAdapter(JobPlatformAdapter):
         ]
 
         for indicator in blocked_indicators:
-            if indicator in content_lower:
+            if indicator in visible_lower:
                 raise Exception(f"Access Blocked: {indicator}")
 
     async def recheck_security_after_manual_intervention(self, page: Page, wait_seconds: int = 5) -> bool:

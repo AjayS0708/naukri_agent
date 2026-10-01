@@ -13,6 +13,12 @@
 **Frontend:** React + TypeScript
 **Database:** SQLite (V1), PostgreSQL (Production Integration Supported)
 
+## Current Phase 9B-3 Validation Note
+
+The Naukri security boundary must use visible rendered page content and must stop automation for actual visible CAPTCHA, human-verification, security-challenge, authentication, or blocked-access indicators. A false-positive found during live dry-run diagnosis came from treating Naukri's raw HTML `"showCaptcha":false` state value as a security challenge. The targeted adapter fix now inspects rendered body text and does not treat bare `captcha` as a standalone trigger. This preserves the PRD requirement to stop for real security challenges; it does not bypass or weaken those controls.
+
+The fix is covered by 77 Naukri adapter tests, and 509 full backend tests are recorded as passing. Another real visible-browser dry-run is required before claiming Phase 9B-3 live validation complete. No application submission occurred during this checkpoint.
+
 ---
 
 # 1. Product Vision
