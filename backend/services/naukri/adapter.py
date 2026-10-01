@@ -39,6 +39,7 @@ class NaukriAdapter(JobPlatformAdapter):
     Raises exceptions on CAPTCHA / Security walls designed to halt agents.
     """
     platform_name = "naukri"
+    post_apply_timeout_seconds = 8
 
     def __init__(self, browser_type: str = "chrome"):
         """
@@ -484,6 +485,9 @@ class NaukriAdapter(JobPlatformAdapter):
         """
         Detect if the job has a Naukri-native application or redirects externally.
         Returns: "NAUKRI_NATIVE" or "EXTERNAL"
+
+        Phase 10: Evidence-driven detection using visible rendered text,
+        stable selectors, and exact text matching. No hashed classes.
         """
         try:
             # Check rendered text so hidden navigation/scripts do not classify the
@@ -491,7 +495,7 @@ class NaukriAdapter(JobPlatformAdapter):
             content = await page.inner_text("body")
             content_lower = content.lower()
 
-            # External application indicators
+            # External application indicators (visible text only)
             external_indicators = [
                 "apply on company site",
                 "apply on company website",
@@ -537,6 +541,12 @@ class NaukriAdapter(JobPlatformAdapter):
         """
         Start the application process by clicking the apply button.
         A click alone is not evidence that an application form opened.
+
+        Phase 10: After the Apply click, wait for explicit post-click evidence:
+        - Applied: visible #already-applied, .already-applied, exact "Applied" text,
+                   or banner matching 'Applied to "<title>"'
+        - Form opened: visible application container
+        - Neither within timeout: NEEDS_ATTENTION
         """
         try:
             # Try various apply button selectors
@@ -552,13 +562,36 @@ class NaukriAdapter(JobPlatformAdapter):
 
             for selector in apply_selectors:
                 button = await page.query_selector(selector)
-                if button:
+                if button and await button.is_visible():
                     await button.click()
-                    await asyncio.sleep(2)
                     await self._check_security(page)
+
+                    # Phase 10: Bounded wait for explicit post-click evidence
+                    deadline = (
+                        asyncio.get_running_loop().time()
+                        + self.post_apply_timeout_seconds
+                    )
+                    while asyncio.get_running_loop().time() < deadline:
+                        # Check for explicit Applied state (visible evidence only)
+                        applied, evidence = await self.detect_applied_state(page)
+                        if applied:
+                            logger.info(f"Applied state detected with evidence: {evidence}")
+                            return ApplicationStartResult.APPLIED
+
+                        # Check for visible application container
+                        if await self._has_visible_application_container(page):
+                            logger.info("Application container detected after click")
+                            return ApplicationStartResult.FORM_OPENED
+
+                        await asyncio.sleep(0.25)
+
+                    # Bounded wait expired without explicit evidence
+                    logger.warning(
+                        f"No explicit post-click evidence after {self.post_apply_timeout_seconds}s"
+                    )
                     return ApplicationStartResult.NEEDS_ATTENTION
 
-            logger.warning("No apply button found")
+            logger.warning("No apply button found with is_visible check")
             return ApplicationStartResult.PRE_APPLY
         except Exception as e:
             logger.error(f"Error starting application: {e}")
@@ -566,41 +599,106 @@ class NaukriAdapter(JobPlatformAdapter):
 
     async def detect_application_questions(self, page: Page) -> List[Dict[str, Any]]:
         """
-        Detect application questions on the page.
+        Detect application questions on the visible application container.
+
+        Phase 10: Scope to visible editable application container only.
+        Require each field to be: visible, enabled, non-zero box, not readonly,
+        and not a header/search input.
+
         Returns a list of question dictionaries with 'question' and 'type' keys.
         """
         questions = []
         try:
-            # Look for common question selectors
-            question_selectors = [
-                'input[type="text"]',
-                'textarea',
-                'select',
-                '.question',
-                '.form-group label'
-            ]
+            # Get the visible application container (dialog, drawer, modal, or form)
+            container = await self._get_visible_application_container(page)
+            if container is None:
+                logger.info("No visible application container found for question detection")
+                return []
 
-            for selector in question_selectors:
-                elements = await page.query_selector_all(selector)
-                for element in elements:
-                    # Get label or placeholder
-                    label = await element.get_attribute('placeholder')
+            # Search for input/textarea/select fields within the container
+            for selector in ['input', 'textarea', 'select']:
+                for element in await container.query_selector_all(selector):
+                    # Phase 10: Strict visibility and editability requirements
+                    if not await element.is_visible():
+                        continue
+                    if not await element.is_enabled():
+                        continue
+
+                    # Reject readonly fields
+                    if await element.get_attribute("readonly") is not None:
+                        continue
+
+                    # Reject disabled fields
+                    if await element.get_attribute("disabled") is not None:
+                        continue
+
+                    # Reject zero-sized elements
+                    box = await element.bounding_box()
+                    if not box or box["width"] <= 0 or box["height"] <= 0:
+                        continue
+
+                    # Reject hidden type inputs
+                    field_type = await element.get_attribute("type")
+                    if field_type and field_type.lower() in ["hidden", "submit", "button"]:
+                        continue
+
+                    # Reject header/search inputs by name/id patterns
+                    name_attr = await element.get_attribute("name")
+                    id_attr = await element.get_attribute("id")
+                    if name_attr and any(x in name_attr.lower() for x in ["search", "header", "filter"]):
+                        continue
+                    if id_attr and any(x in id_attr.lower() for x in ["search", "header", "filter"]):
+                        continue
+
+                    # Get label/placeholder for the question
+                    label = await element.get_attribute("placeholder")
                     if not label:
-                        # Try to find associated label
-                        label_element = await element.query_selector('label')
-                        if label_element:
-                            label = await label_element.inner_text()
+                        # Try to find associated label element
+                        label_for = await element.get_attribute("id")
+                        if label_for:
+                            label_element = await page.query_selector(f'label[for="{label_for}"]')
+                            if label_element:
+                                label = await label_element.inner_text()
 
                     if label:
                         questions.append({
-                            'question': label.strip(),
-                            'type': 'text'  # Simplified type detection
+                            "question": label.strip(),
+                            "type": selector,
+                            "required": await element.get_attribute("required") is not None
                         })
 
+            logger.info(f"Detected {len(questions)} questions in visible application container")
             return questions
         except Exception as e:
             logger.warning(f"Error detecting questions: {e}")
             return []
+
+    async def detect_applied_state(self, page: Page) -> tuple[bool, str]:
+        """Return explicit post-Apply evidence without inferring from navigation."""
+        try:
+            for selector in ["#already-applied", ".already-applied"]:
+                for element in await page.query_selector_all(selector):
+                    if await element.is_visible():
+                        return True, (await element.inner_text()).strip()
+            for element in await page.query_selector_all("*"):
+                if not await element.is_visible():
+                    continue
+                text = (await element.inner_text()).strip()
+                if text == "Applied" or text.startswith('Applied to "'):
+                    return True, text
+            return False, ""
+        except Exception:
+            return False, ""
+
+    async def _get_visible_application_container(self, page: Page):
+        for selector in ['[role="dialog"]', ".apply-drawer", ".apply-modal", "form"]:
+            for element in await page.query_selector_all(selector):
+                if await element.is_visible():
+                    return element
+        return None
+
+    async def _has_visible_application_container(self, page: Page) -> bool:
+        return await self._get_visible_application_container(page) is not None
 
     async def answer_question(self, page: Page, question: str, answer: str) -> bool:
         """
@@ -618,7 +716,10 @@ class NaukriAdapter(JobPlatformAdapter):
 
             for selector in input_selectors:
                 element = await page.query_selector(selector)
-                if element:
+                if element and await element.is_visible() and await element.is_enabled():
+                    box = await element.bounding_box()
+                    if not box or box["width"] <= 0 or box["height"] <= 0:
+                        continue
                     await element.fill(answer)
                     await asyncio.sleep(0.5)
                     return True
@@ -630,7 +731,7 @@ class NaukriAdapter(JobPlatformAdapter):
                 if question.lower() in label_text.lower():
                     # Find the associated input
                     input_element = await page.query_selector(f'#{await label.get_attribute("for")}')
-                    if input_element:
+                    if input_element and await input_element.is_visible() and await input_element.is_enabled():
                         await input_element.fill(answer)
                         await asyncio.sleep(0.5)
                         return True

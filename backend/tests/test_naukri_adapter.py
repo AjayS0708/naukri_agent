@@ -355,6 +355,7 @@ class TestApplicationTypeDetection:
     @pytest.mark.asyncio
     async def test_start_application_supports_current_native_apply_button(self):
         adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0
         page = self._make_page()
         apply_button = self._visible_control()
         page.query_selector.side_effect = lambda selector: (
@@ -365,6 +366,28 @@ class TestApplicationTypeDetection:
             assert await adapter.start_application(page) == ApplicationStartResult.NEEDS_ATTENTION
 
         apply_button.click.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_detect_applied_state_uses_visible_evidence(self):
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        applied = self._visible_control("Applied")
+        page.query_selector_all.return_value = [applied]
+
+        detected, evidence = await adapter.detect_applied_state(page)
+
+        assert detected is True
+        assert evidence == "Applied"
+
+    @pytest.mark.asyncio
+    async def test_detect_questions_rejects_hidden_header_inputs(self):
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        page.query_selector_all.side_effect = lambda selector: (
+            [self._visible_control()] if selector == "form" else []
+        )
+
+        assert await adapter.detect_application_questions(page) == []
 
 
 class TestStartSession:

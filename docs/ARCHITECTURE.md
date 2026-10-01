@@ -6,9 +6,55 @@
 
 The scheduler evaluates the evening summary during the configured 8 PM hour in `notification_timezone`; a date-based deduplication key prevents duplicate delivery. The history endpoint is `GET /api/notifications`, and the dashboard shows recent persisted records. Tests use a fake sender; no real SMTP delivery has been performed.
 
-## Phase 9B-4 Application Safety Boundary
+## Phase 10 Application Boundary Fix
 
-`ApplicationRunner(dry_run=True)` now stops after page security and application-type inspection, before any native Apply control is invoked. It records `is_dry_run=true`, uses `NEEDS_ATTENTION` with a pre-Apply inspection reason, and reports an inspection-only result. Non-dry-run execution remains separate. The adapter's native start contract reports `NEEDS_ATTENTION` after a click when no application-specific form has been verified; a click is not reported as `FORM_OPENED`. APPLIED and SUBMITTED remain the only completed-application statuses used by duplicate protection. Native Apply semantics remain unknown, and Phase 9B-3's live form boundary remains unresolved. No live application occurred in this checkpoint.
+The application boundary is now evidence-driven and offline-validated. After a native Apply click,
+the adapter waits for explicit visible evidence within 8 seconds:
+
+```text
+Apply button click
+    ↓
+Wait for post-click evidence (max 8s)
+    ↓
+Applied evidence detected?
+    ├─ YES: #already-applied, .already-applied, exact "Applied", or 'Applied to "<title>"'
+    │   → Return ApplicationStartResult.APPLIED
+    │
+Visible application container detected?
+    ├─ YES: Dialog, drawer, modal, or form element visible
+    │   → Return ApplicationStartResult.FORM_OPENED (proceed to questions)
+    │
+Neither detected within timeout?
+    └─ → Return ApplicationStartResult.NEEDS_ATTENTION (no retry without manual reset)
+```
+
+### Question Detection Scoping (Phase 10)
+
+Questions are detected only within visible application containers. Each field must satisfy:
+- Visible on page
+- Enabled (not disabled)
+- Non-zero bounding box (width > 0, height > 0)
+- Not readonly
+- Not hidden-type input
+- Not header/search input patterns
+
+Rejected fields are skipped silently; question detection returns only qualified fields.
+
+### Experience Computation (Phase 10)
+
+`compute_profile_experience_years()` computes actual elapsed years from `start_date`/`end_date`:
+- Parses multiple date formats (YYYY-MM, Month YYYY, etc.)
+- Handles "Present" as current datetime
+- Calculates (end - start) / 365.25 years
+- Falls back to entry count if dates unparseable
+- Returns 0.0 for no experience
+
+Used consistently in:
+- Final safety gate experience check
+- Profile answer generation
+- Experience hard filter evaluation
+
+The +2 year tolerance is preserved and reported in rejection reasons.
 
 ## Gemini V1 Model Configuration
 
@@ -1036,3 +1082,15 @@ Component-based architecture
 - Error handling and loading states
 - Backend connection state management
 - Graceful degradation for offline scenarios
+## Phase 10 Application Boundary Fix
+
+The application boundary is now evidence-driven offline. After a native Apply click,
+the adapter waits for explicit visible `#already-applied`, `.already-applied`, exact
+`Applied`, or `Applied to "<title>"` evidence before marking an application APPLIED.
+If a visible application container appears, question handling is scoped to that
+container and excludes hidden, disabled, zero-sized, and readonly controls. If
+neither state appears within the bounded wait, the attempt becomes NEEDS_ATTENTION.
+Native/external classification occurs before creating APPLICATION_STARTED and is
+rechecked immediately before the click. Unresolved EXTERNAL_APPLICATION and
+NEEDS_ATTENTION attempts require manual reset before retry. This checkpoint was
+validated offline only; no live browser action or submission occurred.

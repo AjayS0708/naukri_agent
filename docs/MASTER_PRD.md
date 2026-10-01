@@ -3293,3 +3293,13 @@ Phase 8.5A introduces a persistent worker identity layer to support future cloud
 Known limitations: Registration does not yet trigger background services or lifecycle hooks. Task claiming, heartbeat, and cloud execution are deferred. Worker identity is persistent but does not yet coordinate work or execute jobs.
 
 # END OF MASTER PRD
+## Phase 10 Application Boundary Fix — Offline Checkpoint
+
+The application runner now preserves the safety model while requiring explicit
+post-click Applied evidence, scoping questions to visible editable application
+containers, using computed profile experience with the existing +2 tolerance,
+classifying before recording an application start, rechecking immediately before
+Apply, and preventing automatic retries after unresolved attempts. This checkpoint
+was tested only with isolated SQLite unit tests. No live Naukri activity, Gemini
+call, Apply/Submit click, or real submission occurred; Phase 10 live validation
+remains incomplete and the successful application count is 0.

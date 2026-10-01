@@ -22,6 +22,7 @@ from backend.schemas.application import (
     ApplicationStartResult,
 )
 from backend.services.naukri.adapter import NaukriAdapter
+from backend.services.matching.normalizer import compute_profile_experience_years
 from backend.services.gemini.provider import GeminiProvider
 from backend.services.notifications import NotificationService
 from backend.schemas.ai import JobAnalysis
@@ -225,21 +226,20 @@ class ApplicationRunner:
             self.application_service.record_application_skip(job, "Duplicate application")
             return "SKIPPED"
 
+        latest = self.application_service.get_application_by_job(job.id)
+        if latest and latest.status in (
+            ApplicationStatus.EXTERNAL_APPLICATION,
+            ApplicationStatus.NEEDS_ATTENTION,
+        ):
+            logger.info("Job %s has an unresolved prior attempt; manual reset required", job_id)
+            return "SKIPPED"
+
         # Check application limits
         limit_check = self.limit_service.check_limits()
         if not limit_check.allowed:
             logger.info(f"Job {job_id} blocked by application limits: {limit_check.reason}")
             self.application_service.record_application_skip(job, limit_check.reason)
             return "SKIPPED"
-
-        # Create application record
-        application = self.application_service.create_application(
-            ApplicationCreate(
-                job_id=job_id,
-                status=ApplicationStatus.PRE_APPLY if self.dry_run else ApplicationStatus.APPLICATION_STARTED,
-                is_dry_run=self.dry_run,
-            )
-        )
 
         # Open job page
         page = None
@@ -260,7 +260,7 @@ class ApplicationRunner:
                 )
                 return "SECURITY_REQUIRED"
 
-            # Detect application type
+            # Phase 10: Detect application type BEFORE creating APPLICATION_STARTED
             app_type = await self.adapter.detect_application_type(page)
 
             if app_type == "EXTERNAL":
@@ -278,6 +278,37 @@ class ApplicationRunner:
                 )
                 logger.info(f"Job {job_id} requires external application")
                 return "EXTERNAL"
+
+            # Phase 10: Re-classify immediately before the click (non-dry-run only)
+            if not self.dry_run:
+                recheck_type = await self.adapter.detect_application_type(page)
+                if recheck_type != "NAUKRI_NATIVE":
+                    logger.warning("Application type changed before Apply click: %s", recheck_type)
+                    self.application_service.record_external_application(
+                        job,
+                        job.url,
+                        f"Application type changed to {recheck_type} before click",
+                        is_dry_run=False,
+                    )
+                    return "EXTERNAL"
+
+            # Phase 10: Create APPLICATION_STARTED only after classification is confirmed
+            application = self.application_service.create_application(
+                ApplicationCreate(
+                    job_id=job_id,
+                    status=ApplicationStatus.PRE_APPLY if self.dry_run else ApplicationStatus.APPLICATION_STARTED,
+                    application_method=ApplicationMethod.NAUKRI_NATIVE,
+                    is_dry_run=self.dry_run,
+                )
+            )
+            if not self.dry_run:
+                self.application_service.update_application(
+                    application.id,
+                    ApplicationUpdate(
+                        started_at=datetime.now(UTC),
+                        application_method=ApplicationMethod.NAUKRI_NATIVE,
+                    ),
+                )
 
             if self.dry_run:
                 self.dry_run_result = {
@@ -305,11 +336,28 @@ class ApplicationRunner:
 
             # Start Naukri-native application
             start_result = await self.adapter.start_application(page)
-            if start_result != ApplicationStartResult.FORM_OPENED:
-                self.application_service.record_application_failure(
-                    job, "Failed to start application"
+            if start_result == ApplicationStartResult.APPLIED:
+                evidence = await self.adapter.detect_applied_state(page)
+                self.application_service.update_application(
+                    application.id,
+                    ApplicationUpdate(
+                        status=ApplicationStatus.APPLIED,
+                        applied_at=datetime.now(UTC),
+                        application_method=ApplicationMethod.NAUKRI_NATIVE,
+                        confirmation_evidence=evidence[1],
+                    ),
                 )
-                return "FAILED"
+                return "APPLIED"
+            if start_result != ApplicationStartResult.FORM_OPENED:
+                self.application_service.update_application(
+                    application.id,
+                    ApplicationUpdate(
+                        status=ApplicationStatus.NEEDS_ATTENTION,
+                        needs_attention=True,
+                        skip_reason="Application form did not open within bounded wait",
+                    ),
+                )
+                return "NEEDS_ATTENTION"
 
             # Detect and answer questions
             questions = await self.adapter.detect_application_questions(page)
@@ -436,7 +484,7 @@ class ApplicationRunner:
 
         # Common factual questions
         if "experience" in question_lower or "years" in question_lower:
-            exp_count = len(profile_data.get("experience", []))
+            exp_count = compute_profile_experience_years(profile_data.get("experience", []))
             return str(exp_count)
 
         if "current ctc" in question_lower or "salary" in question_lower:

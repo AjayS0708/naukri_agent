@@ -32,6 +32,7 @@ class Application(Base):
     # Failure/skip reasons
     failure_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
     skip_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    confirmation_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
     
     # External application tracking
     external_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)

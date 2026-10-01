@@ -1,5 +1,43 @@
 # Development Status
 
+## Phase 10 Application Boundary Fix: EVIDENCE-DRIVEN POST-CLICK DETECTION
+
+Implemented evidence-driven post-click state detection with bounded waits. After the Apply click,
+the adapter waits for explicit visible evidence:
+- **Applied**: `#already-applied`, `.already-applied`, exact visible "Applied" text, or
+  `Applied to "<title>"` banner
+- **Form opened**: visible application container (dialog, drawer, modal, or form)
+- **Neither within 8s timeout**: NEEDS_ATTENTION (no retry without manual reset)
+
+Question detection now strictly scopes to visible application containers and rejects:
+- Hidden, disabled, readonly fields
+- Zero-sized elements
+- Hidden-type inputs
+- Header/search input patterns
+
+Experience computation uses `compute_profile_experience_years()` consistently in safety gate
+and runner, computing actual elapsed years from `start_date`/`end_date` (not entry count).
+The +2 year tolerance is preserved and reported in reasons.
+
+Native/external classification moved BEFORE creating APPLICATION_STARTED. Re-classification
+happens immediately before the click; mismatch aborts to external without creating a record.
+
+No-repeat enforcement: jobs with EXTERNAL_APPLICATION or NEEDS_ATTENTION status require
+explicit manual reset before automatic retry.
+
+All changes validated with isolated temporary SQLite unit tests only. No live Naukri activity,
+no Apply/Submit clicks, no Gemini calls. Production DB untouched. Successful application count: 0.
+
+Implemented and regression-tested the focused application-boundary changes:
+explicit Applied-state detection and evidence persistence, visible application
+container question scoping, hidden-input rejection, computed profile experience
+in the runner and final safety gate, pre-record native/external classification with
+immediate reclassification, and no-repeat behavior for unresolved attempts. The
+existing two-year experience tolerance remains unchanged. Tests use isolated
+temporary SQLite only. No live Naukri activity, Gemini call, Apply/Submit click, or
+database write occurred in this checkpoint; automated successful application count
+remains 0.
+
 ## Roadmap Reconciliation
 
 `docs/MASTER_PRD.md` is the authoritative product roadmap. Its next formal product phase after the current Phase 9B checkpoint work is **Phase 9 — Notifications**, followed by Phase 10 testing/security/Windows packaging and Phase 11 integration/production hardening. The README phase list now follows that numbering. The custom Phase 9B-3 native application-boundary validation remains unresolved and is not marked complete; Phase 9B-4 safety hardening remains implemented and committed. Cloud deployment preparation remains supporting infrastructure rather than a separately numbered product phase.

@@ -21,6 +21,7 @@ class ApplicationStatus(StrEnum):
 class ApplicationStartResult(StrEnum):
     PRE_APPLY = "PRE_APPLY"
     FORM_OPENED = "FORM_OPENED"
+    APPLIED = "APPLIED"
     NEEDS_ATTENTION = "NEEDS_ATTENTION"
 
 
@@ -57,6 +58,7 @@ class ApplicationSchema(BaseModel):
     applied_at: datetime | None = None
     failure_reason: str | None = None
     skip_reason: str | None = None
+    confirmation_evidence: str | None = None
     external_url: str | None = None
     needs_attention: bool = False
     is_dry_run: bool = False
@@ -80,6 +82,7 @@ class ApplicationUpdate(BaseModel):
     applied_at: datetime | None = None
     failure_reason: str | None = None
     skip_reason: str | None = None
+    confirmation_evidence: str | None = None
     external_url: str | None = None
     needs_attention: bool | None = None
     is_dry_run: bool | None = None

@@ -18,7 +18,8 @@ from backend.services.matching.normalizer import (
     has_overlapping_location,
     extract_lowest_salary_lpa,
     extract_experience_years,
-    is_employment_type_allowed
+    is_employment_type_allowed,
+    compute_profile_experience_years,
 )
 from backend.core.logging import get_logger
 
@@ -77,6 +78,8 @@ class ApplicationService:
             application.failure_reason = update.failure_reason
         if update.skip_reason is not None:
             application.skip_reason = update.skip_reason
+        if update.confirmation_evidence is not None:
+            application.confirmation_evidence = update.confirmation_evidence
         if update.external_url is not None:
             application.external_url = update.external_url
         if update.needs_attention is not None:
@@ -129,12 +132,16 @@ class ApplicationService:
                 return False, f"Location mismatch: job location '{job.location}' not in allowed locations"
         
         # 5. Experience hard filter
+        # Phase 10: Use compute_profile_experience_years() for consistent calculation
         if job.experience:
             exp_min, exp_max = extract_experience_years(job.experience)
             if exp_min is not None:
-                user_exp_years = len(profile.data.get("experience", [])) if isinstance(profile.data, dict) else 0
-                if exp_min > user_exp_years + 2:  # 2 year grace period
-                    return False, f"Experience required ({exp_min}y) exceeds user profile ({user_exp_years}y)"
+                experience = profile.data.get("experience", []) if isinstance(profile.data, dict) else []
+                user_exp_years = compute_profile_experience_years(experience)
+                # Apply +2 year tolerance as per PRD
+                tolerance = 2
+                if exp_min > user_exp_years + tolerance:
+                    return False, f"Experience required ({exp_min}y) exceeds user profile ({user_exp_years}y + {tolerance}y tolerance)"
         
         # 6. Salary minimum rule
         if job.salary and preference.min_salary_lpa is not None:
@@ -256,6 +263,7 @@ class ApplicationService:
             applied_at=application.applied_at,
             failure_reason=application.failure_reason,
             skip_reason=application.skip_reason,
+            confirmation_evidence=application.confirmation_evidence,
             external_url=application.external_url,
             needs_attention=application.needs_attention,
             is_dry_run=application.is_dry_run,

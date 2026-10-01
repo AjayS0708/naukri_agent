@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from backend.database.database import Base
 from backend.models.job import Job
+from backend.models.application import Application
 from backend.models.profile import Profile, Resume
 from backend.models.matching import JobPreference
 from backend.models.ai import JobAnalysisModel
@@ -313,6 +314,34 @@ class TestApplicationRunner:
             assert stats["total"] == 1
             assert stats["processed"] == 1
             assert stats["external"] == 1
+            applications = db_session.execute(
+                select(Application).where(Application.job_id == eligible_job.id)
+            ).scalars().all()
+            assert [application.status for application in applications] == [
+                ApplicationStatus.EXTERNAL_APPLICATION.value
+            ]
+
+    @pytest.mark.asyncio
+    async def test_runner_does_not_repeat_unresolved_attempt(
+        self,
+        application_runner: ApplicationRunner,
+        eligible_job: Job,
+        confirmed_profile: Profile,
+        job_preferences: JobPreference,
+        db_session: Session,
+    ):
+        application_runner.application_service.record_application_failure(
+            eligible_job, "form did not open"
+        )
+
+        with patch.object(application_runner.adapter, "open_job_page", new_callable=AsyncMock) as open_page:
+            stats = await application_runner.run_applications([eligible_job.id])
+
+        assert stats["skipped"] == 1
+        open_page.assert_not_awaited()
+        assert db_session.execute(
+            select(Application).where(Application.job_id == eligible_job.id)
+        ).scalars().all().__len__() == 1
 
     @pytest.mark.asyncio
     async def test_runner_requires_idle_state(
@@ -414,6 +443,18 @@ class TestApplicationRunner:
             assert application is not None
             assert application.is_dry_run is True
             assert application.status == ApplicationStatus.NEEDS_ATTENTION
+
+    def test_runner_experience_answer_uses_computed_years(
+        self,
+        application_runner: ApplicationRunner,
+        confirmed_profile: Profile,
+    ):
+        confirmed_profile.data["experience"] = [
+            {"start_date": "2024-01", "end_date": "2025-01"}
+        ]
+        assert float(application_runner._get_answer_from_profile(
+            "How many years of experience?", confirmed_profile
+        )) == pytest.approx(1.0, abs=0.01)
 
     @pytest.mark.asyncio
     async def test_dry_run_mode_with_questions(

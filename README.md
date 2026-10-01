@@ -1,5 +1,17 @@
 # Naukri AI Job Application Agent
 
+## Phase 10 Application Boundary Fix: IMPLEMENTED OFFLINE
+
+The focused offline checkpoint now detects explicit post-Apply `Applied` evidence
+with bounded waits, scopes question detection to visible editable application
+containers, computes profile experience from elapsed dates, classifies native versus
+external jobs before creating `APPLICATION_STARTED`, and prevents repeat attempts
+after `EXTERNAL_APPLICATION` or `NEEDS_ATTENTION` without a manual reset. Confirmation
+evidence is persisted with native application records. Unit and full backend tests
+run against the isolated SQLite database only. No live Naukri activity, Gemini call,
+Apply/Submit click, or application submission occurred; the successful application
+count remains 0.
+
 Windows-first, local-first foundation for a controlled job-application agent. Deterministic rules will remain the execution authority; AI and browser automation are intentionally not implemented in Phase 1.
 
 ## Phase 9B-4 Safety Boundary
@@ -8,7 +20,18 @@ Dry-run application execution is now pre-Apply inspection only. It opens and cla
 
 ## Status
 
-The V1 Gemini default is now `gemini-flash-lite-latest`. The previous `gemini-2.5-flash` configuration repeatedly returned `429 RESOURCE_EXHAUSTED`; an isolated runtime test verified that the alternate model completes the existing structured `JobAnalysis` flow. The model remains configurable through `NAUKRI_AGENT_GEMINI_MODEL`. `gemini-3.1-flash-lite-preview` also passed a runtime test but is not selected as the V1 default. Phase 9B-3 remains incomplete pending the live native application form boundary test.
+**Phase 10 Application Boundary Fix: Implemented (Offline Validated)**
+
+The application boundary is now evidence-driven:
+- Post-click state detection waits for explicit visible applied evidence (8s bounded wait)
+- Question detection scopes to visible application containers only
+- Experience computation uses elapsed years from `start_date`/`end_date`, not entry count
+- Native/external classification happens BEFORE creating APPLICATION_STARTED
+- No-repeat enforcement: EXTERNAL_APPLICATION and NEEDS_ATTENTION require manual reset
+
+All validation performed with isolated temporary SQLite tests only. No live Naukri activity, Apply/Submit clicks, or Gemini calls. Production database untouched. Successful application count: 0.
+
+The V1 Gemini default is `gemini-flash-lite-latest` (verified after `gemini-2.5-flash` returned `429 RESOURCE_EXHAUSTED`). Model remains configurable through `NAUKRI_AGENT_GEMINI_MODEL`. Phase 9B-3 live form boundary validation remains pending.
 
 The production JD extraction selector fix is implemented. `NaukriAdapter.fetch_job_description()` now prefers visible `[class*="dang-inner-html"]` and falls back to visible `section[class*="job-desc-container"]`, matching the hashed Naukri structures observed during live diagnostics. Focused adapter regression coverage includes both selectors, precedence, hidden-element fallback, and no-match behavior. Phase 9B-3 remains incomplete until a live native APPLY flow reaches the application boundary; no Gemini, Apply, or submission action occurred in this checkpoint.
 
