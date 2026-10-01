@@ -44,7 +44,8 @@ class ApplicationService:
         application = Application(
             job_id=create.job_id,
             status=create.status.value,
-            application_method=create.application_method.value if create.application_method else None
+            application_method=create.application_method.value if create.application_method else None,
+            is_dry_run=create.is_dry_run
         )
         self.session.add(application)
         self.session.commit()
@@ -80,6 +81,8 @@ class ApplicationService:
             application.external_url = update.external_url
         if update.needs_attention is not None:
             application.needs_attention = update.needs_attention
+        if update.is_dry_run is not None:
+            application.is_dry_run = update.is_dry_run
         
         self.session.commit()
         self.session.refresh(application)
@@ -178,7 +181,8 @@ class ApplicationService:
         self,
         job: Job,
         external_url: str,
-        reason: str = "External application redirect"
+        reason: str = "External application redirect",
+        is_dry_run: bool = False
     ) -> ApplicationSchema:
         """
         Record an external application redirect.
@@ -191,6 +195,7 @@ class ApplicationService:
             external_url=external_url,
             skip_reason=reason,
             needs_attention=True,
+            is_dry_run=is_dry_run,
             started_at=datetime.now(UTC)
         )
         self.session.add(application)
@@ -253,6 +258,7 @@ class ApplicationService:
             skip_reason=application.skip_reason,
             external_url=application.external_url,
             needs_attention=application.needs_attention,
+            is_dry_run=application.is_dry_run,
             created_at=application.created_at,
             updated_at=application.updated_at
         )

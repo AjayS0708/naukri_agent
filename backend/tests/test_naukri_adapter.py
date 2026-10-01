@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from backend.services.naukri.adapter import NaukriAdapter, JobPageResult
+from backend.schemas.application import ApplicationStartResult
 
 
 @pytest.fixture
@@ -361,7 +362,7 @@ class TestApplicationTypeDetection:
         )
 
         with patch.object(adapter, "_check_security", new_callable=AsyncMock):
-            assert await adapter.start_application(page) is True
+            assert await adapter.start_application(page) == ApplicationStartResult.NEEDS_ATTENTION
 
         apply_button.click.assert_awaited_once()
 

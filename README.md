@@ -2,6 +2,10 @@
 
 Windows-first, local-first foundation for a controlled job-application agent. Deterministic rules will remain the execution authority; AI and browser automation are intentionally not implemented in Phase 1.
 
+## Phase 9B-4 Safety Boundary
+
+Dry-run application execution is now pre-Apply inspection only. It opens and classifies the candidate page, records an explicit `is_dry_run` inspection record, and stops before any native or external Apply action; it does not invoke `start_application()`, answer questions, submit, or confirm submission. Application lifecycle data distinguishes `PRE_APPLY`, an unverified Apply/form boundary, `FORM_OPENED`, `APPLIED`, `SUBMITTED`, and `NEEDS_ATTENTION`. Native Apply semantics remain unknown, so Phase 9B-3 live form-boundary validation remains incomplete. No live application occurred in this checkpoint.
+
 ## Status
 
 The V1 Gemini default is now `gemini-flash-lite-latest`. The previous `gemini-2.5-flash` configuration repeatedly returned `429 RESOURCE_EXHAUSTED`; an isolated runtime test verified that the alternate model completes the existing structured `JobAnalysis` flow. The model remains configurable through `NAUKRI_AGENT_GEMINI_MODEL`. `gemini-3.1-flash-lite-preview` also passed a runtime test but is not selected as the V1 default. Phase 9B-3 remains incomplete pending the live native application form boundary test.

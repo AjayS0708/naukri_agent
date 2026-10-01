@@ -12,7 +12,7 @@ from backend.models.ai import JobAnalysisModel
 from backend.services.applications import ApplicationRunner
 from backend.services.agent_state import AgentStateManager
 from backend.schemas.agent import AgentState
-from backend.schemas.application import ApplicationStatus
+from backend.schemas.application import ApplicationStatus, ApplicationStartResult
 from backend.schemas.ai import JobQuality, AIRecommendation
 from backend.services.naukri.adapter import JobPageResult
 
@@ -159,7 +159,7 @@ class TestApplicationRunner:
              patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
              patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
-             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=ApplicationStartResult.FORM_OPENED), \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=[]), \
              patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True), \
              patch('backend.services.applications.runner.NaukriAdapter.confirm_submission', new_callable=AsyncMock, return_value=True):
@@ -383,7 +383,7 @@ class TestApplicationRunner:
              patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
              patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
-             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock) as mock_start, \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=[]), \
              patch('backend.services.applications.runner.NaukriAdapter.answer_question', new_callable=AsyncMock), \
              patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True) as mock_submit:
@@ -399,13 +399,21 @@ class TestApplicationRunner:
             assert stats["dry_run"] == 1
             assert stats["dry_run_mode"] is True
 
-            # CRITICAL: submit_application() must NOT be called in dry_run mode
+            # Dry-run stops before any potentially state-changing native action.
+            mock_start.assert_not_called()
             mock_submit.assert_not_called()
 
             # Verify dry_run_result was captured
             assert application_runner.dry_run_result is not None
             assert application_runner.dry_run_result["submit_application_called"] is False
+            assert application_runner.dry_run_result["inspection_only"] is True
+            assert application_runner.dry_run_result["native_apply_clicked"] is False
             assert application_runner.dry_run_result["job_id"] == eligible_job.id
+
+            application = application_runner.application_service.get_application_by_job(eligible_job.id)
+            assert application is not None
+            assert application.is_dry_run is True
+            assert application.status == ApplicationStatus.NEEDS_ATTENTION
 
     @pytest.mark.asyncio
     async def test_dry_run_mode_with_questions(
@@ -427,7 +435,7 @@ class TestApplicationRunner:
              patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
              patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
-             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock) as mock_start, \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=mock_questions), \
              patch('backend.services.applications.runner.NaukriAdapter.answer_question', new_callable=AsyncMock) as mock_answer, \
              patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True) as mock_submit:
@@ -441,9 +449,10 @@ class TestApplicationRunner:
 
             # Verify dry_run occurred and questions were detected
             assert stats["dry_run"] == 1
-            assert application_runner.dry_run_result["questions_count"] == 2
+            assert application_runner.dry_run_result["inspection_only"] is True
 
             # CRITICAL: answer_question() and submit_application() must NOT be called
+            mock_start.assert_not_called()
             mock_answer.assert_not_called()
             mock_submit.assert_not_called()
 
@@ -463,7 +472,7 @@ class TestApplicationRunner:
              patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
              patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
-             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=ApplicationStartResult.FORM_OPENED), \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=[]), \
              patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True) as mock_submit, \
              patch('backend.services.applications.runner.NaukriAdapter.confirm_submission', new_callable=AsyncMock, return_value=True):

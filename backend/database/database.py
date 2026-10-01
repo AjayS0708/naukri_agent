@@ -2,7 +2,7 @@ from collections.abc import Generator
 from pathlib import Path
 import os
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -69,6 +69,16 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def initialize_database() -> None:
     Base.metadata.create_all(bind=engine)
+    if "is_dry_run" not in {
+        column["name"] for column in inspect(engine).get_columns("applications")
+    }:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE applications "
+                    "ADD COLUMN is_dry_run BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+            )
 
 
 def get_session() -> Generator[Session, None, None]:

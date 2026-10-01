@@ -14,7 +14,13 @@ from backend.schemas.agent import AgentState
 from backend.services.agent_state import AgentStateManager
 from backend.services.applications.service import ApplicationService, SafetyGateError
 from backend.services.applications.limits import ApplicationLimitService
-from backend.schemas.application import ApplicationStatus, ApplicationMethod, ApplicationCreate, ApplicationUpdate
+from backend.schemas.application import (
+    ApplicationStatus,
+    ApplicationMethod,
+    ApplicationCreate,
+    ApplicationUpdate,
+    ApplicationStartResult,
+)
 from backend.services.naukri.adapter import NaukriAdapter
 from backend.services.gemini.provider import GeminiProvider
 from backend.schemas.ai import JobAnalysis
@@ -227,7 +233,11 @@ class ApplicationRunner:
 
         # Create application record
         application = self.application_service.create_application(
-            ApplicationCreate(job_id=job_id, status=ApplicationStatus.APPLICATION_STARTED)
+            ApplicationCreate(
+                job_id=job_id,
+                status=ApplicationStatus.PRE_APPLY if self.dry_run else ApplicationStatus.APPLICATION_STARTED,
+                is_dry_run=self.dry_run,
+            )
         )
 
         # Open job page
@@ -250,14 +260,41 @@ class ApplicationRunner:
             if app_type == "EXTERNAL":
                 external_url = await self.adapter.get_external_redirect_url(page)
                 self.application_service.record_external_application(
-                    job, external_url or job.url, "External application redirect"
+                    job,
+                    external_url or job.url,
+                    "External application redirect",
+                    is_dry_run=self.dry_run,
                 )
                 logger.info(f"Job {job_id} requires external application")
                 return "EXTERNAL"
 
+            if self.dry_run:
+                self.dry_run_result = {
+                    "job_id": job.id,
+                    "job_title": job.title,
+                    "job_company": job.company,
+                    "job_url": job.url,
+                    "application_type": app_type,
+                    "inspection_only": True,
+                    "native_apply_clicked": False,
+                    "start_application_called": False,
+                    "submit_application_called": False,
+                }
+                self.application_service.update_application(
+                    application.id,
+                    ApplicationUpdate(
+                        status=ApplicationStatus.NEEDS_ATTENTION,
+                        skip_reason="Dry run mode: pre-Apply inspection only",
+                    ),
+                )
+                logger.info(
+                    f"DRY RUN: Job {job.id} inspected before native Apply; no remote action"
+                )
+                return "DRY_RUN_COMPLETE"
+
             # Start Naukri-native application
-            started = await self.adapter.start_application(page)
-            if not started:
+            start_result = await self.adapter.start_application(page)
+            if start_result != ApplicationStartResult.FORM_OPENED:
                 self.application_service.record_application_failure(
                     job, "Failed to start application"
                 )
@@ -301,34 +338,6 @@ class ApplicationRunner:
                         )
                     )
                     return "NEEDS_ATTENTION"
-
-            # DRY RUN: Capture submission state and stop before submit
-            if self.dry_run:
-                self.dry_run_result = {
-                    "job_id": job.id,
-                    "job_title": job.title,
-                    "job_company": job.company,
-                    "job_location": job.location,
-                    "job_external_id": job.external_job_id,
-                    "job_url": job.url,
-                    "application_type": app_type,
-                    "questions_count": len(questions),
-                    "questions": prepared_answers,
-                    "safety_gate_passed": True,
-                    "duplicate_check_passed": True,
-                    "limits_check_passed": True,
-                    "submission_ready": len(prepared_answers) > 0,
-                    "submit_application_called": False
-                }
-                logger.info(f"DRY RUN: Job {job.id} inspection complete, stopping before submission")
-                self.application_service.update_application(
-                    application.id,
-                    ApplicationUpdate(
-                        status=ApplicationStatus.NEEDS_ATTENTION,
-                        skip_reason="Dry run mode: inspection only, no submission"
-                    )
-                )
-                return "DRY_RUN_COMPLETE"
 
             # Submit application (production path only)
             submitted = await self.adapter.submit_application(page)

@@ -1,5 +1,9 @@
 # Architecture
 
+## Phase 9B-4 Application Safety Boundary
+
+`ApplicationRunner(dry_run=True)` now stops after page security and application-type inspection, before any native Apply control is invoked. It records `is_dry_run=true`, uses `NEEDS_ATTENTION` with a pre-Apply inspection reason, and reports an inspection-only result. Non-dry-run execution remains separate. The adapter's native start contract reports `NEEDS_ATTENTION` after a click when no application-specific form has been verified; a click is not reported as `FORM_OPENED`. APPLIED and SUBMITTED remain the only completed-application statuses used by duplicate protection. Native Apply semantics remain unknown, and Phase 9B-3's live form boundary remains unresolved. No live application occurred in this checkpoint.
+
 ## Gemini V1 Model Configuration
 
 The V1 default Gemini model is `gemini-flash-lite-latest`, selected after `gemini-2.5-flash` repeatedly returned `429 RESOURCE_EXHAUSTED` and the alternate completed the existing structured `JobAnalysis` flow. `GeminiProvider` continues to pass the configurable `Settings.gemini_model` value directly to the `google.genai` client; `NAUKRI_AGENT_GEMINI_MODEL` can override the default. `gemini-3.1-flash-lite-preview` was also tested successfully but is not selected for V1. Prompts, schema parsing, retry behavior, and provider abstraction are unchanged. Phase 9B-3 live native form validation remains incomplete.

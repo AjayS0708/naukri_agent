@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ApplicationStatus(StrEnum):
+    PRE_APPLY = "PRE_APPLY"
     DISCOVERED = "DISCOVERED"
     FILTERED = "FILTERED"
     AI_ANALYZED = "AI_ANALYZED"
@@ -15,6 +16,12 @@ class ApplicationStatus(StrEnum):
     EXTERNAL_APPLICATION = "EXTERNAL_APPLICATION"
     NEEDS_ATTENTION = "NEEDS_ATTENTION"
     SKIPPED = "SKIPPED"
+
+
+class ApplicationStartResult(StrEnum):
+    PRE_APPLY = "PRE_APPLY"
+    FORM_OPENED = "FORM_OPENED"
+    NEEDS_ATTENTION = "NEEDS_ATTENTION"
 
 
 class ApplicationMethod(StrEnum):
@@ -52,6 +59,7 @@ class ApplicationSchema(BaseModel):
     skip_reason: str | None = None
     external_url: str | None = None
     needs_attention: bool = False
+    is_dry_run: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -61,6 +69,7 @@ class ApplicationCreate(BaseModel):
     job_id: int
     status: ApplicationStatus = ApplicationStatus.APPLICATION_STARTED
     application_method: ApplicationMethod | None = None
+    is_dry_run: bool = False
 
 
 class ApplicationUpdate(BaseModel):
@@ -73,6 +82,7 @@ class ApplicationUpdate(BaseModel):
     skip_reason: str | None = None
     external_url: str | None = None
     needs_attention: bool | None = None
+    is_dry_run: bool | None = None
 
 
 class ApplicationStartRequest(BaseModel):

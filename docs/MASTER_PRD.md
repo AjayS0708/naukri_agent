@@ -1,5 +1,9 @@
 # Naukri AI Job Application Agent
 
+## Phase 9B-4 Safety Hardening Note
+
+The application runner's dry-run contract is pre-Apply inspection only. A dry-run may open and inspect a candidate page, but it cannot click native Apply, click external Apply, invoke question answering, submit, or confirm submission. Dry-run records carry an explicit `is_dry_run` marker and remain outside APPLIED/SUBMITTED duplicate protection. Lifecycle values distinguish PRE_APPLY, APPLICATION_STARTED, FORM_OPENED, APPLIED, SUBMITTED, and NEEDS_ATTENTION; an Apply click is not treated as proof that a form opened or an application was submitted. Native Apply semantics remain UNKNOWN and the Phase 9B-3 live form boundary is unresolved. No live application occurred in this checkpoint.
+
 ## Master Product Requirements Document (PRD)
 
 **Version:** 1.0

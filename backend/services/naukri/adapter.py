@@ -9,6 +9,7 @@ import os
 
 from backend.services.platform_adapter import JobPlatformAdapter
 from backend.core.logging import get_logger
+from backend.schemas.application import ApplicationStartResult
 from backend.core.config import get_settings
 
 logger = get_logger(__name__)
@@ -532,10 +533,10 @@ class NaukriAdapter(JobPlatformAdapter):
             logger.warning(f"Error detecting application type: {e}")
             return "EXTERNAL"
 
-    async def start_application(self, page: Page) -> bool:
+    async def start_application(self, page: Page) -> ApplicationStartResult:
         """
         Start the application process by clicking the apply button.
-        Returns True if started successfully, False otherwise.
+        A click alone is not evidence that an application form opened.
         """
         try:
             # Try various apply button selectors
@@ -555,10 +556,10 @@ class NaukriAdapter(JobPlatformAdapter):
                     await button.click()
                     await asyncio.sleep(2)
                     await self._check_security(page)
-                    return True
+                    return ApplicationStartResult.NEEDS_ATTENTION
 
             logger.warning("No apply button found")
-            return False
+            return ApplicationStartResult.PRE_APPLY
         except Exception as e:
             logger.error(f"Error starting application: {e}")
             raise e

@@ -87,6 +87,21 @@ class TestApplicationFlow:
         assert retrieved.id == created.id
         assert retrieved.job_id == sample_job.id
     
+    def test_dry_run_application_is_explicit_and_not_duplicate(
+        self,
+        application_service: ApplicationService,
+        sample_job: Job
+    ):
+        created = application_service.create_application(
+            ApplicationCreate(
+                job_id=sample_job.id,
+                status=ApplicationStatus.PRE_APPLY,
+                is_dry_run=True,
+            )
+        )
+        assert created.is_dry_run is True
+        assert application_service.check_duplicate_application(sample_job) is False
+
     def test_update_application_status(
         self,
         application_service: ApplicationService,
@@ -146,6 +161,7 @@ class TestApplicationFlow:
         assert application.application_method == ApplicationMethod.EXTERNAL
         assert application.external_url == "https://company.com/apply"
         assert application.needs_attention is True
+        assert application.is_dry_run is False
     
     def test_record_application_failure(
         self,
