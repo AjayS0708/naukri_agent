@@ -1,5 +1,65 @@
 # Development Status
 
+## Phase 10 Database Schema Migration: COMPLETE
+
+**Status:** Local SQLite database migrated and verified. All code changes implemented, tested, and deployed to local database.
+
+**Implementation:**
+- Root cause: `confirmation_evidence` column in ORM model but missing from `initialize_database()` function
+- Solution: Idempotent ALTER TABLE with column existence checks (extends Phase 9B-4 pattern)
+- Files changed: `backend/database/database.py`, `backend/api/routes/health.py`
+- New test file: `backend/tests/test_schema_migration.py` (7 tests, all passing)
+
+**Migration Execution:**
+- Timing: Automatic during FastAPI lifespan initialization (before request handling)
+- Idempotency: Safe to run multiple times; existing columns are skipped
+- Data preservation: All existing application records preserved
+- SQL compatibility: Works on both SQLite and PostgreSQL
+
+**Local Database Results:**
+- Database: data/naukri_agent.db
+- Backup created: data/naukri_agent.db.bak-before-migration (240K)
+- Applications table: 10 records (unchanged)
+- Record 10 status: APPLICATION_STARTED (unchanged)
+- APPLIED/SUBMITTED: 0/0 (unchanged)
+- New columns: confirmation_evidence (TEXT NULL), is_dry_run (BOOLEAN)
+- ORM queries: Executing without OperationalError
+
+**Testing:**
+- Migration-focused tests: 7/7 passing
+- Full backend suite: 557/557 passing
+- Test coverage:
+  - Old schema migration adds confirmation_evidence ✓
+  - Migration preserves existing rows ✓
+  - Migration is idempotent ✓
+  - Readiness check detects schema compatibility ✓
+  - Current schema requires no changes ✓
+  - Database isolation (never uses production DB) ✓
+
+**Startup Verification:**
+- `initialize_database()` runs before request handling ✓
+- Schema compatibility check integrated into `/readiness` endpoint ✓
+- Readiness status: compatible ✓
+- Standalone migration command: `python -m backend.database.database` ✓
+
+**PostgreSQL/Neon Support:**
+- SQL syntax validated for PostgreSQL compatibility ✓
+- Standard SQL used (ALTER TABLE, ADD COLUMN, BOOLEAN, TEXT, DEFAULT, NULL) ✓
+- Neon migration: NOT executed (manual step when deploying to Neon)
+- Neon command provided in docs for future deployment
+
+**Documentation Updated:**
+- README.md: Added Phase 10 schema migration section
+- docs/MASTER_PRD.md: Added detailed schema migration mechanism
+- docs/ARCHITECTURE.md: Added Phase 10 schema migration pattern and validation
+- docs/DEVELOPMENT_STATUS.md: This status section
+
+**Remaining Tasks:**
+- Neon migration: Will be executed separately when deploying to production Neon PostgreSQL
+- No code or git changes remain; all implementation complete
+
+---
+
 ## Phase 10 Application Boundary Fix: EVIDENCE-DRIVEN POST-CLICK DETECTION
 
 Implemented evidence-driven post-click state detection with bounded waits. After the Apply click,

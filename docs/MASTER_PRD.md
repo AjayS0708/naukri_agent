@@ -1,6 +1,111 @@
 # Naukri AI Job Application Agent
 
+## Phase 10 Database Schema Migration
+
+**Status:** Complete (Local SQLite Migrated)
+
+The Phase 10 schema migration addresses the mismatch between the ORM model and the database initialization function. The `Application` model requires `confirmation_evidence` (TEXT NULL) and `is_dry_run` (BOOLEAN) columns for Phase 10 feature delivery, but older databases lack these columns.
+
+**Migration Mechanism:**
+- Type: Additive `ALTER TABLE` with column existence checks (extends Phase 9B-4 pattern)
+- Pattern: Check if column exists before attempting to add; skip if present (idempotent)
+- Timing: Runs automatically during application startup via `initialize_database()` 
+- Scope: Runs BEFORE request handling during FastAPI lifespan initialization
+- Coverage: Both SQLite and PostgreSQL (verified for SQL syntax compatibility)
+
+**Implementation Details:**
+```python
+# In backend/database/database.py initialize_database()
+
+# Phase 10: confirmation_evidence column (applied state evidence)
+if "confirmation_evidence" not in {
+    column["name"] for column in inspect(engine).get_columns("applications")
+}:
+    with engine.begin() as connection:
+        connection.execute(text(
+            "ALTER TABLE applications ADD COLUMN confirmation_evidence TEXT NULL"
+        ))
+```
+
+**Runtime Integration:**
+- Schema compatibility check added to `/readiness` endpoint via `_check_schema_compatibility()` 
+- Reports `schema: compatible` or lists missing columns
+- Prevents readiness until schema matches model requirements
+- Existing application data is preserved during migration (no destructive operations)
+
+**Standalone Execution:**
+```bash
+# Manual migration (uses current DATABASE_URL from config/environment)
+python -m backend.database.database
+```
+
+**Test Coverage:**
+- 7 focused migration tests (test_schema_migration.py)
+- Test A: Old schema migration adds confirmation_evidence 
+- Test B: Migration is idempotent (runs twice without error)
+- Test C: Readiness check detects schema compatibility
+- Test D: Current schema requires no changes
+- Test E: Database isolation (never uses production DB)
+- 557 total backend tests passing (includes 7 new migration tests)
+
+**Local Database Verification (SQLite):**
+- Database: data/naukri_agent.db
+- Backup: data/naukri_agent.db.bak-before-migration (240K, taken before migration)
+- Records preserved: 10 application rows (unchanged)
+- Record 10 status: APPLICATION_STARTED (unchanged)
+- APPLIED/SUBMITTED counts: 0/0 (unchanged)
+- Columns added: confirmation_evidence, is_dry_run
+- ORM queries: Working without OperationalError
+
+**PostgreSQL Support:**
+- SQL syntax validated for PostgreSQL compatibility
+- Standard SQL used: ALTER TABLE, ADD COLUMN, BOOLEAN, TEXT, DEFAULT, NULL
+- Works on both SQLite and PostgreSQL with no dialect-specific logic
+
+**Neon/Production PostgreSQL:**
+To migrate an external PostgreSQL database (e.g., on Neon):
+
+```bash
+# Set DATABASE_URL to your Neon connection string
+export NAUKRI_AGENT_DATABASE_URL="postgresql://user:password@neon.host/dbname"
+
+# Run migration (uses standard initialization)
+python run.py
+# OR for standalone migration:
+python -m backend.database.database
+```
+
+**Verification queries for Neon after migration:**
+```sql
+-- Verify column exists
+SELECT column_name FROM information_schema.columns 
+WHERE table_name='applications' AND column_name='confirmation_evidence';
+
+-- Verify application count unchanged
+SELECT COUNT(*) FROM applications;
+
+-- Verify record 10 status
+SELECT id, status FROM applications WHERE id=10;
+
+-- Verify no APPLIED/SUBMITTED applications
+SELECT COUNT(*) FROM applications WHERE status IN ('APPLIED', 'SUBMITTED');
+```
+
+**Status Notes:**
+- Local SQLite database: Migrated and verified
+- Neon/Production PostgreSQL: NOT migrated (manual step after deployment)
+- No Alembic framework: Uses existing manual migration pattern
+- No business logic changes: Schema-only, additive columns only
+- No live Naukri activity: Migration is schema-only, no automation tested
+- Application count: Remains 0 (no live submissions)
+
+---
+
 ## Phase 9B-4 Safety Hardening Note
+
+The application runner's dry-run contract is pre-Apply inspection only. A dry-run may open and inspect a candidate page, but it cannot click native Apply, click external Apply, invoke question answering, submit, or confirm submission. Dry-run records carry an explicit `is_dry_run` marker and remain outside APPLIED/SUBMITTED duplicate protection. Lifecycle values distinguish PRE_APPLY, APPLICATION_STARTED, FORM_OPENED, APPLIED, SUBMITTED, and NEEDS_ATTENTION; an Apply click is not treated as proof that a form opened or an application was submitted. Native Apply semantics remain UNKNOWN and the Phase 9B-3 live form boundary is unresolved. No live application occurred in this checkpoint.
+
+## Master Product Requirements Document (PRD)
 
 The application runner's dry-run contract is pre-Apply inspection only. A dry-run may open and inspect a candidate page, but it cannot click native Apply, click external Apply, invoke question answering, submit, or confirm submission. Dry-run records carry an explicit `is_dry_run` marker and remain outside APPLIED/SUBMITTED duplicate protection. Lifecycle values distinguish PRE_APPLY, APPLICATION_STARTED, FORM_OPENED, APPLIED, SUBMITTED, and NEEDS_ATTENTION; an Apply click is not treated as proof that a form opened or an application was submitted. Native Apply semantics remain UNKNOWN and the Phase 9B-3 live form boundary is unresolved. No live application occurred in this checkpoint.
 

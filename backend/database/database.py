@@ -68,7 +68,15 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 def initialize_database() -> None:
+    """
+    Initialize database schema and apply additive migrations.
+
+    Phase 10: Ensures all required columns exist on applications table,
+    including confirmation_evidence for applied state detection.
+    """
     Base.metadata.create_all(bind=engine)
+
+    # Migration 1: is_dry_run column (Phase 9B-4)
     if "is_dry_run" not in {
         column["name"] for column in inspect(engine).get_columns("applications")
     }:
@@ -77,6 +85,19 @@ def initialize_database() -> None:
                 text(
                     "ALTER TABLE applications "
                     "ADD COLUMN is_dry_run BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+            )
+
+    # Migration 2: confirmation_evidence column (Phase 10)
+    # Stores explicit applied state evidence for post-click detection
+    if "confirmation_evidence" not in {
+        column["name"] for column in inspect(engine).get_columns("applications")
+    }:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE applications "
+                    "ADD COLUMN confirmation_evidence TEXT NULL"
                 )
             )
 
@@ -92,3 +113,42 @@ def get_session() -> Generator[Session, None, None]:
 def get_db() -> Generator[Session, None, None]:
     """Alias for get_session for consistency with existing API routes."""
     return get_session()
+
+
+# Standalone migration command support
+if __name__ == "__main__":
+    """
+    Standalone database migration runner.
+
+    Usage: python -m backend.database.database
+
+    Runs schema initialization and migrations on the configured database.
+    Uses current DATABASE_URL from environment/config.
+    """
+    print("Phase 10 Database Schema Migration")
+    print("===================================\n")
+
+    try:
+        print(f"Database: {engine.url}")
+        print("Running migrations...\n")
+
+        initialize_database()
+
+        from sqlalchemy import inspect
+        inspector = inspect(engine)
+        columns = {col["name"] for col in inspector.get_columns("applications")}
+
+        print("Migration Results:")
+        print(f"  - confirmation_evidence: {'OK' if 'confirmation_evidence' in columns else 'MISSING'}")
+        print(f"  - is_dry_run: {'OK' if 'is_dry_run' in columns else 'MISSING'}")
+
+        if "confirmation_evidence" in columns and "is_dry_run" in columns:
+            print("\nStatus: SUCCESS")
+            exit(0)
+        else:
+            print("\nStatus: FAILED")
+            exit(1)
+    except Exception as e:
+        print(f"\nStatus: ERROR")
+        print(f"Message: {str(e)}")
+        exit(1)

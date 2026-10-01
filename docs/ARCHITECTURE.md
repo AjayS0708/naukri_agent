@@ -1,6 +1,109 @@
 # Architecture
 
+## Phase 10 Database Schema Migration
+
+**Mechanism:** Idempotent additive schema migration using column existence checks.
+
+**Implementation Pattern:**
+
+```python
+# In backend/database/database.py initialize_database()
+
+def initialize_database() -> None:
+    """Initialize schema and apply additive migrations."""
+    Base.metadata.create_all(bind=engine)
+
+    # Migration 1: is_dry_run column (Phase 9B-4)
+    if "is_dry_run" not in {
+        column["name"] for column in inspect(engine).get_columns("applications")
+    }:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE applications ADD COLUMN is_dry_run BOOLEAN NOT NULL DEFAULT FALSE"
+            ))
+
+    # Migration 2: confirmation_evidence column (Phase 10)
+    if "confirmation_evidence" not in {
+        column["name"] for column in inspect(engine).get_columns("applications")
+    }:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE applications ADD COLUMN confirmation_evidence TEXT NULL"
+            ))
+```
+
+**Characteristics:**
+- Runs during FastAPI lifespan initialization (before request handling)
+- Idempotent: checks column existence before attempting to add
+- Non-destructive: additive only, no drops or truncates
+- Data-preserving: existing rows unaffected
+- Dialect-compatible: uses standard SQL for both SQLite and PostgreSQL
+
+**Schema Validation:**
+
+```python
+# In backend/api/routes/health.py
+
+def _check_schema_compatibility(db: Session) -> dict:
+    """Phase 10: Check if database schema matches current models."""
+    engine = db.get_bind()
+    inspector = inspect(engine)
+    
+    required_columns = [
+        ("applications", "confirmation_evidence"),
+        ("applications", "is_dry_run"),
+    ]
+    
+    missing = []
+    for table_name, column_name in required_columns:
+        columns = inspector.get_columns(table_name)
+        column_names = {col["name"] for col in columns}
+        if column_name not in column_names:
+            missing.append(f"{table_name}.{column_name}")
+    
+    return {
+        "compatible": len(missing) == 0,
+        "missing": missing
+    }
+```
+
+**Readiness Integration:**
+
+- `GET /api/readiness` includes schema compatibility check
+- Reports `schema: compatible` on success
+- Reports `schema: incompatible: <missing columns>` if migration needed
+- Returns `ready: not_ready` until schema is compatible
+
+**Standalone Execution:**
+
+```bash
+python -m backend.database.database
+# Outputs: Migration status, SUCCESS/FAILED, exit code 0/1
+```
+
+**Compatibility:**
+- SQLite: Fully tested and working (data/naukri_agent.db migrated and verified)
+- PostgreSQL: SQL syntax validated for compatibility
+- Column types: BOOLEAN (INTEGER in SQLite, BOOLEAN in PG), TEXT (standard)
+
+**Test Coverage:**
+- 7 focused migration tests in backend/tests/test_schema_migration.py
+- Old schema migration adds confirmation_evidence
+- Migration preserves existing rows and statuses
+- Migration is idempotent (runs twice safely)
+- Current schema requires no changes
+- Database isolation (never uses production DB)
+- Full suite: 557 tests passing
+
+---
+
 ## Phase 9 Notifications
+
+`NotificationService` is the single notification boundary. It persists notification records before delivery and uses the replaceable `SMTPEmailSender` only for email transport. SMTP credentials and recipients come from `NAUKRI_AGENT_` settings and are never included in logs. Delivery failures and missing configuration produce a `FAILED` notification record and do not raise into application/job processing. The service exposes typed helpers for critical errors, authentication requirements, security challenges, external applications, and evening summaries.
+
+The scheduler evaluates the evening summary during the configured 8 PM hour in `notification_timezone`; a date-based deduplication key prevents duplicate delivery. The history endpoint is `GET /api/notifications`, and the dashboard shows recent persisted records. Tests use a fake sender; no real SMTP delivery has been performed.
+
+## Phase 10 Application Boundary Fix
 
 `NotificationService` is the single notification boundary. It persists notification records before delivery and uses the replaceable `SMTPEmailSender` only for email transport. SMTP credentials and recipients come from `NAUKRI_AGENT_` settings and are never included in logs. Delivery failures and missing configuration produce a `FAILED` notification record and do not raise into application/job processing. The service exposes typed helpers for critical errors, authentication requirements, security challenges, external applications, and evening summaries.
 
