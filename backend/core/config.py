@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     log_dir: str = Field(default="data/logs")
 
     # AI configuration
-    gemini_model: str = Field(default="gemini-2.0-flash")
+    gemini_model: str = Field(default="gemini-flash-lite-latest")
     profile_extraction_retries: int = Field(default=1)
     profile_extraction_max_chars: int = Field(default=12000)
     gemini_timeout_seconds: float = Field(default=20.0)

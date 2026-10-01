@@ -1,5 +1,9 @@
 # Architecture
 
+## Gemini V1 Model Configuration
+
+The V1 default Gemini model is `gemini-flash-lite-latest`, selected after `gemini-2.5-flash` repeatedly returned `429 RESOURCE_EXHAUSTED` and the alternate completed the existing structured `JobAnalysis` flow. `GeminiProvider` continues to pass the configurable `Settings.gemini_model` value directly to the `google.genai` client; `NAUKRI_AGENT_GEMINI_MODEL` can override the default. `gemini-3.1-flash-lite-preview` was also tested successfully but is not selected for V1. Prompts, schema parsing, retry behavior, and provider abstraction are unchanged. Phase 9B-3 live native form validation remains incomplete.
+
 ## Phase 9B-3 Production JD Extraction Fix
 
 `NaukriAdapter.fetch_job_description()` preserves the security check and extracts rendered text using this order:

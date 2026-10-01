@@ -15,6 +15,8 @@
 
 ## Current Phase 9B-3 Validation Note
 
+The V1 Gemini model default is `gemini-flash-lite-latest`. The former `gemini-2.5-flash` model was repeatedly blocked by `429 RESOURCE_EXHAUSTED`; a runtime test confirmed that the alternate model parses the existing structured `JobAnalysis` response successfully. Model selection remains environment-configurable through `NAUKRI_AGENT_GEMINI_MODEL`. `gemini-3.1-flash-lite-preview` also succeeded in testing but is not the V1 default. The live native Naukri application boundary remains pending.
+
 The production JD extraction path now prefers visible `[class*="dang-inner-html"]` and falls back to visible `section[class*="job-desc-container"]`. This matches the runtime-suffixed hashed structures observed on real Naukri pages. Regression tests cover current hashed inner elements, the container fallback, selector precedence, hidden matching elements, and empty results when neither selector exists. Phase 9B-3 remains incomplete until a real native APPLY flow reaches the application boundary; this checkpoint made no Gemini or application calls.
 
 Live JD diagnostics reached a concrete extraction blocker. On two persisted native Naukri job pages, First American and ReactZ Consulting, the authenticated visible pages returned HTTP 200 and contained the JD in rendered DOM text. The current `.job-desc` and exact `.styles_JDC__` selectors matched zero elements. Observed working structures included `section.styles_job-desc-container__txpYf` and `div.styles_JDC__dang-inner-html__h0K4t`, both with visible text. Production selectors remain unchanged pending review. Gemini is intentionally deferred while quota is exhausted; no Apply control or submission was invoked, and Phase 9B-3 remains incomplete.

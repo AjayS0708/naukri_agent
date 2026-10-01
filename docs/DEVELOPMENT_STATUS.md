@@ -1,5 +1,9 @@
 # Development Status
 
+## Gemini V1 Model Switch: IMPLEMENTED, LIVE NATIVE RECHECK PENDING
+
+The V1 Gemini default changed from `gemini-2.5-flash` to verified non-preview model `gemini-flash-lite-latest` after repeated `429 RESOURCE_EXHAUSTED` responses. An isolated runtime request successfully parsed the existing structured `JobAnalysis` schema. `gemini-3.1-flash-lite-preview` also succeeded during viability testing but was not selected for V1. The model remains configurable through `NAUKRI_AGENT_GEMINI_MODEL`; retry logic, prompts, schema, provider abstraction, Naukri behavior, and application safety are unchanged. Phase 9B-3 remains incomplete until a fresh Gemini APPLY decision reaches the real native application form boundary.
+
 ## Phase 9B-3 Production JD Extraction Fix: IMPLEMENTED, LIVE RECHECK PENDING
 
 Updated only `NaukriAdapter.fetch_job_description()` to use visible rendered DOM selectors in this order:
