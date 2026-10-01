@@ -7,3 +7,13 @@ export interface Project { name: string; description?: string | null; technologi
 export interface ProfileData { name?: string | null; education: Education[]; skills: string[]; programming_languages: string[]; frameworks: string[]; tools: string[]; projects: Project[]; certifications: string[]; experience: Experience[]; current_role?: string | null; location?: string | null; current_ctc?: string | null; notice_period?: string | null; }
 export interface ProfileResponse { id?: number | null; status: ProfileStatus; confirmed: boolean; data?: ProfileData | null; resume_hash?: string | null; original_filename?: string | null; file_size?: number | null; }
 export interface ResumeUploadResponse { profile_id: number; status: ProfileStatus; resume_hash: string; duplicate: boolean; }
+export interface Notification {
+  id: number;
+  notification_type: string;
+  severity: string;
+  title: string;
+  message: string;
+  status: string;
+  created_at: string;
+}
+export interface NotificationHistoryResponse { notifications: Notification[]; total: number; }

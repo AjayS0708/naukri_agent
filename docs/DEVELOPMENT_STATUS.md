@@ -8,6 +8,10 @@
 
 The dry-run boundary is hardened to stop before native Apply, external Apply, question answering, submission, and confirmation. Dry-run application records now include an explicit `is_dry_run` marker and remain eligible for future real attempts because duplicate protection still blocks only APPLIED and SUBMITTED. Lifecycle data includes PRE_APPLY and FORM_OPENED distinctions; the adapter does not claim FORM_OPENED from a click alone and reports NEEDS_ATTENTION when the form is unverified. Focused offline tests passed (118 tests across application, duplicate-protection, and adapter suites). No browser, Naukri, Gemini, ApplicationRunner live run, Apply click, or database manual write occurred. Native Apply semantics remain UNKNOWN and Phase 9B-3 is incomplete.
 
+## Phase 9 — Notifications: IMPLEMENTED OFFLINE
+
+Implemented the isolated notification service, persisted history model, SMTP configuration boundary, required event helpers, scheduler evening summary, `GET /api/notifications`, and minimal dashboard visibility. Focused tests cover event dispatch, missing configuration, delivery failure isolation, summary timing, and duplicate prevention. Real SMTP delivery remains unverified; Phase 9 is not marked production-complete.
+
 ## Gemini V1 Model Switch: IMPLEMENTED, LIVE NATIVE RECHECK PENDING
 
 The V1 Gemini default changed from `gemini-2.5-flash` to verified non-preview model `gemini-flash-lite-latest` after repeated `429 RESOURCE_EXHAUSTED` responses. An isolated runtime request successfully parsed the existing structured `JobAnalysis` schema. `gemini-3.1-flash-lite-preview` also succeeded during viability testing but was not selected for V1. The model remains configurable through `NAUKRI_AGENT_GEMINI_MODEL`; retry logic, prompts, schema, provider abstraction, Naukri behavior, and application safety are unchanged. Phase 9B-3 remains incomplete until a fresh Gemini APPLY decision reaches the real native application form boundary.

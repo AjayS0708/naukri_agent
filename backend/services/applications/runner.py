@@ -1,6 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -23,6 +23,7 @@ from backend.schemas.application import (
 )
 from backend.services.naukri.adapter import NaukriAdapter
 from backend.services.gemini.provider import GeminiProvider
+from backend.services.notifications import NotificationService
 from backend.schemas.ai import JobAnalysis
 from backend.schemas.ai_queue import AIQueueStatus
 from backend.core.logging import get_logger
@@ -252,6 +253,11 @@ class ApplicationRunner:
                 self.application_service.record_application_failure(
                     job, f"Security challenge: {result.security_reason}"
                 )
+                self._notify_safely(
+                    lambda: NotificationService(self.session).security_challenge(
+                        f"Security challenge while opening job {job_id}: {result.security_reason}"
+                    )
+                )
                 return "SECURITY_REQUIRED"
 
             # Detect application type
@@ -264,6 +270,11 @@ class ApplicationRunner:
                     external_url or job.url,
                     "External application redirect",
                     is_dry_run=self.dry_run,
+                )
+                self._notify_safely(
+                    lambda: NotificationService(self.session).external_application(
+                        job.title, external_url or job.url
+                    )
                 )
                 logger.info(f"Job {job_id} requires external application")
                 return "EXTERNAL"
@@ -380,6 +391,11 @@ class ApplicationRunner:
                     job, "Security verification required"
                 )
                 self.state_manager.transition_to(AgentState.SECURITY_REQUIRED)
+                self._notify_safely(
+                    lambda: NotificationService(self.session).security_challenge(
+                        "Security verification required during application processing"
+                    )
+                )
                 return "FAILED"
 
             if "login" in error_msg or "auth" in error_msg:
@@ -387,6 +403,11 @@ class ApplicationRunner:
                     job, "Authentication required"
                 )
                 self.state_manager.transition_to(AgentState.AUTH_REQUIRED)
+                self._notify_safely(
+                    lambda: NotificationService(self.session).authentication_required(
+                        "Authentication required during application processing"
+                    )
+                )
                 return "FAILED"
 
             logger.error(f"Error processing job {job_id}: {e}", exc_info=True)
@@ -398,6 +419,15 @@ class ApplicationRunner:
         finally:
             if page:
                 await page.close()
+
+    def _notify_safely(self, callback: Callable[[], object]) -> None:
+        try:
+            callback()
+        except Exception as exc:
+            logger.error(
+                "application_notification_failed",
+                extra={"error_type": type(exc).__name__},
+            )
 
     def _get_answer_from_profile(self, question: str, profile: Profile) -> Optional[str]:
         """Try to answer a question from confirmed profile data."""

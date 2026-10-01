@@ -1,4 +1,4 @@
-import type { HealthResponse, ProfileData, ProfileResponse, ResumeUploadResponse } from "../types/api";
+import type { HealthResponse, NotificationHistoryResponse, ProfileData, ProfileResponse, ResumeUploadResponse } from "../types/api";
 
 const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -69,3 +69,4 @@ export const getProfile = () => apiRequest<ProfileResponse>("/profile");
 export const uploadResume = (file: File) => { const form = new FormData(); form.append("resume", file); return apiRequest<ResumeUploadResponse>("/profile/resume", { method: "POST", body: form }); };
 export const updateProfile = (data: ProfileData) => apiRequest<ProfileResponse>("/profile", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data }) });
 export const confirmProfile = () => apiRequest<ProfileResponse>("/profile/confirm", { method: "POST" });
+export const getNotifications = () => apiRequest<NotificationHistoryResponse>("/notifications?limit=20");

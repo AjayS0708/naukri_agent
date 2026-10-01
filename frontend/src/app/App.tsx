@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal } from "lucide-react";
-import { getHealth } from "../services/api";
-import type { HealthResponse, ProfileResponse } from "../types/api";
+import { getHealth, getNotifications } from "../services/api";
+import type { HealthResponse, Notification, ProfileResponse } from "../types/api";
 import { ProfileWorkspace } from "../components/ProfileWorkspace";
 import { AIStatus } from "../components/AIStatus";
 import { JobPreferences } from "../components/JobPreferences";
@@ -17,8 +17,12 @@ export function App() {
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
   const [currentPage, setCurrentPage] = useState<"overview" | "profile" | "preferences" | "analytics" | "activity">("overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
 
-  useEffect(() => { getHealth().then(setHealth).catch(() => setFailed(true)); }, []);
+  useEffect(() => {
+    getHealth().then(setHealth).catch(() => setFailed(true));
+    getNotifications().then((response) => setNotifications(response.notifications)).catch(() => setNotifications([]));
+  }, []);
 
   const connection = failed ? "local_offline" : health ? "connected" : "checking";
   const profileSummary = profile?.status ? profile.status.replaceAll("_", " ") : "Not configured";
@@ -130,6 +134,22 @@ export function App() {
             </section>
 
             <section id="ai-status"><AIStatus /></section>
+
+            <section className="activity" aria-labelledby="notifications-heading">
+              <div>
+                <p className="eyebrow">NOTIFICATIONS</p>
+                <h2 id="notifications-heading">Recent notifications</h2>
+              </div>
+              {notifications.length === 0 ? <p>No notifications recorded.</p> : (
+                <ul>
+                  {notifications.slice(0, 5).map((notification) => (
+                    <li key={notification.id}>
+                      <strong>{notification.title}</strong> — {notification.message}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
 
             <section className="activity">
               <div>

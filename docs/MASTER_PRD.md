@@ -2732,6 +2732,8 @@ Build:
 * External application notifications
 * Evening 8–9 PM summary
 
+Implementation status: the Phase 9 notification boundary, persisted history, SMTP configuration, required event helpers, dashboard history endpoint, minimal dashboard visibility, and daily-deduplicated evening summary are implemented and covered by offline tests. Real SMTP delivery is intentionally not exercised in development; missing configuration and delivery failures are recorded as failed notifications without changing application state.
+
 ---
 
 ## Phase 10 — Testing, Security & Windows Packaging

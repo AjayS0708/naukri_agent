@@ -174,10 +174,12 @@ The formal product roadmap is defined by `docs/MASTER_PRD.md`.
 6. Naukri application automation - implementation complete; live native form-boundary validation remains unresolved
 7. Scheduler and continuous agent - complete
 8. Dashboard - complete
-9. Notifications - pending
+9. Notifications - implemented offline; SMTP delivery requires configuration
 10. Testing, security, and Windows packaging - pending
 11. Integration and production hardening - pending
 
 Cloud deployment preparation is documented as supporting Phase 8.x/production-readiness work; it is not a separate formal product phase in the master roadmap.
+
+Phase 9 notifications are isolated behind `NotificationService`. The implementation persists notification history, supports critical-error, authentication-required, security-challenge, external-application, and evening-summary events, and exposes `GET /api/notifications` for the dashboard. SMTP settings use the `NAUKRI_AGENT_` environment prefix; tests use a fake sender and no real email was sent. The evening summary is evaluated in the configured timezone during the configured 8 PM hour with daily deduplication. Live SMTP delivery remains unverified.
 
 Note: Cloud readiness infrastructure (runtime/storage abstractions) was implemented as foundational work to support future cloud deployment without changing business logic. This is not a separate phase but enables future cloud execution. Phase 8.1 prepared the backend for production hosting without actual deployment.

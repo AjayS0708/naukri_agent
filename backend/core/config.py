@@ -56,6 +56,17 @@ class Settings(BaseSettings):
     scheduler_interval_minutes: int = Field(default=60)
     scheduler_max_instances: int = Field(default=1)
 
+    # Notification configuration
+    notifications_enabled: bool = Field(default=True)
+    notification_email: str | None = Field(default=None)
+    smtp_host: str | None = Field(default=None)
+    smtp_port: int = Field(default=587)
+    smtp_username: str | None = Field(default=None)
+    smtp_password: str | None = Field(default=None)
+    smtp_from: str | None = Field(default=None)
+    notification_timezone: str = Field(default="Asia/Kolkata")
+    evening_summary_hour: int = Field(default=20, ge=0, le=23)
+
     # Application limits
     max_resume_file_size_bytes: int = Field(default=10 * 1024 * 1024)
     min_resume_text_chars: int = Field(default=80)

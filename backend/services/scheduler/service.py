@@ -21,6 +21,7 @@ from backend.services.gemini.queue import AIQueueService
 from backend.services.gemini.provider import GeminiProvider
 from backend.services.matching.engine import MatchEngine
 from backend.database.database import SessionLocal
+from backend.services.notifications import NotificationService
 
 logger = get_logger(__name__)
 
@@ -335,10 +336,24 @@ class SchedulerService:
             cycle_stats["errors"].extend(app_stats.get("errors", []))
 
             logger.info("scheduler_phase_9a_cycle_completed", extra=cycle_stats)
+            notifier = NotificationService(db)
+            if cycle_stats["errors"]:
+                notifier.critical_error(
+                    f"Scheduler cycle completed with {len(cycle_stats['errors'])} error(s).",
+                    dedup_key=f"critical-cycle:{utc_now().date().isoformat()}",
+                )
+            notifier.send_evening_summary()
 
         except Exception as e:
             logger.error("scheduler_discovery_failed", extra={"error": str(e)}, exc_info=True)
             cycle_stats["errors"].append(str(e))
+            try:
+                NotificationService(db).critical_error(
+                    "Scheduler cycle failed unexpectedly.",
+                    dedup_key=f"critical-cycle-failure:{utc_now().date().isoformat()}",
+                )
+            except Exception:
+                logger.error("scheduler_critical_notification_failed")
         finally:
             db.close()
 

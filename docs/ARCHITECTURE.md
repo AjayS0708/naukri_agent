@@ -1,5 +1,11 @@
 # Architecture
 
+## Phase 9 Notifications
+
+`NotificationService` is the single notification boundary. It persists notification records before delivery and uses the replaceable `SMTPEmailSender` only for email transport. SMTP credentials and recipients come from `NAUKRI_AGENT_` settings and are never included in logs. Delivery failures and missing configuration produce a `FAILED` notification record and do not raise into application/job processing. The service exposes typed helpers for critical errors, authentication requirements, security challenges, external applications, and evening summaries.
+
+The scheduler evaluates the evening summary during the configured 8 PM hour in `notification_timezone`; a date-based deduplication key prevents duplicate delivery. The history endpoint is `GET /api/notifications`, and the dashboard shows recent persisted records. Tests use a fake sender; no real SMTP delivery has been performed.
+
 ## Phase 9B-4 Application Safety Boundary
 
 `ApplicationRunner(dry_run=True)` now stops after page security and application-type inspection, before any native Apply control is invoked. It records `is_dry_run=true`, uses `NEEDS_ATTENTION` with a pre-Apply inspection reason, and reports an inspection-only result. Non-dry-run execution remains separate. The adapter's native start contract reports `NEEDS_ATTENTION` after a click when no application-specific form has been verified; a click is not reported as `FORM_OPENED`. APPLIED and SUBMITTED remain the only completed-application statuses used by duplicate protection. Native Apply semantics remain unknown, and Phase 9B-3's live form boundary remains unresolved. No live application occurred in this checkpoint.
