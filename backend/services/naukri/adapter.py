@@ -479,12 +479,14 @@ class NaukriAdapter(JobPlatformAdapter):
         Returns: "NAUKRI_NATIVE" or "EXTERNAL"
         """
         try:
-            # Check for external redirect indicators
-            content = await page.content()
+            # Check rendered text so hidden navigation/scripts do not classify the
+            # application surface incorrectly.
+            content = await page.inner_text("body")
             content_lower = content.lower()
 
             # External application indicators
             external_indicators = [
+                "apply on company site",
                 "apply on company website",
                 "external application",
                 "redirecting to",
@@ -496,15 +498,27 @@ class NaukriAdapter(JobPlatformAdapter):
                 if indicator in content_lower:
                     return "EXTERNAL"
 
-            # Check for Naukri native apply button
-            apply_button = await page.query_selector('button[type="submit"]')
-            if not apply_button:
-                apply_button = await page.query_selector('.apply-btn')
-            if not apply_button:
-                apply_button = await page.query_selector('a.apply')
+            # Check stable native controls before legacy selectors. Naukri's
+            # current native page uses #apply-button / .apply-button.
+            native_selectors = [
+                "#apply-button",
+                "button.apply-button",
+                'button[type="submit"]',
+                ".apply-btn",
+                "a.apply",
+            ]
+            for selector in native_selectors:
+                apply_button = await page.query_selector(selector)
+                if apply_button and await apply_button.is_visible():
+                    return "NAUKRI_NATIVE"
 
-            if apply_button:
-                return "NAUKRI_NATIVE"
+            # A visible button with exact text "Apply" is native evidence even
+            # when the page changes its non-semantic class names.
+            for button in await page.query_selector_all("button"):
+                if not await button.is_visible():
+                    continue
+                if (await button.inner_text()).strip().casefold() == "apply":
+                    return "NAUKRI_NATIVE"
 
             # Default to external if unclear
             return "EXTERNAL"
@@ -520,6 +534,8 @@ class NaukriAdapter(JobPlatformAdapter):
         try:
             # Try various apply button selectors
             apply_selectors = [
+                "#apply-button",
+                "button.apply-button",
                 'button[type="submit"]',
                 '.apply-btn',
                 'a.apply',

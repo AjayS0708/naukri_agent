@@ -2,6 +2,27 @@
 
 ## Test Database Isolation Checkpoint: COMPLETE
 
+## Phase 9B-3 Native Application Detection Fix: IMPLEMENTED, LIVE RECHECK PENDING
+
+Live candidate inspection found a real Naukri-native First American Data Analyst page:
+
+- URL: `https://www.naukri.com/job-listings-data-analyst-first-american-bengaluru-1-to-3-years-230926038405`
+- Stable control: `button#apply-button` / `button.apply-button`
+- Visible text: `Apply`
+- External control: absent
+- Security check: passed
+
+The adapter previously missed the current native selectors and returned `EXTERNAL`. Implemented the targeted fix in `backend/services/naukri/adapter.py`:
+
+- `detect_application_type()` checks rendered external indicators first.
+- Native detection recognizes `#apply-button`, `button.apply-button`, existing selectors, and visible exact-text `Apply` buttons.
+- `start_application()` recognizes the same stable current native selectors.
+- Hashed CSS classes are not used.
+
+Focused regression coverage verifies both native selectors, visible exact-text `Apply`, external application text, no-control fallback, and native start-button compatibility. Focused result: 84 adapter tests passed. Full backend result: 519 tests passed with 3 dependency deprecation warnings. The full live native dry-run remains pending. No application was submitted and no live run was performed in this implementation checkpoint.
+
+## Test Database Isolation Checkpoint: COMPLETE
+
 Fixed a serious test-environment persistence defect. The shared fixture previously imported the application's production `engine` and executed `Base.metadata.drop_all()` against `data/naukri_agent.db`, allowing tests to delete runtime profile and resume data.
 
 Implemented:

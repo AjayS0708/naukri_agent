@@ -15,6 +15,8 @@
 
 ## Current Phase 9B-3 Validation Note
 
+Live inspection found a genuine Naukri-native job page whose stable application control is `button#apply-button` / `button.apply-button` with visible exact text `Apply`. The adapter previously missed those selectors and returned `EXTERNAL`; the targeted detection and native-start selector fix is now implemented and covered by focused tests. This checkpoint does not include another live run, does not claim the native application boundary has been reached, and no application submission occurred.
+
 The Naukri security boundary must use visible rendered page content and must stop automation for actual visible CAPTCHA, human-verification, security-challenge, authentication, or blocked-access indicators. A false-positive found during live dry-run diagnosis came from treating Naukri's raw HTML `"showCaptcha":false` state value as a security challenge. The targeted adapter fix now inspects rendered body text and does not treat bare `captcha` as a standalone trigger. This preserves the PRD requirement to stop for real security challenges; it does not bypass or weaken those controls.
 
 The fix is covered by 77 Naukri adapter tests, and 509 full backend tests are recorded as passing. Another real visible-browser dry-run is required before claiming Phase 9B-3 live validation complete. No application submission occurred during this checkpoint.

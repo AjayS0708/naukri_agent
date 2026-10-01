@@ -2,6 +2,7 @@
 
 | Decision | Rationale |
 | --- | --- |
+| Stable Naukri Native Apply Detection (Phase 9B-3) | Live Naukri pages can expose native application through stable `#apply-button` / `button.apply-button` controls with exact visible text `Apply`. Detection and start selectors recognize these controls without relying on hashed CSS classes. External indicators are checked first, and the live native dry-run remains pending until revalidated. |
 | Test Database Isolation | Backend tests must never reset the local runtime database. The shared pytest fixture uses a disposable temporary file-backed SQLite engine and redirects application/session references before tests run. Schema reset operations are restricted to that test engine; `data/naukri_agent.db` remains runtime-only. |
 | Python + FastAPI | Typed, lightweight local API with strong validation support. |
 | React + TypeScript + Tailwind | Product-ready dashboard foundation with typed frontend contracts. |

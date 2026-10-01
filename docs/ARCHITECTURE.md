@@ -1,5 +1,11 @@
 # Architecture
 
+## Phase 9B-3 Native Application Detection Fix
+
+Live inspection of a real First American Data Analyst page found a Naukri-native application surface: a visible `button#apply-button` / `button.apply-button` control with exact text `Apply`, and no `Apply on company site` control. The adapter previously recognized only older selectors and incorrectly returned `EXTERNAL`.
+
+`NaukriAdapter.detect_application_type()` now checks rendered external indicators first, then stable native selectors and visible exact-text `Apply` buttons. `start_application()` uses the same stable `#apply-button` and `button.apply-button` selectors so the detected native flow can start. Hashed CSS classes are not used. Focused regression tests cover native controls, external indicators, pages without controls, and the current native start selector. A new live browser run is still required; this checkpoint did not submit an application.
+
 ## Test Database Isolation Checkpoint
 
 Runtime persistence and test persistence are separate. The application continues to use the configured V1 SQLite database at `data/naukri_agent.db`, while `backend/tests/conftest.py` creates a disposable temporary file-backed SQLite engine for tests. Before tests run, database/session references used by the FastAPI app and directly imported services are redirected to that test engine. `Base.metadata.drop_all()` and `create_all()` therefore operate only on the disposable test database.

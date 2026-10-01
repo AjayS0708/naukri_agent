@@ -289,6 +289,83 @@ class TestSecurityDetection:
         assert "security verification" in str(exc_info.value).lower()
 
 
+class TestApplicationTypeDetection:
+    def _make_page(self, visible_text: str = "Data Analyst Apply") -> AsyncMock:
+        mock_page = AsyncMock()
+        mock_page.inner_text.return_value = visible_text
+        mock_page.content.return_value = "<html></html>"
+        return mock_page
+
+    def _visible_control(self, text: str = "Apply") -> AsyncMock:
+        control = AsyncMock()
+        control.is_visible.return_value = True
+        control.inner_text.return_value = text
+        return control
+
+    @pytest.mark.asyncio
+    async def test_apply_button_id_is_native(self):
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        page.query_selector.side_effect = lambda selector: (
+            self._visible_control() if selector == "#apply-button" else None
+        )
+
+        assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
+
+    @pytest.mark.asyncio
+    async def test_apply_button_class_is_native(self):
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        page.query_selector.side_effect = lambda selector: (
+            self._visible_control() if selector == "button.apply-button" else None
+        )
+
+        assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
+
+    @pytest.mark.asyncio
+    async def test_visible_exact_apply_button_is_native(self):
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        page.query_selector.return_value = None
+        page.query_selector_all.return_value = [self._visible_control("Apply")]
+
+        assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
+
+    @pytest.mark.asyncio
+    async def test_apply_on_company_site_is_external(self):
+        adapter = NaukriAdapter()
+        page = self._make_page("Data Analyst Apply on company site")
+        assert await adapter.detect_application_type(page) == "EXTERNAL"
+
+    @pytest.mark.asyncio
+    async def test_external_application_text_is_external(self):
+        adapter = NaukriAdapter()
+        page = self._make_page("External application required")
+        assert await adapter.detect_application_type(page) == "EXTERNAL"
+
+    @pytest.mark.asyncio
+    async def test_page_without_application_controls_remains_external(self):
+        adapter = NaukriAdapter()
+        page = self._make_page("Data Analyst job description")
+        page.query_selector.return_value = None
+        page.query_selector_all.return_value = []
+        assert await adapter.detect_application_type(page) == "EXTERNAL"
+
+    @pytest.mark.asyncio
+    async def test_start_application_supports_current_native_apply_button(self):
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        apply_button = self._visible_control()
+        page.query_selector.side_effect = lambda selector: (
+            apply_button if selector == "#apply-button" else None
+        )
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            assert await adapter.start_application(page) is True
+
+        apply_button.click.assert_awaited_once()
+
+
 class TestStartSession:
     @pytest.mark.asyncio
     async def test_start_session_chrome(self):
