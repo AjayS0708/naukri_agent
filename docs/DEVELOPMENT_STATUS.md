@@ -1,5 +1,23 @@
 # Development Status
 
+## Phase 9B-3 Production JD Extraction Fix: IMPLEMENTED, LIVE RECHECK PENDING
+
+Updated only `NaukriAdapter.fetch_job_description()` to use visible rendered DOM selectors in this order:
+
+1. `[class*="dang-inner-html"]`
+2. `section[class*="job-desc-container"]`
+
+The existing security check remains in place. The first visible matching element is used, its text is stripped, and an empty string is returned when neither current selector is available. Focused tests cover the live hashed inner class pattern, container fallback, precedence, hidden inner element fallback, and no matching selectors. No Gemini call, Apply click, ApplicationRunner invocation, or submission occurred. Phase 9B-3 remains incomplete pending a live native APPLY boundary run.
+
+## Phase 9B-3 Live JD Extraction Diagnostic: BLOCKER IDENTIFIED
+
+Read-only visible-browser diagnostics inspected two persisted native jobs without invoking Gemini, ApplicationRunner, `start_application()`, or any Apply control:
+
+- First American: HTTP 200, page title `Data Analyst - Bengaluru - First American - 1 to 3 years of experience`, visible body length 7,264.
+- ReactZ Consulting: HTTP 200, page title `Software Engineer Fresher - Bengaluru - Reactz Consulting - 0 to 1 years of experience`, visible body length 4,486.
+
+Both pages contained visible job-description text, but the current selectors `.job-desc` and exact `.styles_JDC__` matched zero elements. Observed rendered structures included `section.styles_job-desc-container__txpYf` and `div.styles_JDC__dang-inner-html__h0K4t`. No iframe was present. The likely production defect is selector matching against hashed class names with runtime suffixes. No production selector was changed. Gemini is intentionally deferred because quota is exhausted. No application was submitted; Phase 9B-3 remains incomplete.
+
 ## Phase 9B-3 Diagnostic JD Fetch: IMPLEMENTED, LIVE RECHECK PENDING
 
 `diagnose_live_dry_run.py` now calls the existing `NaukriAdapter.fetch_job_description()` for selected real jobs, assigns the result to `Job.description`, commits it, and uses that value in the Gemini context. It inspects bounded candidates before choosing, excludes external jobs from native validation, reuses persisted analyses, stops on quota exhaustion, reports description status/length, and emits ASCII-safe output. Focused offline regression tests cover fetching, selection, and avoiding unnecessary refetches. No live Naukri search or Gemini request was run in this checkpoint, no application was submitted, and Phase 9B-3 remains incomplete.

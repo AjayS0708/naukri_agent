@@ -200,10 +200,16 @@ class NaukriAdapter(JobPlatformAdapter):
 
             await self._check_security(page)
 
-            # typical description selectors, fall back to body
-            desc_element = await page.query_selector('.job-desc')
-            if not desc_element:
-                desc_element = await page.query_selector('.styles_JDC__') # Example obfuscated class Naukri sometimes uses
+            description_selectors = [
+                '[class*="dang-inner-html"]',
+                'section[class*="job-desc-container"]',
+            ]
+            desc_element = None
+            for selector in description_selectors:
+                candidate = await page.query_selector(selector)
+                if candidate and await candidate.is_visible():
+                    desc_element = candidate
+                    break
 
             if desc_element:
                 text = await desc_element.inner_text()

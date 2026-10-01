@@ -544,6 +544,13 @@ class TestExtractCardData:
 
 
 class TestFetchJobDescription:
+    @staticmethod
+    def _description_element(text: str, visible: bool = True) -> AsyncMock:
+        element = AsyncMock()
+        element.inner_text.return_value = text
+        element.is_visible.return_value = visible
+        return element
+
     @pytest.mark.asyncio
     async def test_fetch_job_description_success(self):
         adapter = NaukriAdapter()
@@ -562,6 +569,88 @@ class TestFetchJobDescription:
         assert result == "Job description text here"
         mock_page.goto.assert_called_once()
         mock_page.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_fetch_job_description_hashed_inner_selector(self):
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+        mock_page = AsyncMock()
+        adapter.browser.new_page.return_value = mock_page
+        inner = self._description_element("Inner JD text")
+        mock_page.query_selector.side_effect = lambda selector: (
+            inner if selector == '[class*="dang-inner-html"]' else None
+        )
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.fetch_job_description("https://www.naukri.com/job/123")
+
+        assert result == "Inner JD text"
+
+    @pytest.mark.asyncio
+    async def test_fetch_job_description_container_fallback(self):
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+        mock_page = AsyncMock()
+        adapter.browser.new_page.return_value = mock_page
+        container = self._description_element("Container JD text")
+        mock_page.query_selector.side_effect = lambda selector: (
+            container if selector == 'section[class*="job-desc-container"]' else None
+        )
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.fetch_job_description("https://www.naukri.com/job/123")
+
+        assert result == "Container JD text"
+
+    @pytest.mark.asyncio
+    async def test_fetch_job_description_prefers_inner_selector(self):
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+        mock_page = AsyncMock()
+        adapter.browser.new_page.return_value = mock_page
+        inner = self._description_element("Preferred inner JD")
+        container = self._description_element("Fallback container JD")
+        mock_page.query_selector.side_effect = lambda selector: {
+            '[class*="dang-inner-html"]': inner,
+            'section[class*="job-desc-container"]': container,
+        }.get(selector)
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.fetch_job_description("https://www.naukri.com/job/123")
+
+        assert result == "Preferred inner JD"
+        container.inner_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fetch_job_description_skips_hidden_inner_selector(self):
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+        mock_page = AsyncMock()
+        adapter.browser.new_page.return_value = mock_page
+        hidden_inner = self._description_element("Hidden JD", visible=False)
+        visible_container = self._description_element("Visible fallback JD")
+        mock_page.query_selector.side_effect = lambda selector: {
+            '[class*="dang-inner-html"]': hidden_inner,
+            'section[class*="job-desc-container"]': visible_container,
+        }.get(selector)
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.fetch_job_description("https://www.naukri.com/job/123")
+
+        assert result == "Visible fallback JD"
+
+    @pytest.mark.asyncio
+    async def test_fetch_job_description_returns_empty_without_current_selectors(self):
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+        mock_page = AsyncMock()
+        adapter.browser.new_page.return_value = mock_page
+        mock_page.query_selector.return_value = None
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.fetch_job_description("https://www.naukri.com/job/123")
+
+        assert result == ""
 
     @pytest.mark.asyncio
     async def test_fetch_job_description_no_browser(self):

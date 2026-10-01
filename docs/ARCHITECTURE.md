@@ -1,5 +1,18 @@
 # Architecture
 
+## Phase 9B-3 Production JD Extraction Fix
+
+`NaukriAdapter.fetch_job_description()` preserves the security check and extracts rendered text using this order:
+
+1. visible `[class*="dang-inner-html"]`
+2. visible `section[class*="job-desc-container"]`
+
+The first valid visible element wins. The method returns normalized text and returns an empty string only when neither selector yields a visible element or when the existing guarded fetch path fails. This fixes the runtime-suffixed Naukri hashed-class mismatch identified by live diagnostics without changing application, matching, scheduler, or Gemini behavior. Focused adapter tests cover selector variants, precedence, hidden-element fallback, and no-match behavior. Phase 9B-3 live native application validation remains incomplete.
+
+## Phase 9B-3 Live JD Extraction Diagnostic: BLOCKER IDENTIFIED
+
+The current live diagnostic inspected two persisted native Naukri pages without clicking Apply or invoking application code. First American returned HTTP 200 with visible body text length 7,264; ReactZ Consulting returned HTTP 200 with visible body text length 4,486. Both pages exposed JD text in rendered DOM elements. `NaukriAdapter.fetch_job_description()` currently checks `.job-desc` and exact `.styles_JDC__`; both matched zero elements on both pages. Observed structures were `section.styles_job-desc-container__txpYf` and `div.styles_JDC__dang-inner-html__h0K4t`, with visible JD text lengths of 2,835/2,096 and 1,416/687 respectively. No iframe was involved. This is a selector-strategy defect, not missing page content. Production selectors were not changed in this checkpoint. Gemini is deferred because quota is exhausted, and no Apply or submit action occurred.
+
 ## Phase 9B-3 Diagnostic Job Description Flow
 
 The bounded live diagnostic now reuses `NaukriAdapter.fetch_job_description()` for each selected real job before Gemini analysis. The returned text is assigned to the diagnostic `Job.description`, persisted, and included in the Gemini context. Candidate inspection occurs before selection; only native candidates with an existing or newly obtained APPLY recommendation can be selected, while external candidates are excluded. Persisted analyses are reused and quota exhaustion stops further analysis. This keeps the diagnostic data flow aligned with production DiscoveryService without changing production discovery, Gemini, matching, scheduler, or application code. The change was validated offline only; no live search or Gemini request was run, and Phase 9B-3 remains incomplete.
