@@ -1,5 +1,21 @@
 # Development Status
 
+## Checkpoint B2: Salary Gate Without Description: COMPLETE — OFFLINE VALIDATED
+
+The full-suite failure from Checkpoint B was traced to a real code defect
+introduced with the Checkpoint A3 salary test: `MatchEngine.evaluate_job()`
+nested structured salary and employment-type gates under `if job.description`.
+An explicitly unpaid job with no description therefore bypassed the salary gate
+and incorrectly reached the AI path. The gates now evaluate independently of
+description text, so disclosed unpaid and below-minimum salary records remain
+deterministically rejected, and employment-type restrictions are not weakened.
+
+Historical worktree validation found the test absent at `0468ff5` and
+`5f8d0bd`, then failing at its introduction in `e0994fe` and still failing at
+`40635cb`. The focused regression now passes. Full backend suite: **645 passed,
+0 failed** (three third-party deprecation warnings). No live Naukri, Gemini,
+Apply/Submit, external-application, or production-database action occurred.
+
 ## Checkpoint B: Apply Button Scoping: COMPLETE — OFFLINE VALIDATED
 
 `NaukriAdapter` now resolves Naukri's duplicated `apply-button` controls through

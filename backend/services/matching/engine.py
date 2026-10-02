@@ -84,37 +84,37 @@ class MatchEngine:
                     )
             matched_rules.append("EXPERIENCE_CHECK")
 
-            # Salary Check: Treat salary_max == 0 (disclosed "Unpaid") as below minimum
-            # salary NULL/None (undisclosed) is NOT rejected
-            if job.salary_max == 0:
-                # Disclosed zero pay (unpaid) - always reject
+        # Salary Check: Treat salary_max == 0 (disclosed "Unpaid") as below minimum.
+        # Salary metadata is available even when a job description is not.
+        # salary NULL/None (undisclosed) is NOT rejected.
+        if job.salary_max == 0:
+            return MatchDecision(
+                decision=MatchDecisionEnum.SKIP,
+                reason="Salary is unpaid (disclosed 0 LPA).",
+                skip_reason=SkipReason.SALARY_BELOW_MINIMUM,
+                failed_rules=["SALARY"]
+            )
+
+        salary_lpa = extract_lowest_salary_lpa(job.salary)
+        if salary_lpa is not None and preference.min_salary_lpa is not None:
+            if salary_lpa < preference.min_salary_lpa:
                 return MatchDecision(
                     decision=MatchDecisionEnum.SKIP,
-                    reason="Salary is unpaid (disclosed 0 LPA).",
+                    reason=f"Salary ({salary_lpa} LPA) is below minimum {preference.min_salary_lpa} LPA.",
                     skip_reason=SkipReason.SALARY_BELOW_MINIMUM,
                     failed_rules=["SALARY"]
                 )
+        matched_rules.append("SALARY_CHECK")
 
-            salary_lpa = extract_lowest_salary_lpa(job.salary)
-            if salary_lpa is not None and preference.min_salary_lpa is not None:
-                if salary_lpa < preference.min_salary_lpa:
-                    return MatchDecision(
-                        decision=MatchDecisionEnum.SKIP,
-                        reason=f"Salary ({salary_lpa} LPA) is below minimum {preference.min_salary_lpa} LPA.",
-                        skip_reason=SkipReason.SALARY_BELOW_MINIMUM,
-                        failed_rules=["SALARY"]
-                    )
-            matched_rules.append("SALARY_CHECK")
-            
-            # Employment Check
-            if preference.employment_types and not is_employment_type_allowed(job.employment_type, preference.employment_types):
-                return MatchDecision(
-                    decision=MatchDecisionEnum.SKIP,
-                    reason="Employment type not allowed.",
-                    skip_reason=SkipReason.EMPLOYMENT_TYPE_NOT_ALLOWED,
-                    failed_rules=["EMPLOYMENT_TYPE"]
-                )
-            matched_rules.append("EMPLOYMENT_TYPE_CHECK")
+        # Employment type is also structured metadata, independent of description text.
+        if preference.employment_types and not is_employment_type_allowed(job.employment_type, preference.employment_types):
+            return MatchDecision(
+                decision=MatchDecisionEnum.SKIP,
+                reason="Employment type not allowed.",
+                skip_reason=SkipReason.EMPLOYMENT_TYPE_NOT_ALLOWED,
+                failed_rules=["EMPLOYMENT_TYPE"]
+            )
+        matched_rules.append("EMPLOYMENT_TYPE_CHECK")
         
         # 5. Gemini Semantic Check (Only runs because hard checks haven't failed)
         job_context = f"Title: {job.title}\nCompany: {job.company}\nDescription: {job.description or ''}"
