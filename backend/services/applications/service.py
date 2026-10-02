@@ -143,7 +143,12 @@ class ApplicationService:
                 if exp_min > user_exp_years + tolerance:
                     return False, f"Experience required ({exp_min}y) exceeds user profile ({user_exp_years}y + {tolerance}y tolerance)"
         
-        # 6. Salary minimum rule
+        # 6. Salary minimum rule: treat salary_max == 0 (disclosed "Unpaid") as below minimum
+        # salary NULL/None (undisclosed) is NOT rejected
+        if job.salary_max == 0:
+            # Disclosed zero pay (unpaid) - always reject
+            return False, "Salary is unpaid (disclosed 0 LPA)"
+
         if job.salary and preference.min_salary_lpa is not None:
             salary_lpa = extract_lowest_salary_lpa(job.salary)
             if salary_lpa is not None and salary_lpa < preference.min_salary_lpa:

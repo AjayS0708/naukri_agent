@@ -77,14 +77,24 @@ class MatchEngine:
                 user_exp_years = compute_profile_experience_years(exp_list)
                 if exp_min > user_exp_years + 2:  # +2 years grace for approximation
                     return MatchDecision(
-                        decision=MatchDecisionEnum.SKIP, 
-                        reason=f"Experience required ({exp_min}y) is greater than user profile approx ({user_exp_years}y).", 
+                        decision=MatchDecisionEnum.SKIP,
+                        reason=f"Experience required ({exp_min}y) is greater than user profile approx ({user_exp_years}y).",
                         skip_reason=SkipReason.EXPERIENCE_TOO_HIGH,
                         failed_rules=["EXPERIENCE"]
                     )
             matched_rules.append("EXPERIENCE_CHECK")
-            
-            # Salary Check
+
+            # Salary Check: Treat salary_max == 0 (disclosed "Unpaid") as below minimum
+            # salary NULL/None (undisclosed) is NOT rejected
+            if job.salary_max == 0:
+                # Disclosed zero pay (unpaid) - always reject
+                return MatchDecision(
+                    decision=MatchDecisionEnum.SKIP,
+                    reason="Salary is unpaid (disclosed 0 LPA).",
+                    skip_reason=SkipReason.SALARY_BELOW_MINIMUM,
+                    failed_rules=["SALARY"]
+                )
+
             salary_lpa = extract_lowest_salary_lpa(job.description)
             if salary_lpa is not None and preference.min_salary_lpa is not None:
                 if salary_lpa < preference.min_salary_lpa:
@@ -97,7 +107,7 @@ class MatchEngine:
             matched_rules.append("SALARY_CHECK")
             
             # Employment Check
-            if preference.employment_types and not is_employment_type_allowed(job.description, preference.employment_types):
+            if preference.employment_types and not is_employment_type_allowed(job.employment_type, preference.employment_types):
                 return MatchDecision(
                     decision=MatchDecisionEnum.SKIP,
                     reason="Employment type not allowed.",

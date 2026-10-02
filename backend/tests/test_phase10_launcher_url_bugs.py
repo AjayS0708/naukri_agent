@@ -129,8 +129,316 @@ class TestBug3SalaryHandling:
                             assert job.salary_max == 0
 
 
+# ============================================================================
+# CHECKPOINT A: Salary Filter Alignment Tests
+# ============================================================================
+
+class TestSalaryFilterAlignmentMatchEngine:
+    """Test salary filter alignment in MatchEngine (salary_max==0 -> SKIP)."""
+
+    def test_match_engine_unpaid_salary_skipped(self, test_session, profile_and_prefs):
+        """MatchEngine: Unpaid (salary_max==0) MUST be skipped - disclosed zero pay below ₹4 LPA minimum."""
+        from backend.services.matching.engine import MatchEngine
+        from backend.schemas.ai import JobAnalysis, AIRecommendation
+
+        profile, prefs = profile_and_prefs
+
+        job = Job(
+            platform="naukri",
+            external_job_id="unpaid_job_001",
+            url="https://www.naukri.com/job-listings-unpaid-job-240926500723",
+            title="AWS DevOps Engineer",
+            company="Acme Corp",
+            description="Job description here",
+            location="Bengaluru",
+            salary="Unpaid",
+            salary_min=0,
+            salary_max=0,  # Disclosed zero pay
+            experience="2 years",
+            experience_min=2,
+            experience_max=2,
+            employment_type="Full Time",
+            status="DISCOVERED",
+            discovered_at=datetime.now(UTC),
+        )
+
+        # Mock AI provider
+        mock_ai = MagicMock()
+        engine = MatchEngine(test_session, ai_provider=mock_ai)
+        decision = engine.evaluate_job(job, profile, prefs)
+
+        # Should skip before calling AI due to salary_max==0
+        assert decision.decision.value == "SKIP", f"Unpaid job should be skipped but got: {decision.reason}"
+        assert "unpaid" in decision.reason.lower(), f"Reason should mention unpaid: {decision.reason}"
+        # Verify AI was not called (hard filter caught it first)
+        mock_ai.analyze_job.assert_not_called()
+
+    def test_match_engine_undisclosed_salary_not_rejected(self, test_session, profile_and_prefs):
+        """MatchEngine: Undisclosed salary (NULL) MUST NOT be rejected - follows user rule."""
+        from backend.services.matching.engine import MatchEngine
+        from backend.schemas.ai import JobAnalysis, AIRecommendation, JobQuality
+
+        profile, prefs = profile_and_prefs
+
+        job = Job(
+            platform="naukri",
+            external_job_id="undisclosed_job_001",
+            url="https://www.naukri.com/job-listings-undisclosed-job-240926500723",
+            title="Senior DevOps Engineer",
+            company="Tech Corp",
+            description="Job description here",
+            location="Bengaluru",
+            salary=None,  # Undisclosed
+            salary_min=None,
+            salary_max=None,
+            experience="2 years",
+            experience_min=2,
+            experience_max=2,
+            employment_type="Full Time",
+            status="DISCOVERED",
+            discovered_at=datetime.now(UTC),
+        )
+
+        # Mock AI provider to return APPLY
+        mock_ai = MagicMock()
+        mock_ai.analyze_job.return_value = JobAnalysis(
+            match_score=80,
+            role_match=True,
+            skill_match=True,
+            experience_match=True,
+            location_match=True,
+            salary_match=True,
+            job_quality=JobQuality.GOOD,
+            duplicate_probability=0.0,
+            suspicious=False,
+            recommendation=AIRecommendation.APPLY,
+            short_reason="Good match for role"
+        )
+
+        engine = MatchEngine(test_session, ai_provider=mock_ai)
+        decision = engine.evaluate_job(job, profile, prefs)
+
+        assert decision.decision.value == "APPLY", f"Undisclosed salary should pass but got: {decision.reason}"
+
+    def test_match_engine_good_salary_passes(self, test_session, profile_and_prefs):
+        """MatchEngine: Salary ₹5 LPA passes (above minimum ₹4 LPA)."""
+        from backend.services.matching.engine import MatchEngine
+        from backend.schemas.ai import JobAnalysis, AIRecommendation, JobQuality
+
+        profile, prefs = profile_and_prefs
+
+        job = Job(
+            platform="naukri",
+            external_job_id="good_salary_job_001",
+            url="https://www.naukri.com/job-listings-good-salary-240926500723",
+            title="DevOps Engineer",
+            company="Tech Corp",
+            description="Salary: 5-7 LPA. Job description here",
+            location="Bengaluru",
+            salary="5-7 LPA",
+            salary_min=5.0,
+            salary_max=7.0,
+            experience="2 years",
+            experience_min=2,
+            experience_max=2,
+            employment_type="Full Time",
+            status="DISCOVERED",
+            discovered_at=datetime.now(UTC),
+        )
+
+        # Mock AI provider to return APPLY
+        mock_ai = MagicMock()
+        mock_ai.analyze_job.return_value = JobAnalysis(
+            match_score=85,
+            role_match=True,
+            skill_match=True,
+            experience_match=True,
+            location_match=True,
+            salary_match=True,
+            job_quality=JobQuality.GOOD,
+            duplicate_probability=0.0,
+            suspicious=False,
+            recommendation=AIRecommendation.APPLY,
+            short_reason="Excellent match for role"
+        )
+
+        engine = MatchEngine(test_session, ai_provider=mock_ai)
+        decision = engine.evaluate_job(job, profile, prefs)
+
+        assert decision.decision.value == "APPLY", f"Salary 5 LPA should pass but got: {decision.reason}"
+
+    def test_match_engine_below_minimum_salary_skipped(self, test_session, profile_and_prefs):
+        """MatchEngine: Salary ₹2-4 LPA is skipped (below minimum ₹4 LPA start point)."""
+        from backend.services.matching.engine import MatchEngine
+
+        profile, prefs = profile_and_prefs
+
+        job = Job(
+            platform="naukri",
+            external_job_id="low_salary_job_001",
+            url="https://www.naukri.com/job-listings-low-salary-240926500723",
+            title="Junior DevOps Engineer",
+            company="Startup",
+            description="Salary: 2-4 LPA. Job description here",
+            location="Bengaluru",
+            salary="2-4 LPA",
+            salary_min=2.0,
+            salary_max=4.0,
+            experience="1 year",
+            experience_min=1,
+            experience_max=1,
+            employment_type="Full Time",
+            status="DISCOVERED",
+            discovered_at=datetime.now(UTC),
+        )
+
+        # Mock AI provider
+        mock_ai = MagicMock()
+        engine = MatchEngine(test_session, ai_provider=mock_ai)
+        decision = engine.evaluate_job(job, profile, prefs)
+
+        assert decision.decision.value == "SKIP", f"Salary 2-4 LPA should be skipped but got: {decision.reason}"
+        assert "Salary" in decision.reason, f"Reason should mention salary: {decision.reason}"
+        # Verify AI was not called (hard filter caught it first)
+        mock_ai.analyze_job.assert_not_called()
+
+
+class TestSalaryFilterAlignmentSafetyGate:
+    """Test salary filter alignment in ApplicationService.run_final_safety_gate()."""
+
+    def test_safety_gate_unpaid_salary_skipped(self, test_session, profile_and_prefs):
+        """SafetyGate: Unpaid (salary_max==0) MUST be skipped - disclosed zero pay below ₹4 LPA minimum."""
+        from backend.services.applications.service import ApplicationService
+
+        profile, prefs = profile_and_prefs
+
+        job = Job(
+            platform="naukri",
+            external_job_id="unpaid_job_002",
+            url="https://www.naukri.com/job-listings-unpaid-job-240926500724",
+            title="AWS DevOps Engineer",
+            company="Acme Corp",
+            description="Job description here",
+            location="Bengaluru",
+            salary="Unpaid",
+            salary_min=0,
+            salary_max=0,  # Disclosed zero pay
+            experience="2 years",
+            experience_min=2,
+            experience_max=2,
+            employment_type="Full Time",
+            status="DISCOVERED",
+            discovered_at=datetime.now(UTC),
+        )
+        test_session.add(job)
+        test_session.commit()
+
+        service = ApplicationService(test_session)
+        allowed, reason = service.run_final_safety_gate(job, profile, prefs)
+
+        assert not allowed, f"Unpaid job should be rejected but got: {reason}"
+        assert "unpaid" in reason.lower(), f"Reason should mention unpaid: {reason}"
+
+    def test_safety_gate_undisclosed_salary_not_rejected(self, test_session, profile_and_prefs):
+        """SafetyGate: Undisclosed salary (NULL) MUST NOT be rejected."""
+        from backend.services.applications.service import ApplicationService
+
+        profile, prefs = profile_and_prefs
+
+        job = Job(
+            platform="naukri",
+            external_job_id="undisclosed_job_002",
+            url="https://www.naukri.com/job-listings-undisclosed-job-240926500724",
+            title="Senior DevOps Engineer",
+            company="Tech Corp",
+            description="Job description here",
+            location="Bengaluru",
+            salary=None,  # Undisclosed
+            salary_min=None,
+            salary_max=None,
+            experience="2 years",
+            experience_min=2,
+            experience_max=2,
+            employment_type="Full Time",
+            status="DISCOVERED",
+            discovered_at=datetime.now(UTC),
+        )
+        test_session.add(job)
+        test_session.commit()
+
+        service = ApplicationService(test_session)
+        allowed, reason = service.run_final_safety_gate(job, profile, prefs)
+
+        assert allowed, f"Undisclosed salary should pass but got: {reason}"
+
+    def test_safety_gate_good_salary_passes(self, test_session, profile_and_prefs):
+        """SafetyGate: Salary ₹5 LPA passes (above minimum ₹4 LPA)."""
+        from backend.services.applications.service import ApplicationService
+
+        profile, prefs = profile_and_prefs
+
+        job = Job(
+            platform="naukri",
+            external_job_id="good_salary_job_002",
+            url="https://www.naukri.com/job-listings-good-salary-240926500724",
+            title="DevOps Engineer",
+            company="Tech Corp",
+            description="Salary: 5-7 LPA. Job description here",
+            location="Bengaluru",
+            salary="5-7 LPA",
+            salary_min=5.0,
+            salary_max=7.0,
+            experience="2 years",
+            experience_min=2,
+            experience_max=2,
+            employment_type="Full Time",
+            status="DISCOVERED",
+            discovered_at=datetime.now(UTC),
+        )
+        test_session.add(job)
+        test_session.commit()
+
+        service = ApplicationService(test_session)
+        allowed, reason = service.run_final_safety_gate(job, profile, prefs)
+
+        assert allowed, f"Salary 5 LPA should pass but got: {reason}"
+
+    def test_safety_gate_below_minimum_salary_skipped(self, test_session, profile_and_prefs):
+        """SafetyGate: Salary ₹2-4 LPA is skipped (below minimum ₹4 LPA start point)."""
+        from backend.services.applications.service import ApplicationService
+
+        profile, prefs = profile_and_prefs
+
+        job = Job(
+            platform="naukri",
+            external_job_id="low_salary_job_002",
+            url="https://www.naukri.com/job-listings-low-salary-240926500724",
+            title="Junior DevOps Engineer",
+            company="Startup",
+            description="Salary: 2-4 LPA. Job description here",
+            location="Bengaluru",
+            salary="2-4 LPA",
+            salary_min=2.0,
+            salary_max=4.0,
+            experience="1 year",
+            experience_min=1,
+            experience_max=1,
+            employment_type="Full Time",
+            status="DISCOVERED",
+            discovered_at=datetime.now(UTC),
+        )
+        test_session.add(job)
+        test_session.commit()
+
+        service = ApplicationService(test_session)
+        allowed, reason = service.run_final_safety_gate(job, profile, prefs)
+
+        assert not allowed, f"Salary 2-4 LPA should be rejected but got: {reason}"
+        assert "Salary" in reason, f"Reason should mention salary: {reason}"
+
+
 class TestSalaryFilterAlignment:
-    """Test salary filter alignment: unpaid (0) SKIP, null PASS, numeric filters apply."""
+    """Test salary filter alignment: unpaid (0) SKIP, null PASS, numeric filters apply (deterministic_check)."""
 
     def test_hard_filter_unpaid_salary_skipped(self, test_session, profile_and_prefs):
         """Unpaid (salary_max==0) MUST be skipped - disclosed zero pay below ₹4 LPA minimum.
