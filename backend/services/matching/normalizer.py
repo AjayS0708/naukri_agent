@@ -47,6 +47,111 @@ def has_overlapping_location(job_locations_str: str, preferred_locations: list[s
     return any(jl in pref_locs for jl in job_locs if jl)
 
 
+def parse_salary_to_range(salary_str: str) -> tuple[Optional[float], Optional[float]]:
+    """
+    Parses salary string to (salary_min, salary_max) in LPA.
+    Handles: "Unpaid", "Not disclosed", "3-5 Lacs PA", "50,000/month", etc.
+    Returns (min_lpa, max_lpa) or (None, None) for undisclosed.
+
+    Special case: "Unpaid" (any case, with/without "P.M"/"per month") -> (0.0, 0.0)
+    "Not disclosed"/empty -> (None, None)
+
+    Monthly amounts are annualized: 50,000/month -> 50,000 * 12 / 100,000 = 6.0 LPA
+    """
+    if not salary_str or not isinstance(salary_str, str):
+        return None, None
+
+    s = salary_str.strip().lower().replace(",", "")
+
+    # Check for undisclosed or empty
+    if not s or "not disclos" in s:
+        return None, None
+
+    # Check for unpaid (including "Unpaid P.M", "Unpaid per month", etc.)
+    if "unpaid" in s:
+        return 0.0, 0.0
+
+    # Handle "Lacs PA" or "Lacs" (common Naukri format)
+    # Example: "3-5 Lacs PA" -> (3.0, 5.0)
+    lacs_match = re.search(r'([\d\.]+)\s*(?:-|to)\s*([\d\.]+)\s*(?:lacs?|lakhs?)\s*(?:pa)?', s)
+    if lacs_match:
+        try:
+            min_val = float(lacs_match.group(1))
+            max_val = float(lacs_match.group(2))
+            return min(min_val, max_val), max(min_val, max_val)
+        except ValueError:
+            pass
+
+    # Handle single "Lacs PA" value
+    single_lacs = re.search(r'([\d\.]+)\s*(?:lacs?|lakhs?)\s*(?:pa)?', s)
+    if single_lacs:
+        try:
+            val = float(single_lacs.group(1))
+            return val, val
+        except ValueError:
+            pass
+
+    # Handle monthly amounts ("/month", "per month", "p.m.", "pm")
+    # Example: "50,000/month" -> annualize to 6.0 LPA, "15,000 p.m." -> 1.8 LPA
+    monthly_match = re.search(r'([\d\.]+)\s*(?:(?:/|per)\s*month|p\.?m\.?)', s)
+    if monthly_match:
+        try:
+            monthly_val = float(monthly_match.group(1))
+            # Annualize: monthly * 12 / 100,000 = LPA
+            annualized_lpa = (monthly_val * 12) / 100000.0
+            return annualized_lpa, annualized_lpa
+        except ValueError:
+            pass
+
+    # Handle "LPA" format ranges
+    # Example: "5-7 LPA" -> (5.0, 7.0)
+    lpa_range_match = re.search(r'([\d\.]+)\s*(?:-|to)\s*([\d\.]+)\s*(?:lakhs?|lpa)', s)
+    if lpa_range_match:
+        try:
+            min_val = float(lpa_range_match.group(1))
+            max_val = float(lpa_range_match.group(2))
+            return min(min_val, max_val), max(min_val, max_val)
+        except ValueError:
+            pass
+
+    # Handle single "LPA" value
+    single_lpa_match = re.search(r'([\d\.]+)\s*(?:lakhs?|lpa)', s)
+    if single_lpa_match:
+        try:
+            val = float(single_lpa_match.group(1))
+            return val, val
+        except ValueError:
+            pass
+
+    # Handle absolute values in rupees (e.g., "400000 - 600000" without currency)
+    # Only if values are large enough (> 100k implies yearly)
+    abs_match = re.search(r'([\d\.]+)\s*(?:-|to)\s*([\d\.]+)', s)
+    if abs_match:
+        try:
+            val1 = float(abs_match.group(1))
+            val2 = float(abs_match.group(2))
+            # If both are large, assume yearly rupees
+            if val1 >= 100000 and val2 >= 100000:
+                min_val = (min(val1, val2)) / 100000.0
+                max_val = (max(val1, val2)) / 100000.0
+                return min_val, max_val
+        except ValueError:
+            pass
+
+    # Handle single absolute value
+    single_abs = re.search(r'^([\d\.]+)$', s)
+    if single_abs:
+        try:
+            val = float(single_abs.group(1))
+            if val >= 100000:
+                lpa = val / 100000.0
+                return lpa, lpa
+        except ValueError:
+            pass
+
+    return None, None
+
+
 def extract_lowest_salary_lpa(salary_str: str) -> Optional[float]:
     """
     Extracts the minimum salary in LPA from a string.
@@ -56,40 +161,8 @@ def extract_lowest_salary_lpa(salary_str: str) -> Optional[float]:
     "4 LPA" -> 4.0
     If salary is undisclosed or ambiguous, returns None.
     """
-    if not salary_str:
-        return None
-    
-    s = salary_str.lower().replace(",", "")
-    
-    # Handle "lakhs" or "lpa"
-    # Example: 3-5 lakhs, 3 - 5 lpa, 3.5-4.5 lpa
-    lpa_match = re.search(r'([\d\.]+)\s*(?:-|to)\s*([\d\.]+)\s*(?:lakhs?|lpa)', s)
-    if lpa_match:
-        try:
-            return float(lpa_match.group(1))
-        except ValueError:
-            pass
-        
-    single_lpa_match = re.search(r'([\d\.]+)\s*(?:lakhs?|lpa)', s)
-    if single_lpa_match:
-        try:
-            return float(single_lpa_match.group(1))
-        except ValueError:
-            pass
-        
-    # Handle absolute values (e.g. 400000)
-    abs_match = re.search(r'(\d+)\s*(?:-|to)\s*(\d+)', s)
-    if abs_match:
-        try:
-            val1 = float(abs_match.group(1))
-            val2 = float(abs_match.group(2))
-            min_val = min(val1, val2)
-            if min_val >= 100000: # Assuming it's yearly if > 100k
-                return min_val / 100000.0
-        except ValueError:
-            pass
-            
-    return None
+    min_lpa, _ = parse_salary_to_range(salary_str)
+    return min_lpa
 
 
 def extract_experience_years(exp_str: str) -> tuple[Optional[int], Optional[int]]:

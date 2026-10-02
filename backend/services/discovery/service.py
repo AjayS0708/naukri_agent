@@ -10,6 +10,7 @@ from backend.models.discovery import DiscoveryRun, utc_now
 from backend.models.job import Job
 from backend.models.matching import JobPreference
 from backend.services.naukri.adapter import NaukriAdapter
+from backend.services.matching.normalizer import parse_salary_to_range
 from backend.database.database import SessionLocal
 from backend.core.logging import get_logger
 from backend.core.config import get_settings
@@ -235,6 +236,10 @@ class DiscoveryService:
         if posted_at is not None and not isinstance(posted_at, datetime):
             posted_at = None
 
+        # Parse salary to extract min/max in LPA
+        salary_text = self._normalize_optional_str(job_data.get("salary"))
+        salary_min, salary_max = parse_salary_to_range(salary_text) if salary_text else (None, None)
+
         return Job(
             platform=self.adapter.platform_name,
             external_job_id=external_job_id,
@@ -243,7 +248,9 @@ class DiscoveryService:
             company=company,
             description=self._normalize_optional_str(job_data.get("description")),
             location=self._normalize_optional_str(job_data.get("location")),
-            salary=self._normalize_optional_str(job_data.get("salary")),
+            salary=salary_text,
+            salary_min=salary_min,
+            salary_max=salary_max,
             experience=self._normalize_optional_str(job_data.get("experience")),
             employment_type=self._normalize_optional_str(job_data.get("employment_type")),
             posted_at=posted_at,
