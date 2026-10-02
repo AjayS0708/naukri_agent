@@ -41,6 +41,8 @@ class NaukriAdapter(JobPlatformAdapter):
     platform_name = "naukri"
     post_apply_timeout_seconds = 8
     application_type_settle_seconds = 0.5
+    _header_apply_selector = "#job_header button#apply-button"
+    _fallback_apply_selector = "button#apply-button"
 
     def __init__(self, browser_type: str = "chrome"):
         """
@@ -531,25 +533,39 @@ class NaukriAdapter(JobPlatformAdapter):
         if any(indicator in content_lower for indicator in external_indicators):
             return "EXTERNAL"
 
-        native_selectors = [
-            "#apply-button",
-            "button.apply-button",
-            'button[type="submit"]',
-            ".apply-btn",
-            "a.apply",
-        ]
-        for selector in native_selectors:
-            apply_button = await page.query_selector(selector)
-            if apply_button and await apply_button.is_visible():
-                return "NAUKRI_NATIVE"
-
-        for button in await page.query_selector_all("button"):
-            if await button.is_visible() and (
-                (await button.inner_text()).strip().casefold() == "apply"
-            ):
-                return "NAUKRI_NATIVE"
+        apply_button, _ = await self._find_scoped_apply_button(page)
+        if apply_button is not None:
+            return "NAUKRI_NATIVE"
 
         return "AMBIGUOUS"
+
+    async def _find_scoped_apply_button(self, page: Page):
+        """Find the Naukri Apply control without permitting duplicate-ID ambiguity.
+
+        Naukri may render an identically named sticky-header control. The job
+        header is authoritative. A visible global match is used only when no
+        header match exists at all, and only the first visible fallback is
+        returned.
+        """
+        header_matches = await page.query_selector_all(self._header_apply_selector)
+        if header_matches:
+            for button in header_matches:
+                if await button.is_visible():
+                    logger.info("Using Apply button from #job_header")
+                    return button, "job_header"
+            logger.warning("Apply button exists in #job_header but is not visible")
+            return None, "job_header_not_visible"
+
+        fallback_matches = await page.query_selector_all(self._fallback_apply_selector)
+        for button in fallback_matches:
+            if await button.is_visible():
+                logger.warning(
+                    "Using fallback Apply button outside #job_header; header button is absent"
+                )
+                return button, "fallback"
+
+        logger.info("No visible Apply button found in #job_header or fallback search")
+        return None, "none"
 
     async def start_application(self, page: Page) -> ApplicationStartResult:
         """
@@ -563,50 +579,39 @@ class NaukriAdapter(JobPlatformAdapter):
         - Neither within timeout: NEEDS_ATTENTION
         """
         try:
-            # Try various apply button selectors
-            apply_selectors = [
-                "#apply-button",
-                "button.apply-button",
-                'button[type="submit"]',
-                '.apply-btn',
-                'a.apply',
-                'button.apply-now',
-                '.apply-now-btn'
-            ]
+            button, source = await self._find_scoped_apply_button(page)
+            if button is None:
+                logger.warning("No scoped visible Apply button found; needs attention")
+                return ApplicationStartResult.NEEDS_ATTENTION
 
-            for selector in apply_selectors:
-                button = await page.query_selector(selector)
-                if button and await button.is_visible():
-                    await button.click()
-                    await self._check_security(page)
+            logger.info(f"Clicking Apply button selected from {source}")
+            await button.click()
+            await self._check_security(page)
 
-                    # Phase 10: Bounded wait for explicit post-click evidence
-                    deadline = (
-                        asyncio.get_running_loop().time()
-                        + self.post_apply_timeout_seconds
-                    )
-                    while asyncio.get_running_loop().time() < deadline:
-                        # Check for explicit Applied state (visible evidence only)
-                        applied, evidence = await self.detect_applied_state(page)
-                        if applied:
-                            logger.info(f"Applied state detected with evidence: {evidence}")
-                            return ApplicationStartResult.APPLIED
+            # Phase 10: Bounded wait for explicit post-click evidence
+            deadline = (
+                asyncio.get_running_loop().time()
+                + self.post_apply_timeout_seconds
+            )
+            while asyncio.get_running_loop().time() < deadline:
+                # Check for explicit Applied state (visible evidence only)
+                applied, evidence = await self.detect_applied_state(page)
+                if applied:
+                    logger.info(f"Applied state detected with evidence: {evidence}")
+                    return ApplicationStartResult.APPLIED
 
-                        # Check for visible application container
-                        if await self._has_visible_application_container(page):
-                            logger.info("Application container detected after click")
-                            return ApplicationStartResult.FORM_OPENED
+                # Check for visible application container
+                if await self._has_visible_application_container(page):
+                    logger.info("Application container detected after click")
+                    return ApplicationStartResult.FORM_OPENED
 
-                        await asyncio.sleep(0.25)
+                await asyncio.sleep(0.25)
 
-                    # Bounded wait expired without explicit evidence
-                    logger.warning(
-                        f"No explicit post-click evidence after {self.post_apply_timeout_seconds}s"
-                    )
-                    return ApplicationStartResult.NEEDS_ATTENTION
-
-            logger.warning("No apply button found with is_visible check")
-            return ApplicationStartResult.PRE_APPLY
+            # Bounded wait expired without explicit evidence
+            logger.warning(
+                f"No explicit post-click evidence after {self.post_apply_timeout_seconds}s"
+            )
+            return ApplicationStartResult.NEEDS_ATTENTION
         except Exception as e:
             logger.error(f"Error starting application: {e}")
             raise e
@@ -690,6 +695,24 @@ class NaukriAdapter(JobPlatformAdapter):
     async def detect_applied_state(self, page: Page) -> tuple[bool, str]:
         """Return explicit post-Apply evidence without inferring from navigation."""
         try:
+            # The header is authoritative when it renders an applied state.
+            for selector in [
+                "#job_header #already-applied",
+                "#job_header .already-applied",
+                "#job_header *",
+            ]:
+                for element in await page.query_selector_all(selector):
+                    if await element.is_visible():
+                        text = (await element.inner_text()).strip()
+                        if (
+                            selector != "#job_header *"
+                            or text == "Applied"
+                            or text.startswith('Applied to "')
+                        ):
+                            logger.info("Applied state detected in #job_header")
+                            return True, text
+
+            # Form banners may be rendered outside the header after a click.
             for selector in ["#already-applied", ".already-applied"]:
                 for element in await page.query_selector_all(selector):
                     if await element.is_visible():

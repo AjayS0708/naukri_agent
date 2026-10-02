@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -303,12 +305,20 @@ class TestApplicationTypeDetection:
         control.inner_text.return_value = text
         return control
 
+    @staticmethod
+    def _synthetic_fixture() -> str:
+        """Checkpoint B uses a deliberately minimal, non-session HTML fixture."""
+        fixture_path = Path(__file__).parent / "fixtures" / "checkpoint_b_apply_buttons.html"
+        return fixture_path.read_text(encoding="utf-8")
+
     @pytest.mark.asyncio
     async def test_apply_button_id_is_native(self):
         adapter = NaukriAdapter()
         page = self._make_page()
-        page.query_selector.side_effect = lambda selector: (
-            self._visible_control() if selector == "#apply-button" else None
+        page.query_selector_all.side_effect = lambda selector: (
+            [self._visible_control()]
+            if selector == "#job_header button#apply-button"
+            else []
         )
 
         assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
@@ -317,18 +327,19 @@ class TestApplicationTypeDetection:
     async def test_apply_button_class_is_native(self):
         adapter = NaukriAdapter()
         page = self._make_page()
-        page.query_selector.side_effect = lambda selector: (
-            self._visible_control() if selector == "button.apply-button" else None
-        )
+        page.query_selector_all.return_value = []
 
-        assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
+        assert await adapter.detect_application_type(page) == "AMBIGUOUS"
 
     @pytest.mark.asyncio
     async def test_visible_exact_apply_button_is_native(self):
         adapter = NaukriAdapter()
         page = self._make_page()
-        page.query_selector.return_value = None
-        page.query_selector_all.return_value = [self._visible_control("Apply")]
+        page.query_selector_all.side_effect = lambda selector: (
+            [self._visible_control("Apply")]
+            if selector == "#job_header button#apply-button"
+            else []
+        )
 
         assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
 
@@ -359,13 +370,12 @@ class TestApplicationTypeDetection:
         control = self._visible_control()
         calls = 0
 
-        async def query_selector(selector):
+        async def query_selector_all(selector):
             nonlocal calls
             calls += 1
-            return control if calls > 5 and selector == "#apply-button" else None
+            return [control] if calls > 1 and selector == "#job_header button#apply-button" else []
 
-        page.query_selector.side_effect = query_selector
-        page.query_selector_all.return_value = []
+        page.query_selector_all.side_effect = query_selector_all
 
         assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
 
@@ -385,8 +395,9 @@ class TestApplicationTypeDetection:
         page = self._make_page()
         hidden_control = self._visible_control()
         hidden_control.is_visible.return_value = False
-        page.query_selector.return_value = hidden_control
-        page.query_selector_all.return_value = []
+        page.query_selector_all.side_effect = lambda selector: (
+            [hidden_control] if selector == "#job_header button#apply-button" else []
+        )
 
         assert await adapter.detect_application_type(page) == "AMBIGUOUS"
 
@@ -403,7 +414,7 @@ class TestApplicationTypeDetection:
     async def test_visible_external_evidence_wins_over_visible_native(self):
         adapter = NaukriAdapter()
         page = self._make_page("Apply on company site")
-        page.query_selector.return_value = self._visible_control()
+        page.query_selector_all.return_value = [self._visible_control()]
 
         assert await adapter.detect_application_type(page) == "EXTERNAL"
 
@@ -413,14 +424,122 @@ class TestApplicationTypeDetection:
         adapter.post_apply_timeout_seconds = 0
         page = self._make_page()
         apply_button = self._visible_control()
-        page.query_selector.side_effect = lambda selector: (
-            apply_button if selector == "#apply-button" else None
+        page.query_selector_all.side_effect = lambda selector: (
+            [apply_button] if selector == "#job_header button#apply-button" else []
         )
 
         with patch.object(adapter, "_check_security", new_callable=AsyncMock):
             assert await adapter.start_application(page) == ApplicationStartResult.NEEDS_ATTENTION
 
         apply_button.click.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_header_button_is_used_when_fixture_contains_header_and_sticky_buttons(self, caplog):
+        fixture = self._synthetic_fixture()
+        both_buttons_section = fixture.split('<section id="sticky-only">', maxsplit=1)[0]
+        assert both_buttons_section.count('<button id="apply-button">Apply</button>') == 2
+        assert "profile" not in fixture.lower()
+        assert "notification" not in fixture.lower()
+
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        header_button = self._visible_control()
+        sticky_button = self._visible_control()
+        page.query_selector_all.side_effect = lambda selector: {
+            "#job_header button#apply-button": [header_button],
+            "button#apply-button": [header_button, sticky_button],
+        }.get(selector, [])
+
+        assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
+        assert "#job_header" in caplog.text
+        assert page.query_selector_all.await_args_list == [
+            (("#job_header button#apply-button",),),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_header_button_avoids_global_strict_mode_ambiguity(self):
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0
+        page = self._make_page()
+        header_button = self._visible_control()
+        page.query_selector_all.side_effect = lambda selector: (
+            [header_button] if selector == "#job_header button#apply-button" else
+            (_ for _ in ()).throw(AssertionError("global duplicate selector must not be used"))
+        )
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            assert await adapter.start_application(page) == ApplicationStartResult.NEEDS_ATTENTION
+
+        header_button.click.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sticky_only_fixture_uses_first_visible_fallback(self, caplog):
+        fixture = self._synthetic_fixture()
+        assert 'id="sticky-only"' in fixture
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        hidden_sticky_button = self._visible_control()
+        hidden_sticky_button.is_visible.return_value = False
+        visible_sticky_button = self._visible_control()
+        page.query_selector_all.side_effect = lambda selector: {
+            "#job_header button#apply-button": [],
+            "button#apply-button": [hidden_sticky_button, visible_sticky_button],
+        }.get(selector, [])
+
+        assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
+        adapter.post_apply_timeout_seconds = 0
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            assert await adapter.start_application(page) == ApplicationStartResult.NEEDS_ATTENTION
+
+        visible_sticky_button.click.assert_awaited_once()
+        hidden_sticky_button.click.assert_not_called()
+        assert "fallback" in caplog.text.lower()
+
+    @pytest.mark.asyncio
+    async def test_no_button_fixture_is_ambiguous_and_needs_attention(self):
+        fixture = self._synthetic_fixture()
+        assert 'id="no-button"' in fixture
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0
+        page = self._make_page("Job details")
+        page.query_selector_all.return_value = []
+
+        assert await adapter.detect_application_type(page) == "AMBIGUOUS"
+        assert await adapter.start_application(page) == ApplicationStartResult.NEEDS_ATTENTION
+
+    @pytest.mark.asyncio
+    async def test_already_applied_state_prefers_header_evidence(self):
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        header_evidence = self._visible_control("Applied")
+        page.query_selector_all.side_effect = lambda selector: (
+            [header_evidence]
+            if selector == "#job_header #already-applied"
+            else (_ for _ in ()).throw(AssertionError("header evidence must prevent global lookup"))
+        )
+
+        assert await adapter.detect_applied_state(page) == (True, "Applied")
+
+    @pytest.mark.asyncio
+    async def test_applied_banner_outside_header_remains_post_click_evidence(self):
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        form_evidence = self._visible_control('Applied to "Data Analyst"')
+        page.query_selector_all.side_effect = lambda selector: (
+            [form_evidence] if selector == "#already-applied" else []
+        )
+
+        assert await adapter.detect_applied_state(page) == (True, 'Applied to "Data Analyst"')
+
+    @pytest.mark.asyncio
+    async def test_external_fixture_remains_external_even_without_apply_button(self):
+        fixture = self._synthetic_fixture()
+        assert 'id="external"' in fixture
+        adapter = NaukriAdapter()
+        page = self._make_page("Data Analyst Apply on company site")
+        page.query_selector_all.return_value = []
+
+        assert await adapter.detect_application_type(page) == "EXTERNAL"
 
     @pytest.mark.asyncio
     async def test_detect_applied_state_uses_visible_evidence(self):

@@ -1,5 +1,34 @@
 # Development Status
 
+## Checkpoint B: Apply Button Scoping: COMPLETE — OFFLINE VALIDATED
+
+`NaukriAdapter` now resolves Naukri's duplicated `apply-button` controls through
+`#job_header button#apply-button` first. A visible global `button#apply-button`
+is selected only when the header control is absent; the adapter logs whether the
+header or fallback was used. Native classification and the click path share this
+resolver, so neither can hit Playwright strict-mode ambiguity or click the sticky
+header while a job-header control exists. No control returns `AMBIGUOUS` during
+classification and `NEEDS_ATTENTION` if a previously classified page no longer
+has a scoped clickable control.
+
+Already-applied evidence is evaluated in `#job_header` first. Existing visible
+form/banner evidence outside the header remains valid after a click. The fixture
+is minimal synthetic HTML only; it contains no logged-in session data, profile
+details, names, photo URLs, or notification counts.
+
+Offline validation:
+
+- Focused adapter suite: 103 passed.
+- Full backend suite: 644 passed, 1 failed, 645 total. The unrelated failure is
+  `backend/tests/test_checkpoint_a3_salary.py::TestEndToEndSalary::test_unpaid_skip`,
+  in `MatchEngine.evaluate_job` after its salary branch is skipped for an empty
+  description and a `MagicMock` is passed to Pydantic. Checkpoint B changes only
+  the Naukri adapter and its tests.
+
+No browser session, Naukri action, Apply/Submit click, Gemini call, external
+application action, or production-database write occurred. The required backup
+is `data/naukri_agent.db.bak-before-checkpoint-b` and is intentionally untracked.
+
 ## Phase 10 Application-Type Reliability Fix: COMPLETE — LIVE READ-ONLY VALIDATED
 
 Implemented a bounded reliability fix for state/timing-dependent Naukri application classification:
