@@ -1,5 +1,53 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT C: Autonomous Cycle Command (2026-10-02)
+
+`run_autonomous_cycle.py` provides a command-line interface for running the complete autonomous job application cycle with explicit controls and safety guarantees.
+
+**Command-Line Flags:**
+- `--max-applications N`: Limit on real applications (default: 1)
+- `--dry-run`: Discovery and analysis only, no Apply clicks or application records
+- `--max-jobs N`: Cap on jobs inspected per run (default: unlimited)
+
+**Orchestration Flow:**
+The command calls existing services in sequence:
+1. DiscoveryService.run_discovery() - discovers jobs from Naukri
+2. MatchEngine.evaluate_job() - applies hard filters (salary, experience, employment type, location)
+3. AIQueueService.enqueue_job() - enqueues eligible jobs for AI analysis
+4. AIQueueService.process_item() - processes queue through Gemini
+5. ApplicationRunner.run_applications() - applies to eligible native jobs with dry_run flag
+
+**Safety Guarantees:**
+- S&P job `300926927428` is always excluded
+- External jobs are skipped (never applied to)
+- Native/external re-classification happens immediately before Apply click
+- Post-click Applied evidence is required before recording APPLIED
+- Stops on SECURITY_REQUIRED, AUTH_REQUIRED, hourly/daily limits, or critical errors
+- No input() prompts anywhere
+
+**Output:**
+- Per-job decision table with: company, title, native/external, filter results, Gemini result, gate result, outcome
+- Final summary with counts
+- Exit code 0 on normal completion, non-zero on AUTH/SECURITY/critical stop
+- Empty candidate list reported as "0 eligible jobs found" (not a failure)
+
+**Test Coverage:**
+- 12 focused tests in `backend/tests/test_autonomous_cycle.py`
+- Tests cover: eligible native jobs, external jobs, unpaid jobs, excluded jobs, max-applications limit, dry-run flag
+- All tests use isolated temporary SQLite database
+- No live Naukri activity, Gemini calls, or Apply clicks in tests
+
+**Usage Examples:**
+```powershell
+# Dry-run (discovery and analysis only, no Apply clicks)
+python run_autonomous_cycle.py --dry-run --max-jobs 10
+
+# First live run with 1 application
+python run_autonomous_cycle.py --max-applications 1 --max-jobs 10
+```
+
+**Note:** This command builds and tests offline only. Do not run it live yourself; no Apply clicks, no Gemini calls, no weakening of filters/limits/duplicate rules/safety gate. Never apply to EXTERNAL jobs.
+
 ## Phase 10 Application-Type Reliability Fix (2026-10-01)
 
 The application-type classifier now uses a single bounded 500 ms observation window only when the initial visible state is inconclusive. Visible external evidence such as `Apply on company site` remains authoritative and is checked before native evidence. Native classification still requires visible stable selectors or exact visible `Apply` text. If neither evidence is visible after settling, the adapter returns `AMBIGUOUS`; the runner maps this to `NEEDS_ATTENTION` and does not create an application record.

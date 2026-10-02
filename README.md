@@ -1,5 +1,45 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT C: Autonomous Cycle Command
+
+`run_autonomous_cycle.py` provides a command-line interface for running the complete autonomous job application cycle:
+discovery → hard filters → AI queue → Gemini → final safety gate → ApplicationRunner.
+
+**Flags:**
+- `--max-applications N`: Limit on real applications (default: 1)
+- `--dry-run`: Discovery and analysis only, no Apply clicks or application records
+- `--max-jobs N`: Cap on jobs inspected per run (default: unlimited)
+
+**Behavior:**
+- Uses saved profile and job preferences
+- Searches Naukri, applies hard filters, runs AI analysis, executes final safety gate
+- Applies to eligible NATIVE jobs only (external jobs are skipped)
+- Re-classifies native/external immediately before the click
+- Requires post-click Applied evidence and records APPLIED with applied_at, method, and confirmation_evidence
+- Stops after N real applications, on hourly/daily limits, on SECURITY_REQUIRED or AUTH_REQUIRED, on critical error, or when candidate list is exhausted
+- S&P job `300926927428` is always excluded
+- No input() prompts anywhere
+
+**Output:**
+- Per-job decision table (company, title, native/external, salary/experience/employment filter result, Gemini result, gate result, outcome)
+- Final summary with counts
+- Exit code 0 on normal completion, non-zero on AUTH/SECURITY/critical stop
+- Empty candidate list reported as "0 eligible jobs found" (not a failure)
+
+**Examples:**
+
+Dry-run (discovery and analysis only, no Apply clicks):
+```powershell
+python run_autonomous_cycle.py --dry-run --max-jobs 10
+```
+
+First live run with 1 application:
+```powershell
+python run_autonomous_cycle.py --max-applications 1 --max-jobs 10
+```
+
+**Note:** This command builds and tests offline only. Do not run it live yourself; no Apply clicks, no Gemini calls, no weakening of filters/limits/duplicate rules/safety gate. Never apply to EXTERNAL jobs. Tests must be fully green before any commit.
+
 ## Phase 10 Supervised Live Launcher (Build Only)
 
 `phase10_live_apply_launcher.py` is an explicitly gated launcher for a single manually supervised native-flow validation. It is not executed by the project test suite. It rejects S&P Global job `300926927428`, requires a database backup before any ORM write, requires exact `PROCEED <job_id>` and `SUBMIT <job_id>` confirmations, and uses `ApplicationRunner` with its supervised form-stop boundary. The launcher never bypasses CAPTCHA/security checks and does not retry.

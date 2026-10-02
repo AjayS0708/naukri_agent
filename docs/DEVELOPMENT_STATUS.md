@@ -1,5 +1,27 @@
 # Development Status
 
+## CHECKPOINT C: Autonomous Cycle Command: COMPLETE — OFFLINE VALIDATED
+
+Implemented `run_autonomous_cycle.py` command-line interface for running the complete autonomous job application cycle with explicit controls:
+- `--max-applications N`: Limit on real applications (default: 1)
+- `--dry-run`: Discovery and analysis only, no Apply clicks or application records
+- `--max-jobs N`: Cap on jobs inspected per run (default: unlimited)
+
+The command calls existing services in sequence: DiscoveryService → MatchEngine → AIQueueService → ApplicationRunner. It excludes S&P job `300926927428`, skips external jobs, re-classifies native/external before click, requires post-click Applied evidence, and stops on AUTH/SECURITY/limits/errors. Output includes per-job decision table and summary. No input() prompts. Exit code 0 on normal completion, non-zero on stops.
+
+Test coverage: 12 focused tests in `backend/tests/test_autonomous_cycle.py` covering eligible native jobs, external jobs, unpaid jobs, excluded jobs, max-applications limit, and dry-run flag. All tests use isolated temporary SQLite database. No live Naukri activity, Gemini calls, or Apply clicks in tests.
+
+Examples:
+```powershell
+# Dry-run (discovery and analysis only)
+python run_autonomous_cycle.py --dry-run --max-jobs 10
+
+# First live run with 1 application
+python run_autonomous_cycle.py --max-applications 1 --max-jobs 10
+```
+
+Note: This command builds and tests offline only. Do not run it live yourself; no Apply clicks, no Gemini calls, no weakening of filters/limits/duplicate rules/safety gate. Never apply to EXTERNAL jobs.
+
 ## Checkpoint B2: Salary Gate Without Description: COMPLETE — OFFLINE VALIDATED
 
 The full-suite failure from Checkpoint B was traced to a real code defect

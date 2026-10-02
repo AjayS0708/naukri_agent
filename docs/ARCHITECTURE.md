@@ -1,5 +1,42 @@
 # Architecture
 
+## CHECKPOINT C: Autonomous Cycle Command
+
+The autonomous cycle command (`run_autonomous_cycle.py`) provides a command-line interface for running the complete job application flow with explicit controls:
+
+**Command-Line Interface:**
+- `--max-applications N`: Limit on real applications (default: 1)
+- `--dry-run`: Discovery and analysis only, no Apply clicks or application records
+- `--max-jobs N`: Cap on jobs inspected per run (default: unlimited)
+
+**Orchestration Flow:**
+The command calls existing services in sequence:
+1. DiscoveryService.run_discovery() - discovers jobs from Naukri
+2. MatchEngine.evaluate_job() - applies hard filters (salary, experience, employment type, location)
+3. AIQueueService.enqueue_job() - enqueues eligible jobs for AI analysis
+4. AIQueueService.process_item() - processes queue through Gemini
+5. ApplicationRunner.run_applications() - applies to eligible native jobs with dry_run flag
+
+**Safety Guarantees:**
+- S&P job `300926927428` is always excluded
+- External jobs are skipped (never applied to)
+- Native/external re-classification happens immediately before Apply click
+- Post-click Applied evidence is required before recording APPLIED
+- Stops on SECURITY_REQUIRED, AUTH_REQUIRED, hourly/daily limits, or critical errors
+- No input() prompts anywhere
+
+**Output:**
+- Per-job decision table with: company, title, native/external, filter results, Gemini result, gate result, outcome
+- Final summary with counts
+- Exit code 0 on normal completion, non-zero on AUTH/SECURITY/critical stop
+- Empty candidate list reported as "0 eligible jobs found" (not a failure)
+
+**Test Coverage:**
+- 12 focused tests in `backend/tests/test_autonomous_cycle.py`
+- Tests cover: eligible native jobs, external jobs, unpaid jobs, excluded jobs, max-applications limit, dry-run flag
+- All tests use isolated temporary SQLite database
+- No live Naukri activity, Gemini calls, or Apply clicks in tests
+
 ## Phase 10 Application-Type Reliability
 
 Application-surface classification is evidence-driven and conservative. `detect_application_type()` checks visible external indicators first, then visible native selectors. When neither is present, it waits exactly 500 ms and observes again without reloading. The result is `AMBIGUOUS` if evidence remains absent. `ApplicationRunner` converts ambiguity to `NEEDS_ATTENTION` before application creation, preserving the rule that unknown state is never native.
