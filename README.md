@@ -1,5 +1,31 @@
 # Naukri AI Job Application Agent
 
+## Phase 10 Supervised Live Launcher (Build Only)
+
+`phase10_live_apply_launcher.py` is an explicitly gated launcher for a single manually supervised native-flow validation. It is not executed by the project test suite. It rejects S&P Global job `300926927428`, requires a database backup before any ORM write, requires exact `PROCEED <job_id>` and `SUBMIT <job_id>` confirmations, and uses `ApplicationRunner` with its supervised form-stop boundary. The launcher never bypasses CAPTCHA/security checks and does not retry.
+
+Run manually only after reviewing the pre-flight output:
+
+```powershell
+& ".venv\Scripts\python.exe" phase10_live_apply_launcher.py 240926500723
+```
+
+Offline launcher and runner tests do not open Naukri, call Gemini, click controls, or write the production database.
+
+## Phase 10 Application-Type Reliability: IMPLEMENTED
+
+`NaukriAdapter.detect_application_type()` now performs one bounded 500 ms settling observation when the initial visible page contains neither definitive external nor native evidence. External indicators remain authoritative, visible native selectors remain required for `NAUKRI_NATIVE`, and no-evidence states return `AMBIGUOUS` rather than being treated as native. The application runner treats ambiguity as `NEEDS_ATTENTION` without creating an application record.
+
+Focused adapter coverage includes delayed native/external evidence, hidden controls/text, external-first precedence, and ambiguous states. The full Naukri adapter suite passed with 96 tests. A read-only live check found Quadrasystems ambiguous on both immediate and settled observations, while Cisco remained clearly external. No Apply or Submit action occurred; automated successful application count remains 0.
+
+## Phase 10 Live Native Application Test: BLOCKED
+
+On 2026-10-01, the authenticated persistent Playwright session opened Naukri successfully and showed no visible CAPTCHA, security challenge, login wall, or access block. The backend readiness endpoint reported `ready`; the confirmed profile, configured preferences, compatible schema, and unused application limits were present.
+
+A single bounded discovery pass inspected five `Data Analyst` results without clicking Apply. No safe eligible native candidate was available: four candidates failed duplicate, employment-type, or external-classification checks, and the one native result was already processed. No Gemini analysis or application flow was started, so no submission was attempted. The database remained unchanged at 10 application records and 0 APPLIED/SUBMITTED records. Automated successful application count remains 0.
+
+Phase 10 live submission validation remains blocked until a fresh candidate passes all configured rules and duplicate protection.
+
 ## Phase 10 Database Schema Migration: IMPLEMENTED
 
 The Phase 10 schema migration ensures all databases (SQLite and PostgreSQL) have required columns for explicit applied state detection. The migration runs automatically during application startup via `initialize_database()`, is fully idempotent, and preserves all existing data.

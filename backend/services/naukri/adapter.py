@@ -40,6 +40,7 @@ class NaukriAdapter(JobPlatformAdapter):
     """
     platform_name = "naukri"
     post_apply_timeout_seconds = 8
+    application_type_settle_seconds = 0.5
 
     def __init__(self, browser_type: str = "chrome"):
         """
@@ -490,52 +491,51 @@ class NaukriAdapter(JobPlatformAdapter):
         stable selectors, and exact text matching. No hashed classes.
         """
         try:
-            # Check rendered text so hidden navigation/scripts do not classify the
-            # application surface incorrectly.
-            content = await page.inner_text("body")
-            content_lower = content.lower()
+            result = await self._observe_application_type(page)
+            if result != "AMBIGUOUS":
+                return result
 
-            # External application indicators (visible text only)
-            external_indicators = [
-                "apply on company site",
-                "apply on company website",
-                "external application",
-                "redirecting to",
-                "you will be redirected",
-                "apply externally"
-            ]
-
-            for indicator in external_indicators:
-                if indicator in content_lower:
-                    return "EXTERNAL"
-
-            # Check stable native controls before legacy selectors. Naukri's
-            # current native page uses #apply-button / .apply-button.
-            native_selectors = [
-                "#apply-button",
-                "button.apply-button",
-                'button[type="submit"]',
-                ".apply-btn",
-                "a.apply",
-            ]
-            for selector in native_selectors:
-                apply_button = await page.query_selector(selector)
-                if apply_button and await apply_button.is_visible():
-                    return "NAUKRI_NATIVE"
-
-            # A visible button with exact text "Apply" is native evidence even
-            # when the page changes its non-semantic class names.
-            for button in await page.query_selector_all("button"):
-                if not await button.is_visible():
-                    continue
-                if (await button.inner_text()).strip().casefold() == "apply":
-                    return "NAUKRI_NATIVE"
-
-            # Default to external if unclear
-            return "EXTERNAL"
+            # Naukri may render the application surface shortly after the job
+            # page becomes available. Keep this bounded and do not reload.
+            await asyncio.sleep(self.application_type_settle_seconds)
+            return await self._observe_application_type(page)
         except Exception as e:
             logger.warning(f"Error detecting application type: {e}")
+            return "AMBIGUOUS"
+
+    async def _observe_application_type(self, page: Page) -> str:
+        """Classify one visible page state without waiting or navigation."""
+        content_lower = (await page.inner_text("body")).lower()
+        external_indicators = [
+            "apply on company site",
+            "apply on company website",
+            "external application",
+            "redirecting to",
+            "you will be redirected",
+            "apply externally",
+        ]
+        if any(indicator in content_lower for indicator in external_indicators):
             return "EXTERNAL"
+
+        native_selectors = [
+            "#apply-button",
+            "button.apply-button",
+            'button[type="submit"]',
+            ".apply-btn",
+            "a.apply",
+        ]
+        for selector in native_selectors:
+            apply_button = await page.query_selector(selector)
+            if apply_button and await apply_button.is_visible():
+                return "NAUKRI_NATIVE"
+
+        for button in await page.query_selector_all("button"):
+            if await button.is_visible() and (
+                (await button.inner_text()).strip().casefold() == "apply"
+            ):
+                return "NAUKRI_NATIVE"
+
+        return "AMBIGUOUS"
 
     async def start_application(self, page: Page) -> ApplicationStartResult:
         """

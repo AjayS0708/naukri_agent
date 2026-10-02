@@ -39,7 +39,13 @@ class ApplicationRunner:
     Processes jobs sequentially with safety gate enforcement.
     """
 
-    def __init__(self, session: Session, state_manager: AgentStateManager, dry_run: bool = False):
+    def __init__(
+        self,
+        session: Session,
+        state_manager: AgentStateManager,
+        dry_run: bool = False,
+        supervise_form: bool = False,
+    ):
         self.session = session
         self.state_manager = state_manager
         self.application_service = ApplicationService(session)
@@ -49,6 +55,7 @@ class ApplicationRunner:
         self._stop_requested = False
         self._session_started = False
         self.dry_run = dry_run
+        self.supervise_form = supervise_form
         self.dry_run_result = None
 
     async def stop_safely(self):
@@ -279,6 +286,10 @@ class ApplicationRunner:
                 logger.info(f"Job {job_id} requires external application")
                 return "EXTERNAL"
 
+            if app_type == "AMBIGUOUS":
+                logger.warning("Application type is ambiguous for job %s", job_id)
+                return "NEEDS_ATTENTION"
+
             # Phase 10: Re-classify immediately before the click (non-dry-run only)
             if not self.dry_run:
                 recheck_type = await self.adapter.detect_application_type(page)
@@ -361,6 +372,30 @@ class ApplicationRunner:
 
             # Detect and answer questions
             questions = await self.adapter.detect_application_questions(page)
+            if self.supervise_form:
+                visible_fields = [
+                    {
+                        "question": question.get("question", ""),
+                        "required": question.get("required", False),
+                        "type": question.get("type"),
+                    }
+                    for question in questions
+                ]
+                logger.warning(
+                    "Supervised form stop for job %s; visible editable fields: %s",
+                    job_id,
+                    visible_fields,
+                )
+                self.application_service.update_application(
+                    application.id,
+                    ApplicationUpdate(
+                        status=ApplicationStatus.NEEDS_ATTENTION,
+                        needs_attention=True,
+                        skip_reason="Supervised stop at FORM_OPENED; no fields filled",
+                    ),
+                )
+                return "NEEDS_ATTENTION"
+
             prepared_answers = []
 
             for q in questions:

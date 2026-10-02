@@ -1,5 +1,47 @@
 # Development Status
 
+## Phase 10 Application-Type Reliability Fix: COMPLETE — LIVE READ-ONLY VALIDATED
+
+Implemented a bounded reliability fix for state/timing-dependent Naukri application classification:
+
+- Existing visible external-first behavior is preserved.
+- Existing visible native selectors remain authoritative.
+- An inconclusive state receives one bounded 500 ms settling observation.
+- No reloads or indefinite polling are used.
+- Persistent absence of both evidence types returns `AMBIGUOUS`.
+- `ApplicationRunner` maps `AMBIGUOUS` to `NEEDS_ATTENTION` before creating an application record.
+
+Offline validation:
+
+- Focused classification tests: 14 passed.
+- Full Naukri adapter suite: 96 passed.
+
+Live read-only validation:
+
+- Quadrasystems.net (`240926500723`): initial `AMBIGUOUS`, settled `AMBIGUOUS`, final `AMBIGUOUS`; selector nodes existed but were not visible, and no external indicator was visible.
+- Omozing (`150526504514`): initial `AMBIGUOUS`, settled `AMBIGUOUS`; no visible native or external evidence.
+- Cisco (`120826500949`): initial `EXTERNAL`, settled `EXTERNAL`; visible `Apply on company site`.
+- No CAPTCHA, security challenge, login challenge, or access block appeared.
+- No Apply/Submit action, Gemini call, application runner invocation, or database write occurred.
+
+Database remained unchanged at 10 applications, 0 APPLIED, and 0 SUBMITTED. Automated successful application count remains **0**. Real submission and confirmation validation remain outstanding.
+
+## Phase 10 Live Native Application Test: BLOCKED — NO SAFE ELIGIBLE NATIVE CANDIDATE
+
+**Observed on 2026-10-01:** The existing persistent Playwright session opened authenticated Naukri successfully. No CAPTCHA, security challenge, login wall, or access block was observed. The local backend readiness endpoint returned `ready`. The confirmed profile, configured preferences, compatible application schema, and unused hourly/daily limits were verified.
+
+A single bounded discovery pass inspected five `Data Analyst` results read-only:
+
+- RR Groups: `EXTERNAL`; duplicate/application history blocked it.
+- Digital Glyde: `EXTERNAL`; duplicate/application history blocked it.
+- Foundation Ai: `EXTERNAL`; duplicate/application history blocked it.
+- Ivy Knowledge Services: `EXTERNAL`; employment type failed.
+- Thyrocare: `NAUKRI_NATIVE` on two checks; duplicate/application history blocked it.
+
+No Apply or Submit action occurred. No Gemini request was made because no candidate passed the deterministic eligibility boundary. The application runner was not invoked. Database verification after the attempt showed 10 application records, 0 APPLIED/SUBMITTED records, and no changed confirmation evidence. Automated successful application count remains **0**.
+
+**Remaining Phase 10 work:** Repeat the controlled checkpoint only when a fresh candidate passes duplicate protection, native classification, all hard filters, Gemini recommendation, final safety gate, and confirmation requirements. Do not retry the candidates rejected in this checkpoint without the repository-required manual reset.
+
 ## Phase 10 Database Schema Migration: COMPLETE
 
 **Status:** Local SQLite database migrated and verified. All code changes implemented, tested, and deployed to local database.

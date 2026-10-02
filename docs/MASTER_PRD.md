@@ -1,5 +1,19 @@
 # Naukri AI Job Application Agent
 
+## Phase 10 Application-Type Reliability Fix (2026-10-01)
+
+The application-type classifier now uses a single bounded 500 ms observation window only when the initial visible state is inconclusive. Visible external evidence such as `Apply on company site` remains authoritative and is checked before native evidence. Native classification still requires visible stable selectors or exact visible `Apply` text. If neither evidence is visible after settling, the adapter returns `AMBIGUOUS`; the runner maps this to `NEEDS_ATTENTION` and does not create an application record.
+
+Offline validation passed: 96 Naukri adapter tests. Read-only live validation observed Quadrasystems as `AMBIGUOUS` both before and after settling, and Cisco as `EXTERNAL` with visible `Apply on company site`. No application action occurred and automated successful application count remains 0.
+
+## Phase 10 Live Native Application Test: BLOCKED (2026-10-01)
+
+The authenticated persistent Playwright session and local backend were available. Readiness was `ready`, the confirmed profile and preferences were present, the schema was compatible, limits allowed an attempt, and the database contained 10 application records with 0 APPLIED/SUBMITTED records.
+
+A bounded discovery pass inspected five `Data Analyst` results read-only. No candidate satisfied the complete eligibility boundary: four were rejected by duplicate history, employment-type failure, or external classification, and the only native result was already processed. No Apply or Submit control was clicked, no Gemini decision was requested, and no application row changed. Automated successful application count remains 0.
+
+The live submission checkpoint remains incomplete and must not be treated as a successful validation.
+
 ## Phase 10 Database Schema Migration
 
 **Status:** Complete (Local SQLite Migrated)

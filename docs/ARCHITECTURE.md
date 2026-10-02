@@ -1,5 +1,19 @@
 # Architecture
 
+## Phase 10 Application-Type Reliability
+
+Application-surface classification is evidence-driven and conservative. `detect_application_type()` checks visible external indicators first, then visible native selectors. When neither is present, it waits exactly 500 ms and observes again without reloading. The result is `AMBIGUOUS` if evidence remains absent. `ApplicationRunner` converts ambiguity to `NEEDS_ATTENTION` before application creation, preserving the rule that unknown state is never native.
+
+The full adapter suite passed with 96 tests. A read-only live check found no security challenge; Quadrasystems had hidden/non-visible native selector nodes but no visible evidence and remained `AMBIGUOUS` after settling, while Cisco showed visible `Apply on company site` and remained `EXTERNAL`.
+
+## Phase 10 Live Native Application Test: Blocked Candidate Boundary
+
+The 2026-10-01 live check used the existing persistent Playwright/Naukri adapter. Authentication was valid and no visible security challenge was encountered. The backend was ready, the profile was confirmed, preferences existed, schema columns were present, and application limits were unused.
+
+The adapter performed one bounded read-only discovery pass for the configured `Data Analyst` title and inspected five results. It did not click Apply. Four results failed duplicate, employment-type, or native-classification checks; the only native result was already processed. Because no candidate reached the complete hard-filter and AI-approved boundary, the application runner was not invoked and the database was not modified. This preserves the rule that no application is created or marked successful without a safe eligible candidate and observed confirmation evidence.
+
+Automated successful application count remains 0; live submission validation is still pending.
+
 ## Phase 10 Database Schema Migration
 
 **Mechanism:** Idempotent additive schema migration using column existence checks.

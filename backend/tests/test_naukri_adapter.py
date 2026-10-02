@@ -350,6 +350,61 @@ class TestApplicationTypeDetection:
         page = self._make_page("Data Analyst job description")
         page.query_selector.return_value = None
         page.query_selector_all.return_value = []
+        assert await adapter.detect_application_type(page) == "AMBIGUOUS"
+
+    @pytest.mark.asyncio
+    async def test_native_selector_appearing_after_settle_is_native(self):
+        adapter = NaukriAdapter()
+        page = self._make_page("Data Analyst job description")
+        control = self._visible_control()
+        calls = 0
+
+        async def query_selector(selector):
+            nonlocal calls
+            calls += 1
+            return control if calls > 5 and selector == "#apply-button" else None
+
+        page.query_selector.side_effect = query_selector
+        page.query_selector_all.return_value = []
+
+        assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
+
+    @pytest.mark.asyncio
+    async def test_external_indicator_appearing_after_settle_is_external(self):
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        page.inner_text.side_effect = ["Data Analyst", "Apply on company site"]
+        page.query_selector.return_value = None
+        page.query_selector_all.return_value = []
+
+        assert await adapter.detect_application_type(page) == "EXTERNAL"
+
+    @pytest.mark.asyncio
+    async def test_hidden_native_selector_is_not_native(self):
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        hidden_control = self._visible_control()
+        hidden_control.is_visible.return_value = False
+        page.query_selector.return_value = hidden_control
+        page.query_selector_all.return_value = []
+
+        assert await adapter.detect_application_type(page) == "AMBIGUOUS"
+
+    @pytest.mark.asyncio
+    async def test_hidden_external_text_is_not_external(self):
+        adapter = NaukriAdapter()
+        page = self._make_page("Data Analyst job description")
+        page.query_selector.return_value = None
+        page.query_selector_all.return_value = []
+
+        assert await adapter.detect_application_type(page) == "AMBIGUOUS"
+
+    @pytest.mark.asyncio
+    async def test_visible_external_evidence_wins_over_visible_native(self):
+        adapter = NaukriAdapter()
+        page = self._make_page("Apply on company site")
+        page.query_selector.return_value = self._visible_control()
+
         assert await adapter.detect_application_type(page) == "EXTERNAL"
 
     @pytest.mark.asyncio
