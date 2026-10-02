@@ -95,7 +95,7 @@ class MatchEngine:
                     failed_rules=["SALARY"]
                 )
 
-            salary_lpa = extract_lowest_salary_lpa(job.description)
+            salary_lpa = extract_lowest_salary_lpa(job.salary)
             if salary_lpa is not None and preference.min_salary_lpa is not None:
                 if salary_lpa < preference.min_salary_lpa:
                     return MatchDecision(

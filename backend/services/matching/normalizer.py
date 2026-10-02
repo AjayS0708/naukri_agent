@@ -91,7 +91,22 @@ def parse_salary_to_range(salary_str: str) -> tuple[Optional[float], Optional[fl
         except ValueError:
             pass
 
-    # Handle monthly amounts ("/month", "per month", "p.m.", "pm")
+    # Handle monthly ranges FIRST (before single monthly amounts)
+    # Example: "Rs 15,000 - 20,000 per month" -> (1.8, 2.4)
+    #          "30,000-50,000/month" -> (3.6, 6.0)
+    monthly_range_match = re.search(r'([\d\.]+)\s*(?:-|to)\s*([\d\.]+)\s*(?:(?:/|per)\s*month|p\.?m\.?)', s)
+    if monthly_range_match:
+        try:
+            min_monthly = float(monthly_range_match.group(1))
+            max_monthly = float(monthly_range_match.group(2))
+            # Annualize both: monthly * 12 / 100,000 = LPA
+            min_lpa = (min_monthly * 12) / 100000.0
+            max_lpa = (max_monthly * 12) / 100000.0
+            return min(min_lpa, max_lpa), max(min_lpa, max_lpa)
+        except ValueError:
+            pass
+
+    # Handle single monthly amounts ("/month", "per month", "p.m.", "pm")
     # Example: "50,000/month" -> annualize to 6.0 LPA, "15,000 p.m." -> 1.8 LPA
     monthly_match = re.search(r'([\d\.]+)\s*(?:(?:/|per)\s*month|p\.?m\.?)', s)
     if monthly_match:
