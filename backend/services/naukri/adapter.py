@@ -276,7 +276,21 @@ class NaukriAdapter(JobPlatformAdapter):
         try:
             # Navigate to Naukri homepage first to establish session context
             logger.info("Navigating to Naukri homepage to establish session context")
-            await page.goto("https://www.naukri.com", wait_until="load", timeout=30000)
+            await page.goto("https://www.naukri.com", wait_until="domcontentloaded", timeout=60000)
+
+            # Bounded wait for search box or logged-in header (max 15s)
+            try:
+                await page.wait_for_selector(
+                    'input[placeholder*="search"], input[placeholder*="Search"], header',
+                    timeout=15000
+                )
+                logger.debug("Homepage elements loaded")
+            except Exception as wait_error:
+                logger.warning(f"Homepage elements wait timeout: {wait_error}")
+                # Stop iteration gracefully - no jobs to yield
+                await page.close()
+                return
+
             await self._check_security(page)
 
             # Build search URL using path-based format

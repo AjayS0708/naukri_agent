@@ -796,11 +796,12 @@ class TestSearchJobsUrlAndSelectors:
         # Verify homepage navigation occurs first, then search URL
         assert mock_page.goto.call_count == 2  # Homepage + search URL
 
-        # First call should be homepage
+        # First call should be homepage with domcontentloaded + 60s timeout
         first_call_url = mock_page.goto.call_args_list[0][0][0]
         first_call_kwargs = mock_page.goto.call_args_list[0][1]
         assert first_call_url == "https://www.naukri.com"
-        assert first_call_kwargs.get("wait_until") == "load"
+        assert first_call_kwargs.get("wait_until") == "domcontentloaded"
+        assert first_call_kwargs.get("timeout") == 60000
 
         # Second call should be search URL
         second_call_url = mock_page.goto.call_args_list[1][0][0]
@@ -891,20 +892,39 @@ class TestSearchJobsUrlAndSelectors:
             async for _ in adapter.search_jobs("Developer", ["Mumbai"]):
                 pass
 
-        # Verify wait_for_selector was called
-        mock_page.wait_for_selector.assert_called_once_with('.srp-jobtuple-wrapper', timeout=10000)
+        # Verify wait_for_selector was called at least twice:
+        # Once for homepage (search box/header with 15s timeout)
+        # Once for search results (job cards with 10s timeout)
+        assert mock_page.wait_for_selector.call_count >= 2
+
+        # Check homepage wait (first call)
+        homepage_wait = mock_page.wait_for_selector.call_args_list[0]
+        assert homepage_wait[1]["timeout"] == 15000  # 15s for homepage
+
+        # Check search results wait (second call)
+        search_wait = mock_page.wait_for_selector.call_args_list[1]
+        assert search_wait[0][0] == '.srp-jobtuple-wrapper'
+        assert search_wait[1]["timeout"] == 10000  # 10s for job cards
 
     @pytest.mark.asyncio
     async def test_search_jobs_continues_if_selector_timeout(self):
-        """search_jobs should continue even if selector wait times out."""
+        """search_jobs should handle selector wait timeout gracefully."""
         adapter = NaukriAdapter()
         adapter.browser = AsyncMock()
 
         mock_page = AsyncMock()
         adapter.browser.new_page.return_value = mock_page
 
-        # Mock wait_for_selector timeout
-        mock_page.wait_for_selector = AsyncMock(side_effect=Exception("Timeout"))
+        # Mock homepage wait_for_selector succeeds, but search results wait times out
+        call_count = [0]
+        def wait_side_effect(selector, timeout):
+            call_count[0] += 1
+            if call_count[0] == 1:  # Homepage wait succeeds
+                return
+            else:  # Search results wait times out
+                raise Exception("Timeout")
+
+        mock_page.wait_for_selector = AsyncMock(side_effect=wait_side_effect)
         mock_page.query_selector_all.return_value = []
         mock_page.query_selector.return_value = None
 
@@ -938,11 +958,12 @@ class TestSearchJobsUrlAndSelectors:
         # Verify two navigations occurred (homepage + search)
         assert mock_page.goto.call_count == 2
 
-        # First navigation should be homepage
+        # First navigation should be homepage with domcontentloaded + 60s timeout
         first_call_url = mock_page.goto.call_args_list[0][0][0]
         first_call_kwargs = mock_page.goto.call_args_list[0][1]
         assert first_call_url == "https://www.naukri.com"
-        assert first_call_kwargs.get("wait_until") == "load"
+        assert first_call_kwargs.get("wait_until") == "domcontentloaded"
+        assert first_call_kwargs.get("timeout") == 60000
 
         # Second navigation should be search URL
         second_call_url = mock_page.goto.call_args_list[1][0][0]
