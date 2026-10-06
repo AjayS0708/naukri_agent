@@ -35,6 +35,9 @@ class Job(Base):
     experience_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     experience_max: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     employment_type: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    industry: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    department: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    role_category: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

@@ -1524,3 +1524,11 @@ Database changes: the SQLite engine and metadata initialization are present; no 
 Known limitations: no resume handling, Gemini API calls, job discovery, browser automation, scheduling, job rules, application actions, notifications, or packaging. The dashboard intentionally reports only foundation-level status.
 
 Next phase: Phase 2 - Resume & User Profile.
+
+## Checkpoint C2 - fresher-only, IT-only, needs-review forms
+
+Implemented offline: zero-year experience cap, title-based entry-level exception,
+strict IT metadata/title filtering, Naukri `experience=0` search shaping,
+pre-open card experience filtering, bounded card scanning, external recording,
+questionnaire stop behavior, and `answer_questions` defaulting to false. No live
+Naukri run, Apply click, Gemini call, or external application link was used.

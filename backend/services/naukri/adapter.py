@@ -228,6 +228,42 @@ class NaukriAdapter(JobPlatformAdapter):
             if page:
                 await page.close()
 
+    async def fetch_job_details(self, url: str) -> Dict[str, Any]:
+        """Fetch description and deterministic IT metadata from a job page."""
+        if not self.browser:
+            return {}
+        page = None
+        try:
+            page = await self.browser.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await asyncio.sleep(2)
+            await self._check_security(page)
+            result: Dict[str, Any] = {"description": ""}
+            desc = await page.query_selector('[class*="dang-inner-html"], section[class*="job-desc-container"]')
+            if desc and await desc.is_visible():
+                result["description"] = (await desc.inner_text()).strip()
+
+            body_text = (await page.inner_text("body")).splitlines()
+            labels = {
+                "industry": ("industry type", "industry"),
+                "department": ("department",),
+                "role_category": ("role category", "role"),
+            }
+            for key, candidates in labels.items():
+                for index, line in enumerate(body_text):
+                    if line.strip().lower().rstrip(":") in candidates and index + 1 < len(body_text):
+                        value = body_text[index + 1].strip()
+                        if value:
+                            result[key] = value
+                            break
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to fetch job details for {url}: {e}")
+            return {}
+        finally:
+            if page:
+                await page.close()
+
     def _build_naukri_search_url(self, search_term: str, locations: List[str]) -> str:
         """
         Build Naukri search URL using path-based format.
@@ -256,7 +292,7 @@ class NaukriAdapter(JobPlatformAdapter):
             normalized_location = "india"
 
         # Build path-based URL
-        url = f"https://www.naukri.com/{normalized_search}-jobs-in-{normalized_location}"
+        url = f"https://www.naukri.com/{normalized_search}-jobs-in-{normalized_location}?experience=0"
         logger.info(f"Built Naukri search URL: {url}")
         return url
 
@@ -423,7 +459,11 @@ class NaukriAdapter(JobPlatformAdapter):
                 "location": location.strip(),
                 "external_job_id": external_job_id,
                 "posted_at": posted_at,
-                "employment_type": employment_type
+                "employment_type": employment_type,
+                # Industry metadata is populated from the job page during enrichment.
+                "industry": None,
+                "department": None,
+                "role_category": None,
             }
         except Exception as e:
             logger.debug(f"Error parsing job card: {e}")

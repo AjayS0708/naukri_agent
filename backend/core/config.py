@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     gemini_timeout_seconds: float = Field(default=20.0)
     gemini_request_retries: int = Field(default=2)
     ai_cache_enabled: bool = Field(default=True)
+    answer_questions: bool = Field(default=False)
 
     # Browser configuration
     browser_type: str = Field(default="chrome")

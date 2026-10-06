@@ -299,6 +299,12 @@ Phase 9 notifications are isolated behind `NotificationService`. The implementat
 
 Note: Cloud readiness infrastructure (runtime/storage abstractions) was implemented as foundational work to support future cloud deployment without changing business logic. This is not a separate phase but enables future cloud execution. Phase 8.1 prepared the backend for production hosting without actual deployment.
 
+## Checkpoint C2: Fresher-only IT-only autonomous policy
+
+The autonomous cycle uses `experience=0`, defaults to fresher/trainee search titles, and enforces a zero-year maximum required experience. Missing or unparseable experience is skipped unless the title explicitly identifies a fresher, trainee, intern, or graduate role. Jobs must also have an allowed IT industry/department/role category and an IT title keyword; missing or unknown metadata is skipped.
+
+External applications are recorded as `EXTERNAL_APPLICATION` with `external - needs review` and are never opened through a company link. Native questionnaire or chat forms are recorded as `NEEDS_ATTENTION` with `questions - needs review`; question answering is disabled by default with `NAUKRI_AGENT_ANSWER_QUESTIONS=false`. The cycle reports card scans, experience and non-IT skips, external records, question reviews, applied jobs, and opened jobs.
+
 ## Phase 9B-4 Safety Boundary
 
 Dry-run application execution is now pre-Apply inspection only. It opens and classifies the candidate page, records an explicit `is_dry_run` inspection record, and stops before any native or external Apply action; it does not invoke `start_application()`, answer questions, submit, or confirm submission. Application lifecycle data distinguishes `PRE_APPLY`, an unverified Apply/form boundary, `FORM_OPENED`, `APPLIED`, `SUBMITTED`, and `NEEDS_ATTENTION`. Native Apply semantics remain unknown, so Phase 9B-3 live form-boundary validation remains incomplete. No live application occurred in this checkpoint.

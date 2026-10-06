@@ -81,6 +81,7 @@ async def test_discovery_run_flow_and_state_transitions(
         mock_preferences = MagicMock(spec=JobPreference)
         mock_preferences.job_titles = ["Developer"]
         mock_preferences.locations = ["Bengaluru"]
+        mock_preferences.max_required_experience_years = 0
 
         mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
             mock_preferences,

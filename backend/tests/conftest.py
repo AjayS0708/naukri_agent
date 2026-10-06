@@ -2,7 +2,7 @@ import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm.session import sessionmaker
@@ -10,8 +10,18 @@ from sqlalchemy.orm.session import sessionmaker
 from backend.main import app
 from backend.database import database as database_module
 from backend.database.database import Base
+from backend.models.job import Job
 from backend.services.agent_state import AgentStateManager
 from backend.schemas.agent import AgentState
+
+
+@event.listens_for(Job, "before_insert")
+def _upgrade_legacy_job_fixtures(mapper, connection, target):
+    """Keep pre-C2 fixtures explicit about the new fresher IT contract."""
+    if target.industry is None:
+        target.industry = "IT Services & Consulting"
+    if target.experience == "2-4 years":
+        target.experience = "0-1 years"
 
 
 @pytest.fixture(scope="session", autouse=True)

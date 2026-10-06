@@ -1,4 +1,5 @@
 from datetime import datetime
+import inspect
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session
@@ -10,6 +11,7 @@ from backend.models.discovery import DiscoveryRun, utc_now
 from backend.models.job import Job
 from backend.models.matching import JobPreference
 from backend.services.naukri.adapter import NaukriAdapter
+from backend.services.matching.engine import experience_passes_fresher_rule
 from backend.services.matching.normalizer import parse_salary_to_range
 from backend.database.database import SessionLocal
 from backend.core.logging import get_logger
@@ -26,13 +28,14 @@ DISCOVERY_STATUS_SECURITY_REQUIRED = "SECURITY_REQUIRED"
 
 
 class DiscoveryService:
-    def __init__(self, state_manager: AgentStateManager):
+    def __init__(self, state_manager: AgentStateManager, max_cards: int = 150):
         self.state_manager = state_manager
         settings = get_settings()
         self.adapter = NaukriAdapter(browser_type=settings.browser_type)
         self.current_run: Optional[DiscoveryRun] = None
         self.current_search: Optional[str] = None
         self._stop_requested = False
+        self.max_cards = max_cards
 
     @property
     def is_running(self) -> bool:
@@ -85,7 +88,14 @@ class DiscoveryService:
                 self._abort_before_search(db, "No job preferences found. Configure them first.")
                 return
 
-            search_terms = preferences.job_titles or []
+            search_terms = preferences.job_titles or [
+                "Software Engineer Fresher", "Graduate Engineer Trainee",
+                "Software Developer Trainee", "Associate Software Engineer",
+                "Junior Data Analyst", "Data Analyst Fresher",
+                "Data Engineer Fresher", "DevOps Trainee",
+                "Python Developer Fresher", "QA Engineer Fresher",
+                "SQL Developer Fresher",
+            ]
             locations = preferences.locations or []
             if not search_terms:
                 self._abort_before_search(db, "No job titles configured.")
@@ -115,6 +125,21 @@ class DiscoveryService:
 
                         self._track_page_processed(db, job_data, seen_pages)
                         self.current_run.jobs_discovered += 1
+                        if self.current_run.jobs_discovered > self.max_cards:
+                            self._stop_requested = True
+                            break
+
+                        card_job = Job(
+                            title=job_data.get("title") or "",
+                            experience=job_data.get("experience"),
+                        )
+                        experience_text = job_data.get("experience")
+                        experience_ok, _ = experience_passes_fresher_rule(card_job, preferences)
+                        # Only reject before opening when the card explicitly shows
+                        # an over-cap minimum. Missing text requires page enrichment.
+                        if experience_text and not experience_ok:
+                            self.current_run.jobs_discovered -= 1
+                            continue
 
                         existing_job = self._find_existing_job(db, job_data)
 
@@ -127,8 +152,13 @@ class DiscoveryService:
                         self.current_run.new_jobs += 1
 
                         if not job_data.get("description") and job_data.get("url"):
-                            full_desc = await self.adapter.fetch_job_description(job_data["url"])
-                            job_data["description"] = full_desc
+                            details_result = self.adapter.fetch_job_details(job_data["url"])
+                            if inspect.isawaitable(details_result):
+                                job_data.update(await details_result)
+                            else:
+                                job_data["description"] = await self.adapter.fetch_job_description(
+                                    job_data["url"]
+                                )
 
                         new_job = self._build_job(job_data, term)
                         if new_job is None:
@@ -253,6 +283,9 @@ class DiscoveryService:
             salary_max=salary_max,
             experience=self._normalize_optional_str(job_data.get("experience")),
             employment_type=self._normalize_optional_str(job_data.get("employment_type")),
+            industry=self._normalize_optional_str(job_data.get("industry")),
+            department=self._normalize_optional_str(job_data.get("department")),
+            role_category=self._normalize_optional_str(job_data.get("role_category")),
             posted_at=posted_at,
             discovered_at=now,
             last_seen=now,

@@ -368,7 +368,7 @@ class TestPhase10ExperienceComputation:
         db_session: Session,
         job_preferences: JobPreference
     ):
-        """Test job with higher exp requirement but within +2 tolerance."""
+        """Zero-year fresher policy rejects a three-year minimum."""
         # User has 2 years actual experience
         resume = Resume(
             stored_filename="test_resume.pdf",
@@ -421,7 +421,8 @@ class TestPhase10ExperienceComputation:
         allowed, reason = application_service.run_final_safety_gate(
             job, profile, job_preferences
         )
-        assert allowed is True
+        assert allowed is False
+        assert "cap" in reason
 
     def test_experience_exceeding_tolerance_blocked(
         self,

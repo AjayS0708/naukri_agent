@@ -154,10 +154,11 @@ class TestSalaryFilterAlignmentMatchEngine:
             salary="Unpaid",
             salary_min=0,
             salary_max=0,  # Disclosed zero pay
-            experience="2 years",
-            experience_min=2,
-            experience_max=2,
+            experience="0-1 Yrs",
+            experience_min=0,
+            experience_max=1,
             employment_type="Full Time",
+            industry="IT Services & Consulting",
             status="DISCOVERED",
             discovered_at=datetime.now(UTC),
         )
@@ -191,10 +192,11 @@ class TestSalaryFilterAlignmentMatchEngine:
             salary=None,  # Undisclosed
             salary_min=None,
             salary_max=None,
-            experience="2 years",
-            experience_min=2,
-            experience_max=2,
+            experience="0-1 Yrs",
+            experience_min=0,
+            experience_max=1,
             employment_type="Full Time",
+            industry="IT Services & Consulting",
             status="DISCOVERED",
             discovered_at=datetime.now(UTC),
         )
@@ -238,10 +240,11 @@ class TestSalaryFilterAlignmentMatchEngine:
             salary="5-7 LPA",
             salary_min=5.0,
             salary_max=7.0,
-            experience="2 years",
-            experience_min=2,
-            experience_max=2,
+            experience="0-1 Yrs",
+            experience_min=0,
+            experience_max=1,
             employment_type="Full Time",
+            industry="IT Services & Consulting",
             status="DISCOVERED",
             discovered_at=datetime.now(UTC),
         )
@@ -284,10 +287,11 @@ class TestSalaryFilterAlignmentMatchEngine:
             salary="2-4 LPA",
             salary_min=2.0,
             salary_max=4.0,
-            experience="1 year",
-            experience_min=1,
+            experience="0-1 Yrs",
+            experience_min=0,
             experience_max=1,
             employment_type="Full Time",
+            industry="IT Services & Consulting",
             status="DISCOVERED",
             discovered_at=datetime.now(UTC),
         )
@@ -323,10 +327,11 @@ class TestSalaryFilterAlignmentSafetyGate:
             salary="Unpaid",
             salary_min=0,
             salary_max=0,  # Disclosed zero pay
-            experience="2 years",
-            experience_min=2,
-            experience_max=2,
+            experience="0-1 Yrs",
+            experience_min=0,
+            experience_max=1,
             employment_type="Full Time",
+            industry="IT Services & Consulting",
             status="DISCOVERED",
             discovered_at=datetime.now(UTC),
         )
@@ -356,10 +361,11 @@ class TestSalaryFilterAlignmentSafetyGate:
             salary=None,  # Undisclosed
             salary_min=None,
             salary_max=None,
-            experience="2 years",
-            experience_min=2,
-            experience_max=2,
+            experience="0-1 Yrs",
+            experience_min=0,
+            experience_max=1,
             employment_type="Full Time",
+            industry="IT Services & Consulting",
             status="DISCOVERED",
             discovered_at=datetime.now(UTC),
         )
@@ -388,10 +394,11 @@ class TestSalaryFilterAlignmentSafetyGate:
             salary="5-7 LPA",
             salary_min=5.0,
             salary_max=7.0,
-            experience="2 years",
-            experience_min=2,
-            experience_max=2,
+            experience="0-1 Yrs",
+            experience_min=0,
+            experience_max=1,
             employment_type="Full Time",
+            industry="IT Services & Consulting",
             status="DISCOVERED",
             discovered_at=datetime.now(UTC),
         )
@@ -420,10 +427,11 @@ class TestSalaryFilterAlignmentSafetyGate:
             salary="2-4 LPA",
             salary_min=2.0,
             salary_max=4.0,
-            experience="1 year",
-            experience_min=1,
+            experience="0-1 Yrs",
+            experience_min=0,
             experience_max=1,
             employment_type="Full Time",
+            industry="IT Services & Consulting",
             status="DISCOVERED",
             discovered_at=datetime.now(UTC),
         )
@@ -459,7 +467,7 @@ class TestSalaryFilterAlignment:
             salary="Unpaid",
             salary_min=0,
             salary_max=0,  # Disclosed zero pay
-            experience="2 years",
+            experience="0 years",
             experience_min=2,
             experience_max=2,
             employment_type="Full Time",
@@ -491,7 +499,7 @@ class TestSalaryFilterAlignment:
             salary=None,  # Undisclosed
             salary_min=None,
             salary_max=None,
-            experience="2 years",  # Match profile experience (5 years >= 2 + tolerance)
+            experience="0 years",  # Match profile experience (5 years >= 2 + tolerance)
             experience_min=2,
             experience_max=2,
             employment_type="Full Time",
@@ -616,4 +624,3 @@ class TestExtractionWithRealFixture:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

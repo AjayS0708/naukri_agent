@@ -37,6 +37,9 @@ class JobPreferenceBase(BaseModel):
     locations: list[str] = Field(default_factory=list)
     job_titles: list[str] = Field(default_factory=list)
     employment_types: list[str] = Field(default_factory=list)
+    max_required_experience_years: int = Field(default=0, ge=0)
+    it_industry_allowlist: list[str] = Field(default_factory=list)
+    it_keyword_list: list[str] = Field(default_factory=list)
     min_salary_lpa: float | None = None
     aggressiveness: Aggressiveness = Field(default=Aggressiveness.BALANCED)
     max_daily_applications: int = Field(default=20, ge=1)

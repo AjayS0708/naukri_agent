@@ -118,6 +118,14 @@ def _check_schema_compatibility(db: Session) -> dict:
     }
 ```
 
+## Checkpoint C2 policy
+
+The cycle enforces a zero-year experience cap and strict IT metadata/title
+matching in both `MatchEngine` and the final safety gate. Discovery rejects
+over-cap cards before opening their pages and bounds scanning with
+`--max-cards` (default 150). External links are recorded without following
+company links, and visible native questions stop the flow for review.
+
 **Readiness Integration:**
 
 - `GET /api/readiness` includes schema compatibility check

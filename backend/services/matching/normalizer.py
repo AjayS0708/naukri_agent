@@ -194,7 +194,7 @@ def extract_experience_years(exp_str: str) -> tuple[Optional[int], Optional[int]
         
     exp = exp_str.lower()
     
-    if "fresher" in exp:
+    if any(term in exp for term in ("fresher", "trainee", "intern", "graduate")):
         return 0, 0
         
     match_range = re.search(r'(\d+)\s*(?:-|to)\s*(\d+)\s*y', exp)

@@ -558,6 +558,10 @@ Bengaluru / Hyderabad / Pune
 
 → Apply because Bengaluru is included.
 
+# Checkpoint C2 policy
+
+The fresher-only policy is deterministic and authoritative: `max_required_experience_years` defaults to `0`; experience above the cap, and missing/unparseable experience without an entry-level title, is skipped. IT scope requires both an allowed industry/department/role category and an allowed title keyword. The search URL includes Naukri's `experience=0` filter. Native forms containing questions stop at `NEEDS_ATTENTION`; no fields are answered or submitted unless the explicit `answer_questions` flag is enabled.
+
 ### Case 4
 
 Job location:

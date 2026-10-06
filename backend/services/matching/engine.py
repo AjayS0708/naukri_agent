@@ -21,6 +21,50 @@ from backend.services.matching.normalizer import (
     compute_profile_experience_years,
 )
 
+DEFAULT_IT_INDUSTRIES = (
+    "IT Services & Consulting", "Software Product", "Internet",
+    "Engineering - Software & QA", "IT & Information Security",
+    "Data Science & Analytics", "Analytics & BI", "DevOps/Cloud",
+)
+DEFAULT_IT_KEYWORDS = (
+    "software", "developer", "engineer", "data", "devops", "cloud",
+    "qa", "test", "python", "sql", "backend", "frontend", "full stack",
+    "machine learning", "analytics", "security",
+)
+
+
+def _contains_keyword(title: str, keywords: list[str]) -> bool:
+    title_lower = (title or "").lower()
+    return any(keyword.lower() in title_lower for keyword in keywords)
+
+
+def is_strict_it_job(job: Job, industries: list[str] | None = None,
+                     keywords: list[str] | None = None) -> bool:
+    allowed_industries = industries or list(DEFAULT_IT_INDUSTRIES)
+    allowed_keywords = keywords or list(DEFAULT_IT_KEYWORDS)
+    fields = (job.industry, job.department, job.role_category)
+    industry_text = " ".join(field.strip().lower() for field in fields if field)
+    if not industry_text:
+        return False
+    if not any(value.lower() in industry_text for value in allowed_industries):
+        return False
+    return _contains_keyword(job.title, allowed_keywords)
+
+
+def experience_passes_fresher_rule(job: Job, preference: JobPreference) -> tuple[bool, str]:
+    text = job.experience
+    title = (job.title or "").lower()
+    title_exception = any(term in title for term in ("fresher", "trainee", "intern", "graduate"))
+    exp_min, _ = extract_experience_years(text or "")
+    if exp_min is None:
+        if title_exception:
+            return True, "Experience missing but title identifies an entry-level role"
+        return False, "Experience is missing or unparseable"
+    cap = preference.max_required_experience_years
+    if exp_min > cap:
+        return False, f"Experience required ({exp_min}y) exceeds cap ({cap}y)"
+    return True, "Experience within fresher cap"
+
 
 class MatchEngine:
     def __init__(self, session: Session, ai_provider: Optional[AIProvider] = None):
@@ -68,21 +112,25 @@ class MatchEngine:
             )
         matched_rules.append("DUPLICATE_CHECK")
 
-        # 4. Try string extraction for deterministic checks
-        if job.description:
-            # Experience Check (Heuristic: 1 yr per job listed if not explicitly stored)
-            exp_min, exp_max = extract_experience_years(job.description)
-            if exp_min is not None:
-                exp_list = profile.data.get("experience", []) if isinstance(profile.data, dict) else getattr(profile.data, "experience", [])
-                user_exp_years = compute_profile_experience_years(exp_list)
-                if exp_min > user_exp_years + 2:  # +2 years grace for approximation
-                    return MatchDecision(
-                        decision=MatchDecisionEnum.SKIP,
-                        reason=f"Experience required ({exp_min}y) is greater than user profile approx ({user_exp_years}y).",
-                        skip_reason=SkipReason.EXPERIENCE_TOO_HIGH,
-                        failed_rules=["EXPERIENCE"]
-                    )
-            matched_rules.append("EXPERIENCE_CHECK")
+        # 4. Strict fresher experience and IT-only checks
+        experience_ok, experience_reason = experience_passes_fresher_rule(job, preference)
+        if not experience_ok:
+            return MatchDecision(
+                decision=MatchDecisionEnum.SKIP,
+                reason=experience_reason,
+                skip_reason=SkipReason.EXPERIENCE_TOO_HIGH,
+                failed_rules=["EXPERIENCE"],
+            )
+        matched_rules.append("EXPERIENCE_CHECK")
+
+        if not is_strict_it_job(job, preference.it_industry_allowlist, preference.it_keyword_list):
+            return MatchDecision(
+                decision=MatchDecisionEnum.SKIP,
+                reason="Industry/department/role category is not an allowed IT value or title has no IT keyword.",
+                skip_reason=SkipReason.OUTSIDE_SEARCH_SCOPE,
+                failed_rules=["IT_SCOPE"],
+            )
+        matched_rules.append("IT_SCOPE_CHECK")
 
         # Salary Check: Treat salary_max == 0 (disclosed "Unpaid") as below minimum.
         # Salary metadata is available even when a job description is not.

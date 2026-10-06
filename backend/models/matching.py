@@ -19,6 +19,9 @@ class JobPreference(Base):
     locations: Mapped[dict] = mapped_column(JSON, default=list) # Stored as a list of strings
     job_titles: Mapped[dict] = mapped_column(JSON, default=list) # Stored as a list of strings
     employment_types: Mapped[dict] = mapped_column(JSON, default=list) # list of strings
+    max_required_experience_years: Mapped[int] = mapped_column(Integer, default=0)
+    it_industry_allowlist: Mapped[dict] = mapped_column(JSON, default=list)
+    it_keyword_list: Mapped[dict] = mapped_column(JSON, default=list)
     
     min_salary_lpa: Mapped[Optional[float]] = mapped_column(Integer, nullable=True)
     aggressiveness: Mapped[str] = mapped_column(String(32), default="BALANCED") 

@@ -10,6 +10,7 @@ It supports:
 - --max-applications N: limit on real applications (default 1)
 - --dry-run: discovery and analysis only, no Apply clicks or application records
 - --max-jobs N: cap on jobs inspected per run
+--max-cards N: cap on cards scanned per run (default 150)
 
 No input() prompts. Exit code 0 on normal completion, non-zero on AUTH/SECURITY/critical stop.
 """
@@ -113,10 +114,12 @@ class AutonomousCycle:
         max_applications: int = 1,
         dry_run: bool = False,
         max_jobs: Optional[int] = None,
+        max_cards: int = 150,
     ):
         self.max_applications = max_applications
         self.dry_run = dry_run
         self.max_jobs = max_jobs
+        self.max_cards = max_cards
         self.state_manager = AgentStateManager()
         self.tracker = DecisionTracker()
         self.applications_count = 0
@@ -151,7 +154,7 @@ class AutonomousCycle:
 
             # Step 1: Discovery
             print("\n[1/5] Running discovery...")
-            discovery_service = DiscoveryService(self.state_manager)
+            discovery_service = DiscoveryService(self.state_manager, max_cards=self.max_cards)
             await discovery_service.run_discovery(db)
 
             if self.state_manager.current_state in (AgentState.AUTH_REQUIRED, AgentState.SECURITY_REQUIRED):
@@ -167,6 +170,8 @@ class AutonomousCycle:
             enqueue_stats = await self._apply_hard_filters_and_enqueue(db, profile, preferences)
             print(f"  Discovered: {enqueue_stats['discovered']}")
             print(f"  Hard filtered: {enqueue_stats['hard_filtered']}")
+            print(f"  Skipped on experience: {enqueue_stats['skipped_experience']}")
+            print(f"  Skipped non-IT: {enqueue_stats['skipped_non_it']}")
             print(f"  Queued for AI: {enqueue_stats['queued']}")
 
             if enqueue_stats["queued"] == 0:
@@ -201,7 +206,10 @@ class AutonomousCycle:
 
             print("\nSUMMARY")
             print("=" * 60)
+            print(f"Cards scanned: {enqueue_stats['discovered']}")
             print(f"Total jobs discovered: {enqueue_stats['discovered']}")
+            print(f"Skipped on experience: {enqueue_stats['skipped_experience']}")
+            print(f"Skipped non-IT: {enqueue_stats['skipped_non_it']}")
             print(f"Hard filtered: {enqueue_stats['hard_filtered']}")
             print(f"Queued for AI: {enqueue_stats['queued']}")
             print(f"AI processed: {ai_stats['processed']}")
@@ -231,7 +239,10 @@ class AutonomousCycle:
         self, db: Session, profile: Profile, preferences: JobPreference
     ) -> dict:
         """Apply hard filters and enqueue eligible jobs."""
-        stats = {"discovered": 0, "hard_filtered": 0, "queued": 0, "errors": []}
+        stats = {
+            "discovered": 0, "hard_filtered": 0, "queued": 0,
+            "skipped_experience": 0, "skipped_non_it": 0, "errors": [],
+        }
 
         # Get discovered jobs
         stmt = select(Job).where(Job.status == "DISCOVERED")
@@ -297,6 +308,10 @@ class AutonomousCycle:
                     )
             else:
                 stats["hard_filtered"] += 1
+                if match_decision.skip_reason and match_decision.skip_reason.value == "EXPERIENCE_TOO_HIGH":
+                    stats["skipped_experience"] += 1
+                if "IT_SCOPE" in match_decision.failed_rules:
+                    stats["skipped_non_it"] += 1
                 self.tracker.add_decision(
                     job.id, job.company, job.title, "N/A", salary_pass, experience_pass, employment_pass, "N/A", match_decision.reason, "HARD_FILTERED"
                 )
@@ -504,6 +519,12 @@ def main():
         default=None,
         help="Cap on jobs inspected per run (default: unlimited)"
     )
+    parser.add_argument(
+        "--max-cards",
+        type=int,
+        default=150,
+        help="Maximum number of search cards to scan (default: 150)",
+    )
 
     args = parser.parse_args()
 
@@ -511,6 +532,7 @@ def main():
         max_applications=args.max_applications,
         dry_run=args.dry_run,
         max_jobs=args.max_jobs,
+        max_cards=args.max_cards,
     )
 
     exit_code = asyncio.run(cycle.run())

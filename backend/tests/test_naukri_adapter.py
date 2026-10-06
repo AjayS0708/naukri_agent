@@ -95,42 +95,42 @@ class TestBuildNaukriSearchUrl:
     def test_build_url_single_word_search_single_location(self):
         adapter = NaukriAdapter()
         url = adapter._build_naukri_search_url("Developer", ["Bengaluru"])
-        assert url == "https://www.naukri.com/Developer-jobs-in-Bengaluru"
+        assert url == "https://www.naukri.com/Developer-jobs-in-Bengaluru?experience=0"
 
     def test_build_url_multi_word_search_single_location(self):
         adapter = NaukriAdapter()
         url = adapter._build_naukri_search_url("Data Analyst", ["Bengaluru"])
-        assert url == "https://www.naukri.com/Data-Analyst-jobs-in-Bengaluru"
+        assert url == "https://www.naukri.com/Data-Analyst-jobs-in-Bengaluru?experience=0"
 
     def test_build_url_multi_word_search_multi_word_location(self):
         adapter = NaukriAdapter()
         url = adapter._build_naukri_search_url("Software Engineer", ["New York"])
-        assert url == "https://www.naukri.com/Software-Engineer-jobs-in-New-York"
+        assert url == "https://www.naukri.com/Software-Engineer-jobs-in-New-York?experience=0"
 
     def test_build_url_spaces_to_hyphens(self):
         adapter = NaukriAdapter()
         url = adapter._build_naukri_search_url("Machine Learning Engineer", ["San Francisco"])
-        assert url == "https://www.naukri.com/Machine-Learning-Engineer-jobs-in-San-Francisco"
+        assert url == "https://www.naukri.com/Machine-Learning-Engineer-jobs-in-San-Francisco?experience=0"
 
     def test_build_url_capitalization(self):
         adapter = NaukriAdapter()
         url = adapter._build_naukri_search_url("data scientist", ["mumbai"])
-        assert url == "https://www.naukri.com/Data-Scientist-jobs-in-Mumbai"
+        assert url == "https://www.naukri.com/Data-Scientist-jobs-in-Mumbai?experience=0"
 
     def test_build_url_no_location_fallback_to_india(self):
         adapter = NaukriAdapter()
         url = adapter._build_naukri_search_url("Developer", [])
-        assert url == "https://www.naukri.com/Developer-jobs-in-india"
+        assert url == "https://www.naukri.com/Developer-jobs-in-india?experience=0"
 
     def test_build_url_trailing_spaces(self):
         adapter = NaukriAdapter()
         url = adapter._build_naukri_search_url("  Data  Analyst  ", ["  Bengaluru  "])
-        assert url == "https://www.naukri.com/Data-Analyst-jobs-in-Bengaluru"
+        assert url == "https://www.naukri.com/Data-Analyst-jobs-in-Bengaluru?experience=0"
 
     def test_build_url_multiple_locations_uses_first(self):
         adapter = NaukriAdapter()
         url = adapter._build_naukri_search_url("Developer", ["Bengaluru", "Mumbai", "Delhi"])
-        assert url == "https://www.naukri.com/Developer-jobs-in-Bengaluru"
+        assert url == "https://www.naukri.com/Developer-jobs-in-Bengaluru?experience=0"
 
 
 class TestSecurityDetection:
@@ -926,7 +926,7 @@ class TestSearchJobsUrlAndSelectors:
         second_call_url = mock_page.goto.call_args_list[1][0][0]
         second_call_kwargs = mock_page.goto.call_args_list[1][1]
         assert "Data-Analyst-jobs-in-Bengaluru" in second_call_url
-        assert "?" not in second_call_url  # Should not use query parameters
+        assert "experience=0" in second_call_url
         assert second_call_kwargs.get("wait_until") == "load"  # Should use load wait strategy
 
     @pytest.mark.asyncio

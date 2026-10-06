@@ -21,6 +21,7 @@ from backend.services.matching.normalizer import (
     is_employment_type_allowed,
     compute_profile_experience_years,
 )
+from backend.services.matching.engine import experience_passes_fresher_rule, is_strict_it_job
 from backend.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -131,17 +132,12 @@ class ApplicationService:
             if not has_overlapping_location(job.location, preference.locations):
                 return False, f"Location mismatch: job location '{job.location}' not in allowed locations"
         
-        # 5. Experience hard filter
-        # Phase 10: Use compute_profile_experience_years() for consistent calculation
-        if job.experience:
-            exp_min, exp_max = extract_experience_years(job.experience)
-            if exp_min is not None:
-                experience = profile.data.get("experience", []) if isinstance(profile.data, dict) else []
-                user_exp_years = compute_profile_experience_years(experience)
-                # Apply +2 year tolerance as per PRD
-                tolerance = 2
-                if exp_min > user_exp_years + tolerance:
-                    return False, f"Experience required ({exp_min}y) exceeds user profile ({user_exp_years}y + {tolerance}y tolerance)"
+        # 5. Strict fresher experience and IT-only scope
+        experience_ok, experience_reason = experience_passes_fresher_rule(job, preference)
+        if not experience_ok:
+            return False, experience_reason
+        if not is_strict_it_job(job, preference.it_industry_allowlist, preference.it_keyword_list):
+            return False, "Industry/department/role category is not an allowed IT value or title has no IT keyword"
         
         # 6. Salary minimum rule: treat salary_max == 0 (disclosed "Unpaid") as below minimum
         # salary NULL/None (undisclosed) is NOT rejected

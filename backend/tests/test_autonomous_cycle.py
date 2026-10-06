@@ -227,7 +227,7 @@ def unpaid_job(db_session: Session):
         platform="naukri",
         external_job_id="unpaid123",
         url="https://www.naukri.com/job/unpaid",
-        title="Intern",
+        title="Software Intern",
         company="Unpaid Corp",
         description="Unpaid internship",
         location="Bengaluru",

@@ -56,6 +56,7 @@ class ApplicationRunner:
         self._session_started = False
         self.dry_run = dry_run
         self.supervise_form = supervise_form
+        self.answer_questions = get_settings().answer_questions
         self.dry_run_result = None
 
     async def stop_safely(self):
@@ -150,6 +151,12 @@ class ApplicationRunner:
                 except Exception as e:
                     logger.error(f"Error processing job {job_id}: {e}", exc_info=True)
                     stats["errors"] += 1
+                    if self.state_manager.current_state in (
+                        AgentState.SECURITY_REQUIRED,
+                        AgentState.AUTH_REQUIRED,
+                        AgentState.CRITICAL_ERROR,
+                    ):
+                        break
 
             # Return to IDLE
             self.state_manager.transition_to(AgentState.STOPPED)
@@ -275,7 +282,7 @@ class ApplicationRunner:
                 self.application_service.record_external_application(
                     job,
                     external_url or job.url,
-                    "External application redirect",
+                    "external - needs review",
                     is_dry_run=self.dry_run,
                 )
                 self._notify_safely(
@@ -298,7 +305,7 @@ class ApplicationRunner:
                     self.application_service.record_external_application(
                         job,
                         job.url,
-                        f"Application type changed to {recheck_type} before click",
+                        "external - needs review",
                         is_dry_run=False,
                     )
                     return "EXTERNAL"
@@ -372,6 +379,16 @@ class ApplicationRunner:
 
             # Detect and answer questions
             questions = await self.adapter.detect_application_questions(page)
+            if questions and not self.answer_questions:
+                self.application_service.update_application(
+                    application.id,
+                    ApplicationUpdate(
+                        status=ApplicationStatus.NEEDS_ATTENTION,
+                        needs_attention=True,
+                        skip_reason="questions - needs review",
+                    ),
+                )
+                return "NEEDS_ATTENTION"
             if self.supervise_form:
                 visible_fields = [
                     {
