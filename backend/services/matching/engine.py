@@ -32,22 +32,69 @@ DEFAULT_IT_KEYWORDS = (
     "machine learning", "analytics", "security",
 )
 
+# Allowed role families for deterministic title targeting
+ALLOWED_ROLE_FAMILIES = {
+    "data": ["data analyst", "data engineer"],
+    "software": ["software engineer", "software developer", "developer"],
+    "devops": ["devops"],
+    "python": ["python developer"],
+}
+
+# Explicitly rejected specializations (title-level exclusions)
+UNWANTED_SPECIALIZATIONS = [
+    "java", "php", ".net", "c#", "c++", "power platform",
+    "platform engineer", "salesforce", "sap", "servicenow",
+    "embedded", "firmware", "hardware", "electrical", "mechanical",
+    "civil", "sales", "marketing", "hr", "operations",
+]
+
 
 def _contains_keyword(title: str, keywords: list[str]) -> bool:
     title_lower = (title or "").lower()
     return any(keyword.lower() in title_lower for keyword in keywords)
 
 
+def title_matches_allowed_role(title: str) -> tuple[bool, str]:
+    """
+    Deterministic role/title targeting.
+
+    Returns (allowed, reason) where:
+    - allowed: True if title matches an allowed role family
+    - reason: Explanation if rejected
+
+    Rejects explicit unwanted specializations regardless of role family match.
+    """
+    title_lower = (title or "").lower()
+
+    # First check for explicit unwanted specializations
+    for unwanted in UNWANTED_SPECIALIZATIONS:
+        if unwanted in title_lower:
+            return False, f"Title contains unwanted specialization: {unwanted}"
+
+    # Check if title matches allowed role families
+    for family, keywords in ALLOWED_ROLE_FAMILIES.items():
+        for keyword in keywords:
+            if keyword in title_lower:
+                return True, f"Title matches allowed role family: {family}"
+
+    return False, "Title does not match any allowed role family"
+
+
 def is_strict_it_job(job: Job, industries: list[str] | None = None,
                      keywords: list[str] | None = None) -> bool:
     allowed_industries = industries or list(DEFAULT_IT_INDUSTRIES)
     allowed_keywords = keywords or list(DEFAULT_IT_KEYWORDS)
-    fields = (job.industry, job.department, job.role_category)
-    industry_text = " ".join(field.strip().lower() for field in fields if field)
-    if not industry_text:
+
+    # Industry field is mandatory for IT gate
+    if not job.industry:
         return False
-    if not any(value.lower() in industry_text for value in allowed_industries):
+
+    # Industry must be in allowed IT industries
+    industry_lower = job.industry.strip().lower()
+    if not any(value.lower() in industry_lower for value in allowed_industries):
         return False
+
+    # Title must contain IT keyword
     return _contains_keyword(job.title, allowed_keywords)
 
 
@@ -112,7 +159,18 @@ class MatchEngine:
             )
         matched_rules.append("DUPLICATE_CHECK")
 
-        # 4. Strict fresher experience and IT-only checks
+        # 4. Role/Title Targeting Check (deterministic before IT metadata)
+        role_allowed, role_reason = title_matches_allowed_role(job.title)
+        if not role_allowed:
+            return MatchDecision(
+                decision=MatchDecisionEnum.SKIP,
+                reason=role_reason,
+                skip_reason=SkipReason.OUTSIDE_SEARCH_SCOPE,
+                failed_rules=["ROLE_TARGETING"],
+            )
+        matched_rules.append("ROLE_TARGETING_CHECK")
+
+        # 5. Strict fresher experience and IT-only checks
         experience_ok, experience_reason = experience_passes_fresher_rule(job, preference)
         if not experience_ok:
             return MatchDecision(

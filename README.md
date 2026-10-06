@@ -1,5 +1,35 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT D1: Autonomous Discovery Tracking
+
+Implemented current-run job ID tracking to prevent historical DB jobs from being processed when live discovery fails. The autonomous cycle now tracks the current DiscoveryRun and only processes jobs from that specific run.
+
+**Key Features:**
+- `DiscoveryRun` model includes `current_run_job_ids` column (comma-separated for SQLite compatibility)
+- DiscoveryService tracks job IDs in memory during discovery
+- Both new jobs and existing jobs (duplicates) are added to current-run tracking
+- Autonomous cycle filters jobs to only those in the current run
+- Cycle stops with error if `current_run.jobs_discovered == 0`
+
+**Direct Naukri Search Navigation:**
+- Removed homepage navigation dependency - navigates directly to search URL
+- Simplified security check to single call after search navigation
+- Reduced navigation time and potential failure points
+
+**Role Targeting and Metadata Enrichment:**
+- Deterministic role/title targeting in MatchEngine before IT metadata gate
+- Explicitly rejects unwanted specializations: Java, PHP, .NET, C#, C++, Power Platform, Platform Engineer, Salesforce, SAP, ServiceNow, embedded, firmware, hardware, electrical, mechanical, civil, sales, marketing, HR, operations
+- Allowed role families: data (analyst, engineer), software (engineer, developer), devops, python developer
+- Enhanced NaukriAdapter metadata extraction with JSON-LD parsing, "Other Details" section extraction, and fallback body text scanning
+
+**Live Read-Only Validation (2026-10-06):**
+- 105 job cards discovered across 11 pages
+- 82 jobs tracked in current run (including existing duplicates)
+- 21 historical jobs excluded from current run
+- Current-run tracking confirmed working
+- Focused current-run tracking tests: 12 passed
+- Full backend suite: 681 passed, 0 failures
+
 ## CHECKPOINT C: Autonomous Cycle Command
 
 `run_autonomous_cycle.py` provides a command-line interface for running the complete autonomous job application cycle:

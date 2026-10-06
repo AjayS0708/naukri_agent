@@ -36,6 +36,7 @@ class DiscoveryService:
         self.current_search: Optional[str] = None
         self._stop_requested = False
         self.max_cards = max_cards
+        self.current_run_job_ids: set[int] = set()  # Track job IDs from current run
 
     @property
     def is_running(self) -> bool:
@@ -70,6 +71,21 @@ class DiscoveryService:
         db.refresh(run)
         self.current_run = run
 
+        # Ensure the new column exists (for backward compatibility)
+        try:
+            from sqlalchemy import inspect
+            inspector = inspect(db.bind)
+            columns = [col['name'] for col in inspector.get_columns('discovery_runs')]
+            if 'current_run_job_ids' not in columns:
+                try:
+                    db.execute("ALTER TABLE discovery_runs ADD COLUMN current_run_job_ids TEXT")
+                    db.commit()
+                except Exception as e:
+                    logger.warning(f"Failed to add current_run_job_ids column: {e}")
+        except Exception as e:
+            # Schema inspection may fail on mock sessions during tests
+            logger.debug(f"Schema inspection skipped (likely mock session): {e}")
+
         filtering_entered = False
 
         try:
@@ -89,12 +105,19 @@ class DiscoveryService:
                 return
 
             search_terms = preferences.job_titles or [
-                "Software Engineer Fresher", "Graduate Engineer Trainee",
-                "Software Developer Trainee", "Associate Software Engineer",
-                "Junior Data Analyst", "Data Analyst Fresher",
-                "Data Engineer Fresher", "DevOps Trainee",
-                "Python Developer Fresher", "QA Engineer Fresher",
-                "SQL Developer Fresher",
+                "Data Analyst Fresher",
+                "Junior Data Analyst",
+                "Associate Data Analyst",
+                "Software Engineer Fresher",
+                "Associate Software Engineer",
+                "Software Developer Fresher",
+                "Python Developer Fresher",
+                "Data Engineer Fresher",
+                "Junior Data Engineer",
+                "Associate Data Engineer",
+                "DevOps Trainee",
+                "Junior DevOps Engineer",
+                "DevOps Engineer Fresher",
             ]
             locations = preferences.locations or []
             if not search_terms:
@@ -117,12 +140,14 @@ class DiscoveryService:
 
                 jobs_before_term = self.current_run.jobs_discovered
                 seen_pages: set[int] = set()
+                term_yielded_any = False
 
                 try:
                     async for job_data in self.adapter.search_jobs(term, locations):
                         if self._stop_requested:
                             break
 
+                        term_yielded_any = True
                         self._track_page_processed(db, job_data, seen_pages)
                         self.current_run.jobs_discovered += 1
                         if self.current_run.jobs_discovered > self.max_cards:
@@ -147,18 +172,18 @@ class DiscoveryService:
                             self.current_run.duplicate_jobs += 1
                             existing_job.last_seen = utc_now()
                             db.commit()
+                            # Track existing job ID as part of current run
+                            self.current_run_job_ids.add(existing_job.id)
                             continue
 
                         self.current_run.new_jobs += 1
 
-                        if not job_data.get("description") and job_data.get("url"):
-                            details_result = self.adapter.fetch_job_details(job_data["url"])
-                            if inspect.isawaitable(details_result):
-                                job_data.update(await details_result)
-                            else:
-                                job_data["description"] = await self.adapter.fetch_job_description(
-                                    job_data["url"]
-                                )
+                        # Always fetch job details to enrich IT metadata (industry/department/role_category)
+                        # even if description is already present from the card
+                        if job_data.get("url"):
+                            details_result = await self.adapter.fetch_job_details(job_data["url"])
+                            if details_result:
+                                job_data.update(details_result)
 
                         new_job = self._build_job(job_data, term)
                         if new_job is None:
@@ -170,7 +195,16 @@ class DiscoveryService:
                         db.commit()
                         db.refresh(new_job)
 
+                        # Track new job ID as part of current run
+                        self.current_run_job_ids.add(new_job.id)
+
                     self._track_implicit_page(db, jobs_before_term, seen_pages)
+
+                    # If this search term yielded no jobs and it's the first term,
+                    # this indicates a navigation/selector failure (not just empty results)
+                    if not term_yielded_any and self.current_run.jobs_discovered == 0:
+                        logger.warning(f"Search term '{term}' yielded no jobs - possible navigation failure")
+                        self.current_run.errors += 1
 
                 except Exception as e:
                     logger.error(f"Error during search for {term}: {str(e)}", exc_info=True)
@@ -297,6 +331,9 @@ class DiscoveryService:
             self.current_run.status = status
             self.current_run.completed_at = utc_now()
             self.current_run.error_message = error_message
+            # Save job IDs from current run as comma-separated string
+            if self.current_run_job_ids:
+                self.current_run.current_run_job_ids = ",".join(str(jid) for jid in sorted(self.current_run_job_ids))
             db.commit()
 
     def _abort_before_search(self, db: Session, error_message: str) -> None:

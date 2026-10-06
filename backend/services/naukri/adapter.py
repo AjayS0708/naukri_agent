@@ -239,23 +239,100 @@ class NaukriAdapter(JobPlatformAdapter):
             await asyncio.sleep(2)
             await self._check_security(page)
             result: Dict[str, Any] = {"description": ""}
+
+            # Extract description
             desc = await page.query_selector('[class*="dang-inner-html"], section[class*="job-desc-container"]')
             if desc and await desc.is_visible():
                 result["description"] = (await desc.inner_text()).strip()
 
-            body_text = (await page.inner_text("body")).splitlines()
-            labels = {
-                "industry": ("industry type", "industry"),
-                "department": ("department",),
-                "role_category": ("role category", "role"),
-            }
-            for key, candidates in labels.items():
-                for index, line in enumerate(body_text):
-                    if line.strip().lower().rstrip(":") in candidates and index + 1 < len(body_text):
-                        value = body_text[index + 1].strip()
-                        if value:
-                            result[key] = value
-                            break
+            # Try to extract JSON-LD metadata first
+            try:
+                json_ld_scripts = await page.query_selector_all('script[type="application/ld+json"]')
+                for script in json_ld_scripts:
+                    script_content = await script.inner_text()
+                    if script_content:
+                        import json
+                        try:
+                            data = json.loads(script_content)
+                            if isinstance(data, dict):
+                                # Extract industry from JSON-LD
+                                if "industry" in data and data["industry"]:
+                                    result["industry"] = data["industry"]
+                                # Extract occupationalCategory as role_category
+                                if "occupationalCategory" in data and data["occupationalCategory"]:
+                                    result["role_category"] = data["occupationalCategory"]
+                                # Handle @graph format
+                                if "@graph" in data:
+                                    for item in data["@graph"]:
+                                        if isinstance(item, dict):
+                                            if "industry" in item and item["industry"]:
+                                                result["industry"] = item["industry"]
+                                            if "occupationalCategory" in item and item["occupationalCategory"]:
+                                                result["role_category"] = item["occupationalCategory"]
+                        except json.JSONDecodeError:
+                            pass
+            except Exception as e:
+                logger.debug(f"JSON-LD extraction failed: {e}")
+
+            # Fallback: Extract from "Other Details" section using selector-based approach
+            # Look for the "Other Details" section which typically contains industry, department, role
+            try:
+                # Try various selectors for the other details section
+                other_details_selectors = [
+                    '[class*="other-details"]',
+                    '[class*="otherDetails"]',
+                    'section[class*="details"]',
+                    '.job-details',
+                    '[class*="jd-other-details"]',
+                ]
+
+                for selector in other_details_selectors:
+                    other_details = await page.query_selector(selector)
+                    if other_details and await other_details.is_visible():
+                        details_text = await other_details.inner_text()
+                        lines = details_text.splitlines()
+
+                        # Look for key-value pairs
+                        for i, line in enumerate(lines):
+                            line_lower = line.strip().lower()
+                            if i + 1 < len(lines):
+                                value = lines[i + 1].strip()
+
+                                # Skip employment type lines
+                                if "employment type" in line_lower or "employment type:" in value.lower():
+                                    continue
+
+                                if "industry" in line_lower and "industry type" not in line_lower and value and not result.get("industry"):
+                                    result["industry"] = value
+                                elif "industry type" in line_lower and value and not result.get("industry"):
+                                    result["industry"] = value
+                                elif "department" in line_lower and value and not result.get("department"):
+                                    result["department"] = value
+                                elif "role" in line_lower and "role category" not in line_lower and value and not result.get("role_category"):
+                                    result["role_category"] = value
+                                elif "role category" in line_lower and value and not result.get("role_category"):
+                                    result["role_category"] = value
+                        break
+            except Exception as e:
+                logger.debug(f"Other details extraction failed: {e}")
+
+            # Final fallback: Body text scanning
+            if not result.get("industry") or not result.get("department") or not result.get("role_category"):
+                body_text = (await page.inner_text("body")).splitlines()
+                labels = {
+                    "industry": ("industry type", "industry"),
+                    "department": ("department",),
+                    "role_category": ("role category", "role"),
+                }
+                for key, candidates in labels.items():
+                    if not result.get(key):
+                        for index, line in enumerate(body_text):
+                            if line.strip().lower().rstrip(":") in candidates and index + 1 < len(body_text):
+                                value = body_text[index + 1].strip()
+                                if value:
+                                    result[key] = value
+                                    break
+
             return result
         except Exception as e:
             logger.warning(f"Failed to fetch job details for {url}: {e}")
@@ -312,39 +389,45 @@ class NaukriAdapter(JobPlatformAdapter):
         security_exception = None
 
         try:
-            # Navigate to Naukri homepage first to establish session context
-            logger.info("Navigating to Naukri homepage to establish session context")
-            await page.goto("https://www.naukri.com", wait_until="domcontentloaded", timeout=60000)
-
-            # Bounded wait for search box or logged-in header (max 15s)
-            try:
-                await page.wait_for_selector(
-                    'input[placeholder*="search"], input[placeholder*="Search"], header',
-                    timeout=15000
-                )
-                logger.debug("Homepage elements loaded")
-            except Exception as wait_error:
-                logger.warning(f"Homepage elements wait timeout: {wait_error}")
-                # Stop iteration gracefully - no jobs to yield
-                await page.close()
-                return
-
-            await self._check_security(page)
-
             # Build search URL using path-based format
             url = self._build_naukri_search_url(search_term, locations)
-            logger.info(f"Navigating to search URL: {url}")
+            logger.info(f"Navigating directly to search URL: {url}")
 
-            await page.goto(url, wait_until="load", timeout=30000)
+            # Navigate directly to search results page
+            # The persistent browser context should maintain authentication
+            try:
+                await page.goto(url, wait_until="load", timeout=60000)
+            except Exception as e:
+                logger.warning(f"Initial navigation with 'load' failed: {e}, retrying with 'domcontentloaded'")
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+            # Wait briefly for content to render
+            await asyncio.sleep(3)
+
+            # Check for security/auth issues immediately after navigation
+            await self._check_security(page)
 
             # Wait for job cards to appear with timeout
+            # This distinguishes between empty results vs navigation failure
             try:
                 await page.wait_for_selector('.srp-jobtuple-wrapper', timeout=10000)
+                logger.debug("Job card selector found on search results page")
             except Exception:
-                # If selector doesn't appear, continue anyway - might be empty results
-                logger.debug("Job card selector not found within timeout, continuing anyway")
+                # If selector doesn't appear, check if this is empty results or navigation failure
+                page_content = await page.content()
+                page_lower = page_content.lower()
 
-            await self._check_security(page)
+                # Check for "no jobs found" indicators - this is valid empty results
+                if "no jobs found" in page_lower or "0 jobs" in page_lower or "we couldn't find" in page_lower:
+                    logger.info("Search returned no results (valid empty results)")
+                # Check for login required
+                elif "login" in page_lower and "sign in" in page_lower:
+                    logger.error("Authentication required on search page")
+                    raise Exception("Naukri login required")
+                # Otherwise likely navigation failure
+                else:
+                    logger.warning(f"Job card selector not found, page may not have loaded correctly. URL: {page.url}")
+                    # Continue anyway - let the caller handle empty results
 
             # Paginate up to MAX_SEARCH_PAGES
             MAX_PAGES = 3

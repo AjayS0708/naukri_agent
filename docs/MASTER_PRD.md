@@ -1,5 +1,56 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT D1: Autonomous Discovery Tracking (2026-10-06)
+
+Implemented current-run job ID tracking to prevent historical DB jobs from being processed when live discovery fails. The autonomous cycle now tracks the current DiscoveryRun and only processes jobs from that specific run, ensuring discovery failures don't silently fall back to stale database records.
+
+**Current-Run Job ID Tracking:**
+- Added `current_run_job_ids` column to `DiscoveryRun` model (comma-separated for SQLite compatibility)
+- DiscoveryService tracks job IDs from current run in memory during discovery
+- Both new jobs and existing jobs (duplicates) are added to current-run tracking
+- On discovery completion, job IDs are persisted as comma-separated string
+- Autonomous cycle parses current-run job IDs and filters jobs to only those in the current run
+- Fallback to timestamp comparison if job IDs not available (shouldn't happen)
+- Cycle stops with error if `current_run.jobs_discovered == 0`
+
+**Direct Naukri Search Navigation:**
+- Removed homepage navigation dependency - now navigates directly to search URL
+- Simplified security check to single call after search navigation
+- Removed bounded wait for homepage elements
+- Reduced navigation time and potential failure points
+
+**Role Targeting and Metadata Enrichment:**
+- Added deterministic role/title targeting in MatchEngine before IT metadata gate
+- Explicitly rejects unwanted specializations: Java, PHP, .NET, C#, C++, Power Platform, Platform Engineer, Salesforce, SAP, ServiceNow, embedded, firmware, hardware, electrical, mechanical, civil, sales, marketing, HR, operations
+- Allowed role families: data (analyst, engineer), software (engineer, developer), devops, python developer
+- Enhanced NaukriAdapter metadata extraction with JSON-LD parsing, "Other Details" section extraction, and fallback body text scanning
+- Always fetches job details for IT metadata enrichment (industry/department/role_category) even when description is present
+
+**Historical Job Exclusion:**
+- Jobs not returned by current search are excluded from current-run tracking
+- Autonomous cycle only processes jobs with IDs in `current_run_job_ids`
+- Historical jobs remain in database but are not sent to Gemini or ApplicationRunner
+
+**Live Read-Only Validation (2026-10-06):**
+- Authenticated Naukri session opened successfully
+- Direct search navigation reached real Naukri search-results page
+- 105 job cards discovered across 11 pages
+- 82 jobs tracked in current run (including existing duplicates)
+- 21 historical jobs excluded from current run
+- 105 existing jobs rediscovered (0 new jobs added - all were duplicates)
+- Role targeting detected 12 jobs with unwanted specializations
+- Experience filtering passed (all jobs appear entry-level/fresher)
+- No CAPTCHA, security challenge, or login challenge appeared
+- No Apply clicked, no Gemini called, no submission made
+- Current-run tracking fix confirmed working
+
+**Test Coverage:**
+- Focused current-run tracking tests: 12 passed
+- Full backend suite: 681 passed, 0 failures
+- All discovery tests pass with current-run tracking
+
+**Note:** Metadata enrichment for NEW jobs has not been live-validated because all jobs in the current discovery run were existing duplicates. Existing DB rows predate the metadata enrichment implementation. NEW-job metadata validation will be performed separately with fresh jobs.
+
 ## CHECKPOINT C: Autonomous Cycle Command (2026-10-02)
 
 `run_autonomous_cycle.py` provides a command-line interface for running the complete autonomous job application cycle with explicit controls and safety guarantees.

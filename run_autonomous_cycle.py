@@ -42,6 +42,7 @@ from backend.schemas.application import ApplicationStatus
 from backend.schemas.ai_queue import AIQueueStatus
 from backend.schemas.agent import AgentState
 from backend.core.logging import get_logger
+from backend.models.discovery import DiscoveryRun
 
 logger = get_logger(__name__)
 
@@ -124,6 +125,7 @@ class AutonomousCycle:
         self.tracker = DecisionTracker()
         self.applications_count = 0
         self.stop_reason: Optional[str] = None
+        self.current_discovery_run: Optional[DiscoveryRun] = None
 
     async def run(self) -> int:
         """Run the autonomous cycle. Returns exit code."""
@@ -164,6 +166,25 @@ class AutonomousCycle:
             if self.state_manager.current_state == AgentState.CRITICAL_ERROR:
                 print("ERROR: Discovery encountered critical error")
                 return 3
+
+            # Capture the current discovery run to ensure we only process jobs from THIS run
+            self.current_discovery_run = db.execute(
+                select(DiscoveryRun).order_by(DiscoveryRun.started_at.desc())
+            ).scalars().first()
+
+            if not self.current_discovery_run:
+                print("ERROR: No discovery run record found")
+                return 3
+
+            # Check if discovery actually found any jobs in this run
+            if self.current_discovery_run.jobs_discovered == 0:
+                print(f"ERROR: Discovery found 0 jobs in current run (status: {self.current_discovery_run.status})")
+                if self.current_discovery_run.error_message:
+                    print(f"Discovery error: {self.current_discovery_run.error_message}")
+                print("Cycle stopped: No current jobs discovered")
+                return 3
+
+            print(f"Discovery run completed: {self.current_discovery_run.jobs_discovered} jobs discovered (status: {self.current_discovery_run.status})")
 
             # Step 2: Hard filters and enqueue
             print("\n[2/5] Applying hard filters and enqueuing...")
@@ -244,8 +265,33 @@ class AutonomousCycle:
             "skipped_experience": 0, "skipped_non_it": 0, "errors": [],
         }
 
-        # Get discovered jobs
-        stmt = select(Job).where(Job.status == "DISCOVERED")
+        # Get discovered jobs ONLY from the current discovery run
+        # This prevents processing stale/historical DB jobs when current discovery fails
+        if not self.current_discovery_run:
+            print("ERROR: No current discovery run available for filtering")
+            return stats
+
+        # Parse job IDs from current run
+        current_run_job_ids = []
+        if self.current_discovery_run.current_run_job_ids:
+            try:
+                current_run_job_ids = [int(jid) for jid in self.current_discovery_run.current_run_job_ids.split(",")]
+            except (ValueError, AttributeError):
+                pass
+
+        if not current_run_job_ids:
+            # Fallback to timestamp comparison if job IDs not available (shouldn't happen)
+            print("WARNING: No current run job IDs available, using timestamp fallback")
+            stmt = select(Job).where(
+                Job.status == "DISCOVERED",
+                Job.discovered_at >= self.current_discovery_run.started_at
+            )
+        else:
+            # Use job IDs from current discovery run
+            stmt = select(Job).where(
+                Job.id.in_(current_run_job_ids)
+            )
+
         if self.max_jobs:
             stmt = stmt.limit(self.max_jobs)
         stmt = stmt.order_by(Job.discovered_at.desc())

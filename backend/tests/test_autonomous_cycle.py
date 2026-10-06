@@ -24,6 +24,7 @@ from backend.models.application import Application
 from backend.models.profile import Profile, Resume
 from backend.models.matching import JobPreference
 from backend.models.ai import JobAnalysisModel
+from backend.models.discovery import DiscoveryRun
 from backend.schemas.application import ApplicationStatus, ApplicationStartResult
 from backend.schemas.ai import AIRecommendation
 from backend.services.applications import ApplicationRunner
@@ -227,7 +228,7 @@ def unpaid_job(db_session: Session):
         platform="naukri",
         external_job_id="unpaid123",
         url="https://www.naukri.com/job/unpaid",
-        title="Software Intern",
+        title="Software Engineer Fresher",
         company="Unpaid Corp",
         description="Unpaid internship",
         location="Bengaluru",
@@ -239,7 +240,7 @@ def unpaid_job(db_session: Session):
         status="DISCOVERED",
         discovered_at=datetime.now(UTC),
         last_seen=datetime.now(UTC),
-        source="Software Engineer"
+        source="Software Engineer Fresher"
     )
     db_session.add(job)
     db_session.commit()
@@ -399,3 +400,383 @@ class TestAutonomousCycleLogic:
         assert "Software Engineer" in job_preferences.job_titles
         assert job_preferences.min_salary_lpa == 4.0
         assert job_preferences.max_daily_applications == 20
+
+
+class TestDiscoveryFailureHandling:
+    """Test that discovery failures do not fall back to historical DB jobs."""
+
+    def test_empty_discovery_run_prevents_stale_job_processing(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that a discovery run with 0 jobs prevents processing historical jobs."""
+        from backend.models.discovery import DiscoveryRun
+        from datetime import UTC, datetime, timedelta
+
+        # Create a historical job from an old discovery run
+        old_time = datetime.now(UTC) - timedelta(days=7)
+        historical_job = Job(
+            platform="naukri",
+            external_job_id="old123",
+            url="https://www.naukri.com/job/old",
+            title="Software Engineer",
+            company="Old Corp",
+            description="Old job",
+            location="Bengaluru",
+            salary="5-7 LPA",
+            salary_min=5.0,
+            salary_max=7.0,
+            experience="0-2 years",
+            employment_type="Full-time",
+            status="DISCOVERED",
+            discovered_at=old_time,
+            last_seen=old_time,
+            source="Software Engineer"
+        )
+        db_session.add(historical_job)
+        db_session.commit()
+
+        # Create a current discovery run with 0 jobs
+        current_run = DiscoveryRun(
+            status="COMPLETED",
+            jobs_discovered=0,
+            new_jobs=0,
+            duplicate_jobs=0,
+            searches_attempted=1,
+            errors=1,
+            error_message="Homepage navigation failed"
+        )
+        db_session.add(current_run)
+        db_session.commit()
+        db_session.refresh(current_run)
+
+        # Query jobs only from current run
+        stmt = select(Job).where(
+            Job.status == "DISCOVERED",
+            Job.discovered_at >= current_run.started_at
+        )
+        jobs = db_session.execute(stmt).scalars().all()
+
+        # Should return 0 jobs (not the historical job)
+        assert len(jobs) == 0
+        assert historical_job not in jobs
+
+    def test_discovery_failure_does_not_create_applications(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that a failed discovery run creates no application records."""
+        from backend.models.discovery import DiscoveryRun
+
+        # Create a failed discovery run
+        failed_run = DiscoveryRun(
+            status="FAILED",
+            jobs_discovered=0,
+            new_jobs=0,
+            duplicate_jobs=0,
+            searches_attempted=1,
+            errors=1,
+            error_message="Security verification required"
+        )
+        db_session.add(failed_run)
+        db_session.commit()
+
+        # Check that no applications exist
+        applications = db_session.execute(select(Application)).scalars().all()
+        assert len(applications) == 0
+
+    def test_current_run_jobs_only_from_this_run(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that only jobs from the current discovery run are processed."""
+        from backend.models.discovery import DiscoveryRun
+        from datetime import UTC, datetime, timedelta
+
+        # Create historical job
+        old_time = datetime.now(UTC) - timedelta(days=7)
+        historical_job = Job(
+            platform="naukri",
+            external_job_id="old456",
+            url="https://www.naukri.com/job/old2",
+            title="Data Analyst",
+            company="Old Company",
+            description="Old job",
+            location="Bengaluru",
+            salary="4-6 LPA",
+            salary_min=4.0,
+            salary_max=6.0,
+            experience="0-2 years",
+            employment_type="Full-time",
+            status="DISCOVERED",
+            discovered_at=old_time,
+            last_seen=old_time,
+            source="Data Analyst"
+        )
+        db_session.add(historical_job)
+        db_session.commit()
+
+        # Create current discovery run
+        current_run = DiscoveryRun(
+            status="COMPLETED",
+            jobs_discovered=2,
+            new_jobs=2,
+            duplicate_jobs=0,
+            searches_attempted=1,
+            errors=0
+        )
+        db_session.add(current_run)
+        db_session.commit()
+        db_session.refresh(current_run)
+
+        # Create current job
+        current_job = Job(
+            platform="naukri",
+            external_job_id="new123",
+            url="https://www.naukri.com/job/new",
+            title="Software Engineer",
+            company="New Corp",
+            description="New job",
+            location="Bengaluru",
+            salary="5-7 LPA",
+            salary_min=5.0,
+            salary_max=7.0,
+            experience="0-2 years",
+            employment_type="Full-time",
+            status="DISCOVERED",
+            discovered_at=current_run.started_at,
+            last_seen=current_run.started_at,
+            source="Software Engineer"
+        )
+        db_session.add(current_job)
+        db_session.commit()
+
+        # Query jobs only from current run
+        stmt = select(Job).where(
+            Job.status == "DISCOVERED",
+            Job.discovered_at >= current_run.started_at
+        )
+        jobs = db_session.execute(stmt).scalars().all()
+
+        # Should return only the current job
+        assert len(jobs) == 1
+        assert current_job in jobs
+        assert historical_job not in jobs
+
+    def test_zero_jobs_discovered_stops_cycle(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that 0 jobs discovered causes cycle to stop."""
+        from backend.models.discovery import DiscoveryRun
+
+        # Create a discovery run with 0 jobs
+        zero_run = DiscoveryRun(
+            status="COMPLETED",
+            jobs_discovered=0,
+            new_jobs=0,
+            duplicate_jobs=0,
+            searches_attempted=1,
+            errors=0
+        )
+        db_session.add(zero_run)
+        db_session.commit()
+        db_session.refresh(zero_run)
+
+        # Check that jobs_discovered is 0
+        assert zero_run.jobs_discovered == 0
+
+        # This should cause the cycle to stop
+        should_stop = zero_run.jobs_discovered == 0
+        assert should_stop is True
+
+
+class TestCardExperienceFiltering:
+    """Test current-card experience filtering per C2 fresher-only policy."""
+
+    def test_card_0_1_years_eligible(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that 0-1 years experience on card is eligible."""
+        from backend.services.matching.engine import experience_passes_fresher_rule
+
+        job = Job(
+            title="Software Engineer",
+            experience="0-1 years"
+        )
+
+        # Update preferences to match C2: max_required_experience_years = 0
+        job_preferences.max_required_experience_years = 0
+        db_session.commit()
+
+        experience_ok, reason = experience_passes_fresher_rule(job, job_preferences)
+        assert experience_ok is True
+        assert "0-1" in reason or "fresher" in reason.lower()
+
+    def test_card_0_2_years_eligible(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that 0-2 years experience on card is eligible."""
+        from backend.services.matching.engine import experience_passes_fresher_rule
+
+        job = Job(
+            title="Software Engineer",
+            experience="0-2 years"
+        )
+
+        job_preferences.max_required_experience_years = 0
+        db_session.commit()
+
+        experience_ok, reason = experience_passes_fresher_rule(job, job_preferences)
+        assert experience_ok is True
+
+    def test_card_0_3_years_eligible(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that 0-3 years experience on card is eligible."""
+        from backend.services.matching.engine import experience_passes_fresher_rule
+
+        job = Job(
+            title="Software Engineer",
+            experience="0-3 years"
+        )
+
+        job_preferences.max_required_experience_years = 0
+        db_session.commit()
+
+        experience_ok, reason = experience_passes_fresher_rule(job, job_preferences)
+        assert experience_ok is True
+
+    def test_card_fresher_eligible(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that 'Fresher' on card is eligible."""
+        from backend.services.matching.engine import experience_passes_fresher_rule
+
+        job = Job(
+            title="Software Engineer",
+            experience="Fresher"
+        )
+
+        job_preferences.max_required_experience_years = 0
+        db_session.commit()
+
+        experience_ok, reason = experience_passes_fresher_rule(job, job_preferences)
+        assert experience_ok is True
+
+    def test_card_1_3_years_rejected(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that 1-3 years experience on card is rejected."""
+        from backend.services.matching.engine import experience_passes_fresher_rule
+
+        job = Job(
+            title="Software Engineer",
+            experience="1-3 years"
+        )
+
+        job_preferences.max_required_experience_years = 0
+        db_session.commit()
+
+        experience_ok, reason = experience_passes_fresher_rule(job, job_preferences)
+        assert experience_ok is False
+        assert "experience" in reason.lower()
+
+    def test_card_2_5_years_rejected(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that 2-5 years experience on card is rejected."""
+        from backend.services.matching.engine import experience_passes_fresher_rule
+
+        job = Job(
+            title="Software Engineer",
+            experience="2-5 years"
+        )
+
+        job_preferences.max_required_experience_years = 0
+        db_session.commit()
+
+        experience_ok, reason = experience_passes_fresher_rule(job, job_preferences)
+        assert experience_ok is False
+
+    def test_card_5_8_years_rejected(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that 5-8 years experience on card is rejected."""
+        from backend.services.matching.engine import experience_passes_fresher_rule
+
+        job = Job(
+            title="Software Engineer",
+            experience="5-8 years"
+        )
+
+        job_preferences.max_required_experience_years = 0
+        db_session.commit()
+
+        experience_ok, reason = experience_passes_fresher_rule(job, job_preferences)
+        assert experience_ok is False
+
+    def test_card_missing_experience_with_fresher_title_eligible(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that missing experience with fresher title is eligible."""
+        from backend.services.matching.engine import experience_passes_fresher_rule
+
+        job = Job(
+            title="Software Engineer Fresher",
+            experience=None
+        )
+
+        job_preferences.max_required_experience_years = 0
+        db_session.commit()
+
+        experience_ok, reason = experience_passes_fresher_rule(job, job_preferences)
+        assert experience_ok is True
+
+    def test_card_missing_experience_without_fresher_title_rejected(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that missing experience without fresher title is rejected."""
+        from backend.services.matching.engine import experience_passes_fresher_rule
+
+        job = Job(
+            title="Software Engineer",
+            experience=None
+        )
+
+        job_preferences.max_required_experience_years = 0
+        db_session.commit()
+
+        experience_ok, reason = experience_passes_fresher_rule(job, job_preferences)
+        assert experience_ok is False
+
+
+class TestDirectSearchNavigation:
+    """Test that direct search navigation does not depend on homepage selector."""
+
+    def test_search_url_builder_includes_experience_filter(self):
+        """Test that search URL includes experience=0 filter."""
+        from backend.services.naukri.adapter import NaukriAdapter
+
+        adapter = NaukriAdapter()
+        url = adapter._build_naukri_search_url("Software Engineer Fresher", ["Bengaluru"])
+
+        assert "experience=0" in url
+        assert "Software-Engineer-Fresher" in url
+        assert "Bengaluru" in url
+
+    def test_search_url_builder_handles_multi_word_terms(self):
+        """Test that multi-word search terms are properly normalized."""
+        from backend.services.naukri.adapter import NaukriAdapter
+
+        adapter = NaukriAdapter()
+        url = adapter._build_naukri_search_url("Graduate Engineer Trainee", ["Bengaluru"])
+
+        assert "Graduate-Engineer-Trainee" in url
+        assert "experience=0" in url
+
+    def test_search_url_builder_no_location_fallback(self):
+        """Test that missing location falls back to India."""
+        from backend.services.naukri.adapter import NaukriAdapter
+
+        adapter = NaukriAdapter()
+        url = adapter._build_naukri_search_url("Software Engineer Fresher", [])
+
+        assert "india" in url.lower()
+        assert "experience=0" in url

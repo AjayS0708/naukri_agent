@@ -6,6 +6,7 @@ from backend.services.matching.normalizer import (
     is_employment_type_allowed,
     compute_profile_experience_years,
 )
+from backend.services.matching.engine import title_matches_allowed_role
 
 def test_location_normalization():
     assert normalize_location("Bengaluru") == "bengaluru"
@@ -128,3 +129,254 @@ def test_experience_hard_filter_unknown_requirement_passes():
     """When experience requirement is unparseable, filter does not block."""
     exp_min, _ = extract_experience_years("Not specified")
     assert exp_min is None  # filter skipped when None
+
+
+# ── Role Targeting Tests ─────────────────────────────────────────────────
+
+def test_role_targeting_allowed_data_roles():
+    """Data analyst roles should pass role targeting."""
+    assert title_matches_allowed_role("Data Analyst Fresher")[0] is True
+    assert title_matches_allowed_role("Junior Data Analyst")[0] is True
+    assert title_matches_allowed_role("Associate Data Analyst")[0] is True
+
+def test_role_targeting_allowed_software_roles():
+    """Software engineer roles should pass role targeting."""
+    assert title_matches_allowed_role("Software Engineer Fresher")[0] is True
+    assert title_matches_allowed_role("Associate Software Engineer")[0] is True
+    assert title_matches_allowed_role("Software Developer Fresher")[0] is True
+
+def test_role_targeting_allowed_data_engineering_roles():
+    """Data engineer roles should pass role targeting."""
+    assert title_matches_allowed_role("Data Engineer Fresher")[0] is True
+    assert title_matches_allowed_role("Junior Data Engineer")[0] is True
+    assert title_matches_allowed_role("Associate Data Engineer")[0] is True
+
+def test_role_targeting_allowed_devops_roles():
+    """DevOps roles should pass role targeting."""
+    assert title_matches_allowed_role("DevOps Trainee")[0] is True
+    assert title_matches_allowed_role("Junior DevOps Engineer")[0] is True
+    assert title_matches_allowed_role("DevOps Engineer Fresher")[0] is True
+
+def test_role_targeting_allowed_python_roles():
+    """Python developer roles should pass role targeting."""
+    assert title_matches_allowed_role("Python Developer Fresher")[0] is True
+    assert title_matches_allowed_role("Python Developer")[0] is True
+
+def test_role_targeting_reject_java_specialization():
+    """Java roles should be rejected even if they contain 'engineer'."""
+    allowed, reason = title_matches_allowed_role("Java Fresher / Trainee")
+    assert allowed is False
+    assert "java" in reason.lower()
+
+    allowed, reason = title_matches_allowed_role("Java Software Engineer")
+    assert allowed is False
+    assert "java" in reason.lower()
+
+def test_role_targeting_reject_php_specialization():
+    """PHP roles should be rejected."""
+    allowed, reason = title_matches_allowed_role("PHP Developer")
+    assert allowed is False
+    assert "php" in reason.lower()
+
+def test_role_targeting_reject_dotnet_specialization():
+    """.NET roles should be rejected."""
+    allowed, reason = title_matches_allowed_role(".NET Developer")
+    assert allowed is False
+    assert ".net" in reason.lower()
+
+def test_role_targeting_reject_power_platform():
+    """Power Platform roles should be rejected."""
+    allowed, reason = title_matches_allowed_role("Power Platform Developer")
+    assert allowed is False
+    assert "power platform" in reason.lower()
+
+def test_role_targeting_reject_platform_engineer():
+    """Platform Engineer roles should be rejected."""
+    allowed, reason = title_matches_allowed_role("Platform Engineer")
+    assert allowed is False
+    assert "platform engineer" in reason.lower()
+
+def test_role_targeting_reject_electrical_engineer():
+    """Electrical Engineer roles should be rejected."""
+    allowed, reason = title_matches_allowed_role("Electrical Engineer")
+    assert allowed is False
+    assert "electrical" in reason.lower()
+
+def test_role_targeting_reject_sales_roles():
+    """Sales roles should be rejected."""
+    allowed, reason = title_matches_allowed_role("Trainee Sales Executive")
+    assert allowed is False
+    assert "sales" in reason.lower()
+
+def test_role_targeting_reject_hardware_firmware():
+    """Hardware/firmware roles should be rejected."""
+    assert title_matches_allowed_role("Embedded Software Engineer")[0] is False
+    assert title_matches_allowed_role("Firmware Engineer")[0] is False
+    assert title_matches_allowed_role("Hardware Engineer")[0] is False
+
+def test_role_targeting_reject_generic_unrelated():
+    """Generic titles without role family match should be rejected."""
+    allowed, reason = title_matches_allowed_role("Management Trainee")
+    assert allowed is False
+    assert "does not match" in reason.lower()
+
+    allowed, reason = title_matches_allowed_role("Quality Engineer")
+    assert allowed is False
+    assert "does not match" in reason.lower()
+
+def test_role_targeting_case_insensitive():
+    """Role matching should be case-insensitive."""
+    assert title_matches_allowed_role("DATA ANALYST FRESHER")[0] is True
+    assert title_matches_allowed_role("SOFTWARE ENGINEER FRESHER")[0] is True
+    assert title_matches_allowed_role("JAVA DEVELOPER")[0] is False
+
+
+# ── IT Metadata Tests ───────────────────────────────────────────────────
+
+def test_it_filter_with_valid_metadata():
+    """Job with valid IT metadata should pass IT filter."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    job = Job(
+        title="Software Engineer Fresher",
+        industry="IT Services & Consulting",
+        department="Engineering - Software & QA",
+        role_category="Software Engineer"
+    )
+    assert is_strict_it_job(job) is True
+
+def test_it_filter_with_non_it_industry_even_with_it_role():
+    """Job with non-IT industry should fail IT filter even with IT role category."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    job = Job(
+        title="Software Engineer Fresher",
+        industry="Travel & Tourism",
+        department="Engineering - Software & QA",
+        role_category="Software Engineer"
+    )
+    assert is_strict_it_job(job) is False
+
+def test_it_filter_with_missing_metadata():
+    """Job with missing IT metadata should fail IT filter."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    job = Job(
+        title="Software Engineer Fresher",
+        industry=None,
+        department="Engineering - Software & QA",
+        role_category="Software Engineer"
+    )
+    assert is_strict_it_job(job) is False
+
+def test_it_filter_with_non_it_industry():
+    """Job with non-IT industry should fail IT filter."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    job = Job(
+        title="Data Analyst Fresher",
+        industry="Healthcare",
+        department="Analytics",
+        role_category="Data Analyst"
+    )
+    assert is_strict_it_job(job) is False
+
+def test_it_filter_with_financial_services_industry():
+    """Job with Financial Services industry should fail IT filter."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    job = Job(
+        title="Software Engineer Fresher",
+        industry="Financial Services",
+        department="Engineering - Software & QA",
+        role_category="Software Engineer"
+    )
+    assert is_strict_it_job(job) is False
+
+
+# ── Experience Rule Tests ───────────────────────────────────────────────
+
+def test_experience_rule_reject_1_to_3():
+    """1-3 years experience should be rejected for fresher profile."""
+    from backend.services.matching.engine import experience_passes_fresher_rule
+    from backend.models.job import Job
+    from backend.models.matching import JobPreference
+
+    job = Job(title="Software Engineer", experience="1-3 years")
+    preference = JobPreference(max_required_experience_years=0)
+    allowed, reason = experience_passes_fresher_rule(job, preference)
+    assert allowed is False
+    assert "exceeds cap" in reason.lower()
+
+def test_experience_rule_reject_2_to_5():
+    """2-5 years experience should be rejected for fresher profile."""
+    from backend.services.matching.engine import experience_passes_fresher_rule
+    from backend.models.job import Job
+    from backend.models.matching import JobPreference
+
+    job = Job(title="Software Engineer", experience="2-5 years")
+    preference = JobPreference(max_required_experience_years=0)
+    allowed, reason = experience_passes_fresher_rule(job, preference)
+    assert allowed is False
+
+def test_experience_rule_allow_0_to_1():
+    """0-1 years experience should be allowed for fresher profile."""
+    from backend.services.matching.engine import experience_passes_fresher_rule
+    from backend.models.job import Job
+    from backend.models.matching import JobPreference
+
+    job = Job(title="Software Engineer Fresher", experience="0-1 years")
+    preference = JobPreference(max_required_experience_years=0)
+    allowed, reason = experience_passes_fresher_rule(job, preference)
+    assert allowed is True
+
+def test_experience_rule_allow_0_to_2():
+    """0-2 years experience should be allowed for fresher profile."""
+    from backend.services.matching.engine import experience_passes_fresher_rule
+    from backend.models.job import Job
+    from backend.models.matching import JobPreference
+
+    job = Job(title="Software Engineer Fresher", experience="0-2 years")
+    preference = JobPreference(max_required_experience_years=0)
+    allowed, reason = experience_passes_fresher_rule(job, preference)
+    assert allowed is True
+
+def test_experience_rule_allow_fresher():
+    """Fresher experience should be allowed."""
+    from backend.services.matching.engine import experience_passes_fresher_rule
+    from backend.models.job import Job
+    from backend.models.matching import JobPreference
+
+    job = Job(title="Software Engineer Fresher", experience="Fresher")
+    preference = JobPreference(max_required_experience_years=0)
+    allowed, reason = experience_passes_fresher_rule(job, preference)
+    assert allowed is True
+
+def test_experience_rule_reject_missing_without_fresher_title():
+    """Missing experience without fresher keyword in title should be rejected."""
+    from backend.services.matching.engine import experience_passes_fresher_rule
+    from backend.models.job import Job
+    from backend.models.matching import JobPreference
+
+    job = Job(title="Marketing Manager", experience=None)
+    preference = JobPreference(max_required_experience_years=0)
+    allowed, reason = experience_passes_fresher_rule(job, preference)
+    assert allowed is False
+    assert "missing or unparseable" in reason.lower()
+
+def test_experience_rule_allow_missing_with_fresher_title():
+    """Missing experience with fresher keyword in title should be allowed."""
+    from backend.services.matching.engine import experience_passes_fresher_rule
+    from backend.models.job import Job
+    from backend.models.matching import JobPreference
+
+    job = Job(title="Software Engineer Fresher", experience=None)
+    preference = JobPreference(max_required_experience_years=0)
+    allowed, reason = experience_passes_fresher_rule(job, preference)
+    assert allowed is True
+    assert "entry-level" in reason.lower()

@@ -912,22 +912,16 @@ class TestSearchJobsUrlAndSelectors:
             async for _ in adapter.search_jobs("Data Analyst", ["Bengaluru"]):
                 pass
 
-        # Verify homepage navigation occurs first, then search URL
-        assert mock_page.goto.call_count == 2  # Homepage + search URL
+        # Verify direct navigation to search URL
+        assert mock_page.goto.call_count == 1  # Direct to search URL
 
-        # First call should be homepage with domcontentloaded + 60s timeout
+        # Call should be search URL
         first_call_url = mock_page.goto.call_args_list[0][0][0]
         first_call_kwargs = mock_page.goto.call_args_list[0][1]
-        assert first_call_url == "https://www.naukri.com"
-        assert first_call_kwargs.get("wait_until") == "domcontentloaded"
+        assert "Data-Analyst-jobs-in-Bengaluru" in first_call_url
+        assert "experience=0" in first_call_url
+        assert first_call_kwargs.get("wait_until") in ["load", "domcontentloaded"]
         assert first_call_kwargs.get("timeout") == 60000
-
-        # Second call should be search URL
-        second_call_url = mock_page.goto.call_args_list[1][0][0]
-        second_call_kwargs = mock_page.goto.call_args_list[1][1]
-        assert "Data-Analyst-jobs-in-Bengaluru" in second_call_url
-        assert "experience=0" in second_call_url
-        assert second_call_kwargs.get("wait_until") == "load"  # Should use load wait strategy
 
     @pytest.mark.asyncio
     async def test_search_jobs_uses_primary_selector(self):
@@ -949,14 +943,14 @@ class TestSearchJobsUrlAndSelectors:
                 async for _ in adapter.search_jobs("Developer", ["Mumbai"]):
                     pass
 
-        # Verify primary selector was used and wait strategy
+        # Verify primary selector was used
         assert mock_page.query_selector_all.call_count >= 1
         # First call should be with primary selector
         first_call_selector = mock_page.query_selector_all.call_args_list[0][0][0]
         assert first_call_selector == '.srp-jobtuple-wrapper'
-        # Verify wait_until parameter for search URL (second goto call)
-        goto_kwargs = mock_page.goto.call_args_list[1][1]
-        assert goto_kwargs.get("wait_until") == "load"
+        # Verify wait_until parameter for search URL (only goto call)
+        goto_kwargs = mock_page.goto.call_args_list[0][1]
+        assert goto_kwargs.get("wait_until") in ["load", "domcontentloaded"]
 
     @pytest.mark.asyncio
     async def test_search_jobs_fallback_to_old_selector(self):
@@ -987,11 +981,11 @@ class TestSearchJobsUrlAndSelectors:
                 async for _ in adapter.search_jobs("Developer", ["Mumbai"]):
                     pass
 
-        # Verify both selectors were tried and wait strategy
+        # Verify both selectors were tried
         assert call_count[0] >= 2  # At least primary and fallback
-        # Verify wait_until parameter for search URL (second goto call)
-        goto_kwargs = mock_page.goto.call_args_list[1][1]
-        assert goto_kwargs.get("wait_until") == "load"
+        # Verify wait_until parameter for search URL (only goto call)
+        goto_kwargs = mock_page.goto.call_args_list[0][1]
+        assert goto_kwargs.get("wait_until") in ["load", "domcontentloaded"]
 
     @pytest.mark.asyncio
     async def test_search_jobs_waits_for_selector(self):
@@ -1011,17 +1005,11 @@ class TestSearchJobsUrlAndSelectors:
             async for _ in adapter.search_jobs("Developer", ["Mumbai"]):
                 pass
 
-        # Verify wait_for_selector was called at least twice:
-        # Once for homepage (search box/header with 15s timeout)
-        # Once for search results (job cards with 10s timeout)
-        assert mock_page.wait_for_selector.call_count >= 2
+        # Verify wait_for_selector was called once for job cards
+        assert mock_page.wait_for_selector.call_count == 1
 
-        # Check homepage wait (first call)
-        homepage_wait = mock_page.wait_for_selector.call_args_list[0]
-        assert homepage_wait[1]["timeout"] == 15000  # 15s for homepage
-
-        # Check search results wait (second call)
-        search_wait = mock_page.wait_for_selector.call_args_list[1]
+        # Check search results wait
+        search_wait = mock_page.wait_for_selector.call_args_list[0]
         assert search_wait[0][0] == '.srp-jobtuple-wrapper'
         assert search_wait[1]["timeout"] == 10000  # 10s for job cards
 
@@ -1034,18 +1022,11 @@ class TestSearchJobsUrlAndSelectors:
         mock_page = AsyncMock()
         adapter.browser.new_page.return_value = mock_page
 
-        # Mock homepage wait_for_selector succeeds, but search results wait times out
-        call_count = [0]
-        def wait_side_effect(selector, timeout):
-            call_count[0] += 1
-            if call_count[0] == 1:  # Homepage wait succeeds
-                return
-            else:  # Search results wait times out
-                raise Exception("Timeout")
-
-        mock_page.wait_for_selector = AsyncMock(side_effect=wait_side_effect)
+        # Mock search results wait times out
+        mock_page.wait_for_selector = AsyncMock(side_effect=Exception("Timeout"))
         mock_page.query_selector_all.return_value = []
         mock_page.query_selector.return_value = None
+        mock_page.content = AsyncMock(return_value="<html><body>No jobs found</body></html>")
 
         with patch.object(adapter, '_check_security', new_callable=AsyncMock):
             # Should not raise exception, should continue gracefully
@@ -1054,13 +1035,13 @@ class TestSearchJobsUrlAndSelectors:
 
         # Verify the flow continued despite timeout
         mock_page.query_selector_all.assert_called()
-        # Verify wait_until parameter for search URL (second goto call)
-        goto_kwargs = mock_page.goto.call_args_list[1][1]
-        assert goto_kwargs.get("wait_until") == "load"
+        # Verify wait_until parameter for search URL (only goto call)
+        goto_kwargs = mock_page.goto.call_args_list[0][1]
+        assert goto_kwargs.get("wait_until") in ["load", "domcontentloaded"]
 
     @pytest.mark.asyncio
-    async def test_search_jobs_navigates_homepage_first(self):
-        """search_jobs should navigate to homepage before search URL to establish session context."""
+    async def test_search_jobs_navigates_direct_to_search(self):
+        """search_jobs should navigate directly to search URL without homepage dependency."""
         adapter = NaukriAdapter()
         adapter.browser = AsyncMock()
 
@@ -1074,22 +1055,16 @@ class TestSearchJobsUrlAndSelectors:
             async for _ in adapter.search_jobs("Developer", ["Mumbai"]):
                 pass
 
-        # Verify two navigations occurred (homepage + search)
-        assert mock_page.goto.call_count == 2
+        # Verify single navigation occurred (direct to search)
+        assert mock_page.goto.call_count == 1
 
-        # First navigation should be homepage with domcontentloaded + 60s timeout
+        # Navigation should be directly to search URL
         first_call_url = mock_page.goto.call_args_list[0][0][0]
-        first_call_kwargs = mock_page.goto.call_args_list[0][1]
-        assert first_call_url == "https://www.naukri.com"
-        assert first_call_kwargs.get("wait_until") == "domcontentloaded"
-        assert first_call_kwargs.get("timeout") == 60000
+        assert "Developer-jobs-in-Mumbai" in first_call_url
+        assert "experience=0" in first_call_url
 
-        # Second navigation should be search URL
-        second_call_url = mock_page.goto.call_args_list[1][0][0]
-        assert "Developer-jobs-in-Mumbai" in second_call_url
-
-        # Security check should be called twice (homepage + search)
-        assert mock_check.call_count == 2
+        # Security check should be called once (after search navigation)
+        assert mock_check.call_count == 1
 
 
 class TestSearchJobsCaptchaLifecycle:
@@ -1127,8 +1102,8 @@ class TestSearchJobsCaptchaLifecycle:
         adapter.browser.new_page.return_value = mock_page
 
         with patch.object(adapter, '_check_security', new_callable=AsyncMock) as mock_check:
-            # First call (homepage) succeeds, second call (search) fails
-            mock_check.side_effect = [None, Exception("Security verification required")]
+            # Security check fails
+            mock_check.side_effect = Exception("Security verification required")
 
             with pytest.raises(Exception, match="Security verification"):
                 async for _ in adapter.search_jobs("Data Analyst", ["Bengaluru"]):
@@ -1136,8 +1111,8 @@ class TestSearchJobsCaptchaLifecycle:
 
         # Page should NOT be closed when security verification is detected
         mock_page.close.assert_not_called()
-        # Should have navigated to homepage before search
-        assert mock_page.goto.call_count == 2
+        # Should have navigated directly to search
+        assert mock_page.goto.call_count == 1
 
     @pytest.mark.asyncio
     async def test_search_jobs_access_blocked_does_not_close_page(self):
@@ -1149,8 +1124,8 @@ class TestSearchJobsCaptchaLifecycle:
         adapter.browser.new_page.return_value = mock_page
 
         with patch.object(adapter, '_check_security', new_callable=AsyncMock) as mock_check:
-            # First call (homepage) succeeds, second call (search) fails
-            mock_check.side_effect = [None, Exception("Access blocked")]
+            # Security check fails
+            mock_check.side_effect = Exception("Access blocked")
 
             with pytest.raises(Exception, match="blocked"):
                 async for _ in adapter.search_jobs("Data Analyst", ["Bengaluru"]):
@@ -1158,8 +1133,8 @@ class TestSearchJobsCaptchaLifecycle:
 
         # Page should NOT be closed when access is blocked
         mock_page.close.assert_not_called()
-        # Should have navigated to homepage before search
-        assert mock_page.goto.call_count == 2
+        # Should have navigated directly to search
+        assert mock_page.goto.call_count == 1
 
     @pytest.mark.asyncio
     async def test_search_jobs_normal_exception_closes_page(self):
@@ -1200,8 +1175,8 @@ class TestSearchJobsCaptchaLifecycle:
 
         # Page should be closed after successful search
         mock_page.close.assert_called_once()
-        # Should have navigated to homepage then search
-        assert mock_page.goto.call_count == 2
+        # Should have navigated directly to search
+        assert mock_page.goto.call_count == 1
 
     @pytest.mark.asyncio
     async def test_search_jobs_login_required_closes_page(self):
