@@ -1,5 +1,54 @@
 # Architecture
 
+## CHECKPOINT E1: Frontend/API Integration Foundation
+
+**Status:** COMPLETE — Dashboard connected to real backend data
+
+**E1 Architecture:**
+
+E1 introduces a minimal, read-only dashboard API layer. The frontend no longer holds static placeholder values; it reads live data from the backend on every page load.
+
+**New read-only routes (`backend/api/routes/dashboard.py`):**
+
+```text
+GET /api/dashboard/summary
+    → DiscoverySummary (latest completed run stats + total run count)
+    → ApplicationCounts (all-time status counts: applied, needs_attention, skipped, external, failed)
+    → ProfileSummary (status, confirmed, original_filename — NO secrets, NO resume_hash, NO profile data)
+
+GET /api/dashboard/recent-applications?limit=N   (N capped at 50)
+    → RecentApplicationItem[] (Application JOIN Job — title, company, status, method, dates)
+    → NO confirmation_evidence, NO external_url, NO credentials
+```
+
+**Schema layer (`backend/schemas/dashboard.py`):**
+
+All schemas use `model_config = ConfigDict(extra="forbid")` to prevent extra fields from leaking into responses. Fields were chosen by explicit positive enumeration — not by forwarding entire model rows.
+
+**Frontend data flow (`frontend/src/app/App.tsx`):**
+
+```text
+mount
+  ├── getHealth()           → agent state, service version (existing)
+  ├── getNotifications()    → notification feed (existing)
+  ├── getDashboardSummary() → metrics + profile status (NEW E1)
+  └── getRecentApplications() → activity feed (NEW E1)
+
+Per-section state: loading | error | empty | data
+Backend offline → each section degrades independently (no crash)
+Retry button → re-fetches all four calls
+```
+
+**Security boundaries maintained:**
+- No secrets, API keys, credentials, or cookies in any new response
+- `confirmation_evidence` (internal applied-state field) excluded from recent-applications schema
+- `resume_hash`, `Profile.data` fields excluded from profile summary schema
+- All dashboard endpoints are HTTP GET only — no mutations possible via these routes
+
+**Test file:** `backend/tests/test_dashboard.py` (21 tests)
+
+---
+
 ## CHECKPOINT D6.2: Bounded Gemini Candidate Evaluation
 
 **Status:** COMPLETE — Gemini budget enforced BEFORE invocation, with queue isolation

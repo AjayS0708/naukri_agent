@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal } from "lucide-react";
-import { getHealth, getNotifications } from "../services/api";
-import type { HealthResponse, Notification, ProfileResponse } from "../types/api";
+import { getDashboardSummary, getHealth, getNotifications, getRecentApplications } from "../services/api";
+import type { DashboardSummary, HealthResponse, Notification, ProfileResponse, RecentApplicationItem } from "../types/api";
 import { ProfileWorkspace } from "../components/ProfileWorkspace";
 import { AIStatus } from "../components/AIStatus";
 import { JobPreferences } from "../components/JobPreferences";
@@ -9,7 +9,33 @@ import { AgentControl } from "../components/AgentControl";
 import { AnalyticsDashboard } from "../components/AnalyticsDashboard";
 import { BackendState } from "../components/BackendState";
 
-const metrics = [["Applications today", "0", BriefcaseBusiness], ["Jobs discovered", "Not available", ChartNoAxesColumn], ["Jobs analyzed", "Not available", Sparkles], ["Needs attention", "0", CircleAlert]] as const;
+const STATUS_LABEL: Record<string, string> = {
+  APPLIED: "Applied",
+  SUBMITTED: "Submitted",
+  NEEDS_ATTENTION: "Needs attention",
+  SKIPPED: "Skipped",
+  EXTERNAL_APPLICATION: "External",
+  FAILED: "Failed",
+  APPLICATION_STARTED: "Started",
+  PRE_APPLY: "Pre-apply",
+  DISCOVERED: "Discovered",
+  FILTERED: "Filtered",
+  AI_ANALYZED: "AI Analyzed",
+  APPROVED_BY_RULES: "Approved",
+};
+
+function fmtStatus(s: string): string {
+  return STATUS_LABEL[s] ?? s.replace(/_/g, " ");
+}
+
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  } catch {
+    return iso;
+  }
+}
 
 export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -18,19 +44,58 @@ export function App() {
   const [currentPage, setCurrentPage] = useState<"overview" | "profile" | "preferences" | "analytics" | "activity">("overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
+  const [dashboardError, setDashboardError] = useState(false);
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [recentApps, setRecentApps] = useState<RecentApplicationItem[]>([]);
+  const [recentAppsLoading, setRecentAppsLoading] = useState(true);
+  const [recentAppsError, setRecentAppsError] = useState(false);
 
   useEffect(() => {
     getHealth().then(setHealth).catch(() => setFailed(true));
     getNotifications().then((response) => setNotifications(response.notifications)).catch(() => setNotifications([]));
+
+    // Dashboard summary (discovery + applications + profile status)
+    setDashboardLoading(true);
+    getDashboardSummary()
+      .then((data) => { setDashboard(data); setDashboardError(false); })
+      .catch(() => setDashboardError(true))
+      .finally(() => setDashboardLoading(false));
+
+    // Recent applications with job title/company
+    setRecentAppsLoading(true);
+    getRecentApplications(10)
+      .then((data) => { setRecentApps(data.applications); setRecentAppsError(false); })
+      .catch(() => setRecentAppsError(true))
+      .finally(() => setRecentAppsLoading(false));
   }, []);
 
   const connection = failed ? "local_offline" : health ? "connected" : "checking";
-  const profileSummary = profile?.status ? profile.status.replaceAll("_", " ") : "Not configured";
+  // Use dashboard profile data when available; fall back to local profile state
+  const profileStatus = dashboard?.profile.status ?? profile?.status ?? null;
+  const profileConfirmed = dashboard?.profile.confirmed ?? profile?.confirmed ?? false;
+  const profileFilename = dashboard?.profile.original_filename ?? profile?.original_filename ?? null;
+  const profileSummary = profileStatus ? profileStatus.replaceAll("_", " ") : "Not configured";
   const agentState = health?.agent_state.replaceAll("_", " ") ?? "NOT RUNNING";
 
   const handleRetry = () => {
     setFailed(false);
+    setDashboardError(false);
+    setRecentAppsError(false);
+
     getHealth().then(setHealth).catch(() => setFailed(true));
+
+    setDashboardLoading(true);
+    getDashboardSummary()
+      .then((data) => { setDashboard(data); setDashboardError(false); })
+      .catch(() => setDashboardError(true))
+      .finally(() => setDashboardLoading(false));
+
+    setRecentAppsLoading(true);
+    getRecentApplications(10)
+      .then((data) => { setRecentApps(data.applications); setRecentAppsError(false); })
+      .catch(() => setRecentAppsError(true))
+      .finally(() => setRecentAppsLoading(false));
   };
 
   const handleNavClick = (page: typeof currentPage) => {
@@ -111,25 +176,48 @@ export function App() {
 
             <section id="agent-control"><AgentControl /></section>
 
+            {/* Metrics — real data from /api/dashboard/summary */}
             <section className="metrics">
-              {metrics.map(([label, value, Icon]) => (
-                <article className="metric" key={label}>
-                  <Icon size={20} />
-                  <p>{label}</p>
-                  <strong>{value}</strong>
-                </article>
-              ))}
+              <article className="metric">
+                <BriefcaseBusiness size={20} />
+                <p>Applications total</p>
+                <strong aria-live="polite">
+                  {dashboardLoading ? "…" : dashboardError ? "—" : dashboard!.applications.applied}
+                </strong>
+              </article>
+              <article className="metric">
+                <ChartNoAxesColumn size={20} />
+                <p>Jobs discovered</p>
+                <strong aria-live="polite">
+                  {dashboardLoading ? "…" : dashboardError ? "Unavailable" : dashboard!.discovery.jobs_discovered}
+                </strong>
+              </article>
+              <article className="metric">
+                <Sparkles size={20} />
+                <p>Discovery runs</p>
+                <strong aria-live="polite">
+                  {dashboardLoading ? "…" : dashboardError ? "Unavailable" : dashboard!.discovery.total_runs}
+                </strong>
+              </article>
+              <article className="metric">
+                <CircleAlert size={20} />
+                <p>Needs attention</p>
+                <strong aria-live="polite">
+                  {dashboardLoading ? "…" : dashboardError ? "—" : dashboard!.applications.needs_attention}
+                </strong>
+              </article>
             </section>
 
+            {/* Profile panel — real data from dashboard summary */}
             <section className="status-panel">
               <div>
                 <p className="eyebrow">PROFILE</p>
                 <strong>{profileSummary}</strong>
-                <p>{profile?.confirmed ? "Profile confirmed for automation." : "Resume/profile review is required before automation."}</p>
+                <p>{profileConfirmed ? "Profile confirmed for automation." : "Resume/profile review is required before automation."}</p>
               </div>
               <div className="status-meta">
                 <span>Resume</span>
-                <b>{profile?.original_filename ?? "Not uploaded"}</b>
+                <b>{profileFilename ?? "Not uploaded"}</b>
               </div>
             </section>
 
@@ -153,10 +241,28 @@ export function App() {
 
             <section className="activity">
               <div>
-                <p className="eyebrow">TODAY'S ACTIVITY</p>
-                <h2>Agent Activity</h2>
+                <p className="eyebrow">RECENT ACTIVITY</p>
+                <h2>Latest applications</h2>
               </div>
-              <p>No discovery, AI analysis, or application actions have been enabled.</p>
+              {recentAppsLoading ? (
+                <p className="text-[var(--color-text-secondary)]">Loading activity…</p>
+              ) : recentAppsError ? (
+                <p className="error-text">Activity data unavailable. Please retry.</p>
+              ) : recentApps.length === 0 ? (
+                <p>No applications recorded yet. Run the agent to begin.</p>
+              ) : (
+                <ul>
+                  {recentApps.map((app) => (
+                    <li key={app.application_id}>
+                      <strong>{app.job_title}</strong> at {app.company}
+                      {" — "}
+                      <span>{fmtStatus(app.status)}</span>
+                      {app.applied_at && <span className="text-[var(--color-text-secondary)]"> · {fmtDate(app.applied_at)}</span>}
+                      {app.is_dry_run && <span className="text-[var(--color-text-secondary)]"> (dry run)</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </section>
 
             <section id="analytics-dashboard"><AnalyticsDashboard /></section>
@@ -179,9 +285,32 @@ export function App() {
           <section className="activity">
             <div>
               <p className="eyebrow">ACTIVITY</p>
-              <h2>Agent Activity</h2>
+              <h2>Application History</h2>
             </div>
-            <p>No activity recorded yet. Start the agent to begin tracking events.</p>
+            {recentAppsLoading ? (
+              <p className="text-[var(--color-text-secondary)]">Loading activity…</p>
+            ) : recentAppsError ? (
+              <p className="error-text">Activity data unavailable. Backend may be offline.</p>
+            ) : recentApps.length === 0 ? (
+              <p>No applications recorded yet. Start the agent to begin tracking events.</p>
+            ) : (
+              <ul>
+                {recentApps.map((app) => (
+                  <li key={app.application_id}>
+                    <strong>{app.job_title}</strong> at {app.company}
+                    {" — "}
+                    <span>{fmtStatus(app.status)}</span>
+                    {app.applied_at
+                      ? <span className="text-[var(--color-text-secondary)]"> · Applied {fmtDate(app.applied_at)}</span>
+                      : <span className="text-[var(--color-text-secondary)]"> · {fmtDate(app.created_at)}</span>}
+                    {app.application_method && <span className="text-[var(--color-text-secondary)]"> · {app.application_method.replace("_", " ")}</span>}
+                    {app.is_dry_run && <span className="text-[var(--color-text-secondary)]"> (dry run)</span>}
+                    {app.needs_attention && <span style={{ color: "var(--color-warning)" }}> ⚠ Needs attention</span>}
+                    {app.skip_reason && <span className="text-[var(--color-text-secondary)]"> · {app.skip_reason}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         )}
       </div>

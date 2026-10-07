@@ -17,3 +17,56 @@ export interface Notification {
   created_at: string;
 }
 export interface NotificationHistoryResponse { notifications: Notification[]; total: number; }
+
+// ── Dashboard types (Checkpoint E1) ──────────────────────────────────────────
+
+export interface DiscoverySummary {
+  run_id: number | null;
+  status: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  jobs_discovered: number;
+  new_jobs: number;
+  pages_processed: number;
+  total_runs: number;
+}
+
+export interface ApplicationCounts {
+  total: number;
+  applied: number;
+  needs_attention: number;
+  skipped: number;
+  external_application: number;
+  failed: number;
+}
+
+export interface DashboardProfileSummary {
+  status: string;
+  confirmed: boolean;
+  original_filename: string | null;
+}
+
+export interface DashboardSummary {
+  discovery: DiscoverySummary;
+  applications: ApplicationCounts;
+  profile: DashboardProfileSummary;
+}
+
+export interface RecentApplicationItem {
+  application_id: number;
+  job_id: number;
+  job_title: string;
+  company: string;
+  status: string;
+  application_method: string | null;
+  applied_at: string | null;
+  skip_reason: string | null;
+  needs_attention: boolean;
+  is_dry_run: boolean;
+  created_at: string;
+}
+
+export interface RecentApplicationsResponse {
+  applications: RecentApplicationItem[];
+  total: number;
+}

@@ -1,5 +1,38 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E1: Frontend/API Integration Foundation
+
+**Status: E1 COMPLETE — Dashboard connected to real backend data**
+
+**APPLIED count: 3 (unchanged from D7 — no new applications in E1)**
+
+E1 connects the React + TypeScript dashboard to the already-proven FastAPI backend with real read-only data. Placeholder values such as "Not available" and "Not configured" are replaced by live backend state.
+
+**New read-only API endpoints:**
+- `GET /api/dashboard/summary` — discovery stats, application counts, profile status (no secrets)
+- `GET /api/dashboard/recent-applications` — application records enriched with job title and company
+
+**Frontend changes:**
+- Metrics: Applications applied, Jobs discovered, Discovery runs, Needs attention — all real values
+- Profile panel: real `status` and `confirmed` from backend
+- Activity feed: real application records with job title, company, status, applied date
+- Per-section loading/error/empty states — backend offline does not crash the dashboard
+- Retry re-fetches all dashboard data
+
+**Security:** No secrets, API keys, credentials, cookies, `confirmation_evidence`, or `resume_hash` in any new response. All new endpoints are GET-only.
+
+**Test coverage:**
+- 21 new backend tests (`test_dashboard.py`): empty DB, counts, job enrichment, limit capping, no-secrets checks, read-only (405 on mutations) — all PASS
+- Key regressions (95 tests): PASS
+- Frontend TypeScript: PASS
+- Frontend production build: PASS (15.81s)
+
+**Files added:** `backend/api/routes/dashboard.py`, `backend/schemas/dashboard.py`, `backend/tests/test_dashboard.py`
+
+**Files modified:** `backend/main.py`, `frontend/src/types/api.ts`, `frontend/src/services/api.ts`, `frontend/src/app/App.tsx`
+
+---
+
 ## CHECKPOINT D6.2: Bounded Gemini Candidate Evaluation
 
 **Status: D6.2 IMPLEMENTED, TESTED, AND VERIFIED**

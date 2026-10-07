@@ -1,5 +1,74 @@
 # Development Status
 
+## CHECKPOINT E1: Frontend/API Integration Foundation: COMPLETE
+
+**Status:** E1 IMPLEMENTED, TESTED, AND VERIFIED
+
+**E1 Objective:**
+
+Connect the React + TypeScript dashboard to the already-proven FastAPI backend with real read-only API data. Replace all "Not available" / "Not configured" placeholder values with actual backend state.
+
+**Implementation:**
+
+Backend — new read-only endpoints:
+- `GET /api/dashboard/summary`: aggregates latest discovery run stats, all-time application status counts, and safe profile status into a single dashboard snapshot
+- `GET /api/dashboard/recent-applications`: returns application records joined with `jobs` table, exposing `job_title` and `company` for the activity feed
+
+Schema design decisions:
+- `DashboardSummary`, `DiscoverySummary`, `ApplicationCounts`, `ProfileSummary`, `RecentApplicationItem`, `RecentApplicationsResponse` all use `extra="forbid"` (Pydantic strict mode)
+- `confirmation_evidence` (internal applied-state evidence) excluded from `RecentApplicationItem`
+- `resume_hash`, `Profile.data` personal fields excluded from `ProfileSummary`
+- No API keys, credentials, cookies, session data, or environment variable values in any response
+
+Frontend — changes to existing components:
+- `App.tsx`: removed hardcoded metrics const, added `dashboard` and `recentApps` state, fetches `getDashboardSummary()` and `getRecentApplications()` on mount; each section has independent loading/error/empty handling; retry re-fetches all dashboard data
+- Metrics section: `Applied`, `Jobs discovered`, `Discovery runs`, `Needs attention` — all real values
+- Profile panel: `status`, `confirmed`, `original_filename` from dashboard summary
+- Activity feed (overview + activity page): real application records with `job_title`, `company`, `status`, `applied_at`, `application_method`
+- `frontend/src/types/api.ts`: 5 new typed interfaces
+- `frontend/src/services/api.ts`: 2 new typed API client functions
+
+**E1 Test Coverage:**
+
+New: 21 tests in `backend/tests/test_dashboard.py`
+- `TestDashboardSummaryEmpty` (5): 200 response, schema keys, zero counts with empty DB
+- `TestDashboardSummaryWithData` (3): discovery counts, application counts, multi-run count
+- `TestRecentApplicationsEmpty` (2): 200 response, empty list
+- `TestRecentApplicationsWithData` (5): job details, limit, limit cap, required fields, needs_attention flag
+- `TestDashboardNoSecretsExposed` (4): no forbidden keys, no resume_hash, no confirmation_evidence
+- `TestDashboardReadOnly` (2): 405 on POST/PUT/DELETE
+
+Regression (passing):
+- Key regression tests (95 tests across health, analytics, applications, profile, schema migration, database isolation): PASS
+- Frontend TypeScript compilation: PASS
+- Frontend production build: PASS (15.81s, 273.57 kB JS bundle)
+
+**Security Verification:**
+- All new endpoints: HTTP GET only
+- No mutation of database state in any new route
+- All schemas use `extra="forbid"` — no implicit field forwarding
+- `confirmation_evidence` deliberately absent from `RecentApplicationItem`
+- `resume_hash` deliberately absent from `ProfileSummary`
+- Profile data fields (name, education, skills, etc.) not exposed via dashboard
+- No environment variables, connection strings, or filesystem paths in responses
+
+**Files Added:**
+- `backend/api/routes/dashboard.py`
+- `backend/schemas/dashboard.py`
+- `backend/tests/test_dashboard.py`
+
+**Files Modified:**
+- `backend/main.py` (dashboard router registered)
+- `frontend/src/types/api.ts` (5 new types)
+- `frontend/src/services/api.ts` (2 new client functions)
+- `frontend/src/app/App.tsx` (metrics, profile panel, activity feed wired to real API)
+
+**D7 Status:** PASS — unaffected. No automation logic changed.
+
+**No live Naukri action performed in E1.**
+
+---
+
 ## CHECKPOINT D6.2: Bounded Gemini Candidate Evaluation: COMPLETE
 
 **Status:** D6.2 IMPLEMENTED, TESTED, AND VERIFIED

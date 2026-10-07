@@ -1,4 +1,4 @@
-import type { HealthResponse, NotificationHistoryResponse, ProfileData, ProfileResponse, ResumeUploadResponse } from "../types/api";
+import type { DashboardSummary, HealthResponse, NotificationHistoryResponse, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse } from "../types/api";
 
 const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -70,3 +70,8 @@ export const uploadResume = (file: File) => { const form = new FormData(); form.
 export const updateProfile = (data: ProfileData) => apiRequest<ProfileResponse>("/profile", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data }) });
 export const confirmProfile = () => apiRequest<ProfileResponse>("/profile/confirm", { method: "POST" });
 export const getNotifications = () => apiRequest<NotificationHistoryResponse>("/notifications?limit=20");
+
+// ── Dashboard endpoints (Checkpoint E1) ──────────────────────────────────────
+export const getDashboardSummary = () => apiRequest<DashboardSummary>("/dashboard/summary");
+export const getRecentApplications = (limit = 10) =>
+  apiRequest<RecentApplicationsResponse>(`/dashboard/recent-applications?limit=${limit}`);

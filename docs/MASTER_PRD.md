@@ -1,5 +1,77 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E1: Frontend/API Integration Foundation
+
+**Status:** E1 IMPLEMENTED, TESTED, AND VERIFIED
+
+**E1 Summary:**
+
+Connected the existing React + TypeScript + Tailwind frontend dashboard to the already-proven FastAPI backend using real read-only API data. The dashboard no longer shows placeholder values such as "Not available" or "Not configured" — it reflects the actual backend state.
+
+**E1 Scope:**
+- Read-only from the frontend's perspective. No automation triggered from the dashboard.
+- No new Naukri automation behavior. No changes to Apply logic, Gemini budgets, or matching rules.
+- No live Naukri application performed.
+- D7 PASS result preserved.
+
+**New Backend Endpoints:**
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `GET /api/dashboard/summary` | GET | Discovery stats, application status counts, profile status |
+| `GET /api/dashboard/recent-applications` | GET | Recent applications enriched with job title + company |
+
+**Data Exposed (read-only, no secrets):**
+- Latest completed discovery run: `run_id`, `status`, `started_at`, `completed_at`, `jobs_discovered`, `new_jobs`, `pages_processed`, `total_runs`
+- Application counts (all-time): `total`, `applied`, `needs_attention`, `skipped`, `external_application`, `failed`
+- Profile summary: `status`, `confirmed`, `original_filename` — no `resume_hash`, no profile data fields, no API keys
+- Recent applications: `job_title`, `company`, `status`, `application_method`, `applied_at`, `skip_reason`, `needs_attention`, `is_dry_run` — no `confirmation_evidence`, no credentials
+
+**Data NOT Exposed:**
+- `GEMINI_API_KEY` — never in any response
+- Naukri credentials — never in any response
+- Cookies, session tokens, browser data — never in any response
+- `resume_hash`, `Profile.data` fields — excluded from dashboard schemas
+- `confirmation_evidence` — internal applied-state evidence, excluded from recent-applications
+- Database connection strings, environment variables, filesystem paths — never in any response
+
+**Frontend Changes:**
+- Replaced hardcoded metrics (`"Not available"`) with live values from `/api/dashboard/summary`
+- Profile panel now uses real `status` and `confirmed` from dashboard summary
+- Activity feed (overview) and Activity page now show real application records with job title/company
+- Loading state (`…`), error state (`Unavailable` / error message), and empty state handled per section
+- Backend-offline does not crash the dashboard — each section degrades independently
+- Retry button re-fetches all dashboard data
+
+**Test Coverage:**
+- 21 new tests in `backend/tests/test_dashboard.py`
+- Covers: empty DB, populated DB, counts, job-detail enrichment, limit capping, required fields, no-secrets check, read-only (405 on POST/PUT/DELETE)
+- All 21 tests: PASS
+- Key regression tests (95 tests across health, analytics, applications, profile, schema migration, database isolation): PASS
+- Frontend TypeScript compilation: PASS
+- Frontend production build: PASS (15.81s, 273.57 kB JS bundle)
+- No Gemini calls during tests. No live Naukri applications.
+
+**Security Review:**
+- `DashboardSummary` schema uses `extra="forbid"` — Pydantic strict mode prevents extra fields leaking
+- `RecentApplicationItem` explicitly excludes `confirmation_evidence`, `external_url`, and all credential fields
+- `ProfileSummary` explicitly excludes `resume_hash` and all `Profile.data` personal fields
+- All new endpoints are HTTP GET only
+- No environment variable values are read or serialised into responses
+
+**Files Added:**
+- `backend/api/routes/dashboard.py` — dashboard route implementations
+- `backend/schemas/dashboard.py` — Pydantic schemas for dashboard responses
+- `backend/tests/test_dashboard.py` — 21 new endpoint tests
+
+**Files Modified:**
+- `backend/main.py` — registered dashboard router
+- `frontend/src/types/api.ts` — added `DashboardSummary`, `ApplicationCounts`, `DashboardProfileSummary`, `RecentApplicationItem`, `RecentApplicationsResponse` types
+- `frontend/src/services/api.ts` — added `getDashboardSummary()` and `getRecentApplications()` client functions
+- `frontend/src/app/App.tsx` — wired dashboard data into metrics, profile panel, and activity feed
+
+---
+
 ## CHECKPOINT D6.2: Bounded Gemini Candidate Evaluation
 
 **Status:** D6.2 IMPLEMENTED AND TESTED
