@@ -35,6 +35,53 @@ D6.1 bounded the AI queue enqueue budget, but MatchEngine was still calling Gemi
 
 ---
 
+## CHECKPOINT D7: Multi-Application Live Validation
+
+**Status: D7 LIVE VALIDATION PASSED**
+
+**APPLIED count: 3 (1 from D4/D5, 2 from D7)**
+
+D7 validated the autonomous cycle can process multiple independent eligible Naukri candidates and apply to more than one job when safe candidates are available.
+
+**D7 Live Validation (2026-10-07):**
+
+Command: `python run_autonomous_cycle.py --max-applications 2`
+
+Results:
+- Discovery run #32: 103 jobs discovered, 60 hard filtered
+- D6.2 Gemini budget: 4 (max_applications=2 × 2)
+- NEW Gemini evaluations: 4 (exactly at budget)
+- Candidates capped: 5
+- Budget respected: YES
+- Current-run isolation: PASS (only AUTONOMOUS_CYCLE queue items processed)
+
+Application Outcomes:
+- Job 99 (Neorealm Solutions): EXTERNAL_APPLICATION (no submission)
+- Job 86 (Futureacad): SKIPPED (unpaid internship)
+- Job 85 (Access Automation): APPLIED (record #24, NAUKRI_NATIVE)
+- Job 59 (Capgemini): APPLIED (record #25, NAUKRI_NATIVE)
+
+Final:
+- APPLIED: 2
+- NEEDS_ATTENTION: 1
+- SKIPPED: 1
+- EXTERNAL: 1
+- Apply clicks: 2 (exactly once per applied job)
+
+Safety:
+- Duplicate protection: PASS
+- Current-run isolation: PASS
+- No external submissions
+- No CAPTCHA/security bypass
+- No fabricated answers
+- max_applications hard cap: PASS
+
+**D7 Verdict:** PASS — multiple applications validated
+
+**Source Changes:** NONE (D7 is a validation checkpoint only)
+
+---
+
 ## CHECKPOINT D6.1: Bounded Gemini Look-Ahead for Multi-Application Runs
 
 **Status: D6.1 IMPLEMENTED AND TESTED**

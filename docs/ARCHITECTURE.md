@@ -140,6 +140,58 @@ capped_jobs = eligible_jobs[gemini_budget:]
 
 ---
 
+## CHECKPOINT D7: Multi-Application Live Validation
+
+**Status:** COMPLETE — Multiple applications validated
+
+**D7 Architecture Validation:**
+
+D7 validated the D6.2 Gemini boundary and multi-application pipeline in a live autonomous cycle with max_applications=2. The system successfully discovered, filtered, evaluated, and applied to multiple independent native Naukri jobs while respecting all safety boundaries.
+
+**Live Validation Results (2026-10-07):**
+
+Command: `python run_autonomous_cycle.py --max-applications 2`
+
+Pipeline Execution:
+- Discovery run #32: 103 jobs discovered
+- Deterministic hard filters: 60 jobs rejected
+- Current-run candidates: 4 jobs selected for Gemini (jobs 99, 86, 85, 59)
+- D6.2 Gemini budget: 4 (max_applications=2 × 2)
+- NEW Gemini evaluations: 4 (exactly at budget)
+- Candidates capped: 5 (jobs 58, 56, 51, 20, 19)
+- Budget respected: YES
+
+Current-Run Isolation:
+- All 4 AI queue items tagged with queue_source="AUTONOMOUS_CYCLE"
+- Pre-existing MANUAL/SCHEDULER queue items NOT processed
+- Isolation: PASS
+
+Application Pipeline:
+- Job 99 (Neorealm Solutions): EXTERNAL classification → EXTERNAL_APPLICATION recorded (no submission)
+- Job 86 (Futureacad): NEEDS_ATTENTION (unpaid internship) → SKIPPED
+- Job 85 (Access Automation): NAUKRI_NATIVE → APPLIED (record #24, 1 Apply click)
+- Job 59 (Capgemini): NAUKRI_NATIVE → APPLIED (record #25, 1 Apply click)
+- Total APPLIED: 2
+- Total Apply clicks: 2 (exactly once per applied job)
+
+Safety Boundaries Validated:
+- Duplicate protection: PASS (no reapplications to existing jobs)
+- Current-run isolation: PASS (only current-run candidates processed)
+- Pre-existing queue consumption: NONE
+- CAPTCHA/security bypass: NONE
+- Questionnaire/form bypass: NONE
+- External application submission: NONE
+- Fabricated answers: NONE
+- max_applications hard cap: PASS (cycle stopped after 2 applications)
+
+**D7 Verdict:** PASS — multiple applications validated
+
+**Source Changes:** NONE (D7 is a validation checkpoint only)
+
+**Database Backup:** data/naukri_agent.db.bak-before-d7-live (not committed)
+
+---
+
 ## CHECKPOINT D6.1: Bounded Gemini Look-Ahead for Multi-Application Runs
 
 **Status:** COMPLETE — Separated Gemini candidate budget from application limit

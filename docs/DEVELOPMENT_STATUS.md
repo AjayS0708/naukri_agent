@@ -105,6 +105,78 @@ Updated test sorting logic to match implementation (2 tests updated)
 
 ---
 
+## CHECKPOINT D7: Multi-Application Live Validation: COMPLETE
+
+**Status:** D7 LIVE VALIDATION PASSED
+
+**D7 Objective:**
+
+Validate that the autonomous cycle can process multiple independent eligible Naukri candidates and apply to more than one job when safe candidates are available, while respecting the D6.2 Gemini boundary.
+
+**D7 Live Validation (2026-10-07):**
+
+Command: `python run_autonomous_cycle.py --max-applications 2`
+
+Discovery Results:
+- Discovery run #32
+- Jobs discovered: 103
+- Jobs hard filtered: 60
+- Current-run candidates: 4 queued for AI (jobs 99, 86, 85, 59)
+
+D6.2 Gemini Boundary Validation:
+- Gemini budget: 4 (max_applications=2 × 2)
+- NEW Gemini evaluations: 4 (exactly the budget)
+- Candidates capped: 5 (jobs 58, 56, 51, 20, 19)
+- Budget respected: YES
+
+Current-Run Isolation:
+- All 4 AI queue items from AUTONOMOUS_CYCLE source
+- Pre-existing MANUAL/SCHEDULER queue items NOT consumed
+- Current-run isolation: PASS
+
+Gemini Results:
+- Job 99 (Neorealm Solutions): SKIP - Python/Data Science vs C#/.NET mismatch
+- Job 86 (Futureacad): NEEDS_ATTENTION - 3-month unpaid internship + 2-year bond
+- Job 85 (Access Automation): SKIP - No LabVIEW experience
+- Job 59 (Capgemini): SKIP - L1 support/voice process vs AI/DS background
+
+Application Outcomes:
+- Job 99 → EXTERNAL_APPLICATION (no external submission, Apply clicks: 0)
+- Job 86 → SKIPPED (unpaid internship, Apply clicks: 0)
+- Job 85 → APPLIED (native Naukri, 1 Apply click, application record #24, NAUKRI_NATIVE)
+- Job 59 → APPLIED (native Naukri, 1 Apply click, application record #25, NAUKRI_NATIVE)
+
+Final Results:
+- APPLIED: 2
+- NEEDS_ATTENTION: 1
+- SKIPPED: 1
+- EXTERNAL: 1
+- FAILED: 0
+- Apply clicks: 2 (exactly once per applied job)
+
+Safety Verification:
+- Duplicate protection: PASS (no reapplications)
+- Current-run isolation: PASS (only current-run candidates processed)
+- Pre-existing queue consumption: NONE
+- CAPTCHA/security bypass: NONE
+- Questionnaire/form bypass: NONE
+- External application submission: NONE
+- Fabricated answers: NONE
+- max_applications hard cap: PASS (cycle stopped after 2 applications)
+
+**D7 Verdict:** PASS — multiple applications validated
+
+**Source Changes:** NONE (D7 is a validation checkpoint only)
+
+**Database Backup:** data/naukri_agent.db.bak-before-d7-live (not committed)
+
+**Database State after D7:**
+- Total applications: 25
+- APPLIED: 3 (Application 18 from D4/D5, Applications 24 and 25 from D7)
+- Application records #24 and #25: NAUKRI_NATIVE, applied_at=2026-10-07
+
+---
+
 ## CHECKPOINT D6.1: Bounded Gemini Look-Ahead for Multi-Application Runs: COMPLETE
 
 **Status:** D6.1 IMPLEMENTED AND TESTED
