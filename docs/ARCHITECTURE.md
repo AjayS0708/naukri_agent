@@ -1,5 +1,77 @@
 # Architecture
 
+## CHECKPOINT D5: Post-Click Evidence — Reload-Based Confirmation
+
+**Status:** COMPLETE — First verified native application confirmed
+
+**Root cause of D4 Boundary H failure:**
+
+Naukri instant-apply replaces the Apply button with `<span id="already-applied" class="already-applied">Applied</span>` only AFTER the page state is updated server-side. This transition does not happen within the 8-second in-page polling window. The page must be reloaded to show the persistent Applied badge.
+
+**D5 architecture change in `start_application()`:**
+
+```text
+Apply click
+    ↓
+8-second in-page polling (unchanged Phase 10 behavior)
+    ↓ timeout without evidence
+One bounded page reload (20s, domcontentloaded)
+    ↓
+post_apply_reload_settle_seconds wait (5s, configurable)
+    ↓
+_check_security() (security gate preserved)
+    ↓
+detect_applied_state()
+    ↓
+APPLIED / FORM_OPENED / NEEDS_ATTENTION
+```
+
+**Evidence selectors confirmed live (D5 investigation):**
+
+```html
+<!-- What Naukri renders after successful instant-apply -->
+<div class="styles_jhc__apply-button-container__...">
+  <span id="already-applied" class="styles_already-applied__... already-applied">Applied</span>
+</div>
+```
+
+Selector `#already-applied` (by ID), `.already-applied` (by class), and `#job_header #already-applied` all match this element. The existing `detect_applied_state()` selectors were already correct — only the timing was wrong.
+
+**New class-level constant:** `post_apply_reload_settle_seconds = 5` (configurable in tests via `adapter.post_apply_reload_settle_seconds = 0`)
+
+**Safety preserved:**
+- The reload does NOT click Apply again
+- Security check runs on reloaded page
+- `detect_applied_state()` uses same strict visible-evidence selectors
+- Reload failure → `NEEDS_ATTENTION` (no false APPLIED)
+- Single reload only — no loop
+
+**Confirmed live:**
+- Application 18 (Job 23): APPLIED, method=NAUKRI_NATIVE, confirmation_evidence="Applied"
+- APPLIED count: 1
+
+---
+
+## CHECKPOINT D4: First Verified Native Naukri Application
+
+**Status:** Apply button clicked (evidence confirmed by D5)
+
+The D4 live run reached the physical Apply button for a real Naukri-native job and clicked it once. The 8-second post-click observation window ran but the `detect_applied_state` selectors found no matching Applied state evidence.
+
+**D4 Architecture observations:**
+
+- `_apply_hard_filters_and_enqueue`: Fixed to count pre-existing analyses as `pre_analyzed` (not `hard_filtered`) so the cycle proceeds to applications when all current-run jobs have prior analyses.
+- `run_final_safety_gate` title check: Replaced strict configured-title substring matching with `title_matches_allowed_role()` to prevent false rejections of valid-scope jobs.
+- `detect_applied_state`: Polls `#already-applied`, `.already-applied`, exact "Applied" text, or `Applied to "<title>"`. None matched for NetM Corporate Solutions job within 8s.
+- `_has_visible_application_container`: Polls `[role="dialog"]`, `.apply-drawer`, `.apply-modal`, `form`. None matched either.
+- Result: `ApplicationStartResult.NEEDS_ATTENTION` — no retry, no false APPLIED.
+
+**Next investigation boundary:** Inspect what Naukri actually shows after Apply click on a native job — does it open a form not captured by current container selectors, or use different text for the Applied state confirmation?
+
+**APPLIED count: 0 — no verified application has occurred.**
+
+---
+
 ## CHECKPOINT D1: Autonomous Discovery Tracking
 
 Current-run job ID tracking prevents historical DB jobs from being processed when live discovery fails. The autonomous cycle now tracks the current DiscoveryRun and only processes jobs from that specific run.

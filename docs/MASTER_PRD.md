@@ -1,5 +1,62 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT D5: First Verified Native Naukri Application
+
+**Status:** FIRST VERIFIED NATIVE NAUKRI APPLICATION: SUCCESS
+
+**D5 Summary:**
+
+The D4 apply click on NetM Corporate Solutions "Software Engineer / Developer" DID submit the application to Naukri. D5 investigation confirmed the Applied badge `<span id="already-applied">Applied</span>` is visible on the job page after reload. The D4 timeout expired before this badge appeared in-page.
+
+**D5 Fix:** `start_application()` now performs one bounded page reload after the 8-second in-page window. If `detect_applied_state()` returns `(True, evidence)` on the reloaded page, the application is marked APPLIED. This is a read-only confirmation of Naukri's persistent server-side state — not a retry of the Apply click.
+
+**D5 Evidence:**
+- `detect_applied_state()` returns `(True, "Applied")` on Job 23 live page
+- Apply button gone, `#already-applied` span visible
+- Database: application 18 → APPLIED, applied_at, method=NAUKRI_NATIVE, confirmation_evidence=Applied
+- **APPLIED count: 1**
+
+**Test coverage:** 238 focused tests, 0 failures (14 new D5 tests added)
+
+---
+
+## CHECKPOINT D4: First Verified Native Naukri Application (Apply clicked — evidence confirmed by D5)
+
+**Status:** D4 role: physical Apply click reached and executed
+
+The physical Apply button was reached and clicked once for a real Naukri-native job. However, no post-click Applied evidence was detected by the existing selectors within the 8-second observation window. The application was correctly recorded as `NEEDS_ATTENTION` (not APPLIED). APPLIED count remains 0.
+
+**D4 Live Run Summary:**
+- Live discovery: 103–104 jobs found in current run
+- 70 jobs rejected by hard filters (Java, .NET, PHP, unpaid, non-IT, sales, etc.)
+- 11 pre-analyzed candidates from current run proceeded to application phase
+- 7 detected as EXTERNAL by NaukriAdapter (no external submission)
+- 1 blocked by safety gate: Gemini NEEDS_ATTENTION (Blue Yonder)
+- 1 blocked by safety gate: EXTERNAL classification before run
+- 1 candidate (NetM Corporate Solutions) reached and passed all gates as NAUKRI_NATIVE
+- Apply button physically clicked ONCE
+- Post-click evidence wait: 8 seconds — no Applied state detected
+- Application 18: NEEDS_ATTENTION, method=NAUKRI_NATIVE, evidence=None
+- APPLIED count: 0
+
+**Boundary failed:** H — Post-click Applied evidence detection
+
+**What held:**
+- No CAPTCHA bypass
+- No external application submitted
+- No questionnaire automatically answered
+- max_applications=1 respected
+- No APPLIED status persisted without evidence
+- All deterministic safety rules enforced
+
+**Bug fixes applied:**
+1. Pre-analyzed candidate bypass in `run_autonomous_cycle.py` (jobs with existing analyses no longer block the cycle)
+2. Title scope check in final safety gate (`backend/services/applications/service.py`) replaced strict substring match with `title_matches_allowed_role()` function
+
+**Test coverage:** 224 focused tests passing, 0 failures
+
+---
+
 ## CHECKPOINT D1: Autonomous Discovery Tracking (2026-10-06)
 
 Implemented current-run job ID tracking to prevent historical DB jobs from being processed when live discovery fails. The autonomous cycle now tracks the current DiscoveryRun and only processes jobs from that specific run, ensuring discovery failures don't silently fall back to stale database records.

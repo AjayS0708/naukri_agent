@@ -155,14 +155,17 @@ class ApplicationService:
             if not is_employment_type_allowed(job.employment_type, preference.employment_types):
                 return False, f"Employment type '{job.employment_type}' not allowed"
         
-        # 8. Job title/search scope
-        if preference.job_titles and job.title:
-            title_match = any(
-                title.lower() in job.title.lower() 
-                for title in preference.job_titles
-            )
-            if not title_match:
-                return False, f"Job title '{job.title}' not in configured search scope"
+        # 8. Job title/search scope — use the deterministic role-targeting
+        # function (already applied by MatchEngine) as the canonical scope gate.
+        # This avoids false rejections from strict substring mismatches between
+        # configured search titles (e.g. "Python Developer Fresher") and actual
+        # Naukri job titles (e.g. "Python Developer").  Unwanted specializations
+        # are already caught by title_matches_allowed_role.
+        if job.title:
+            from backend.services.matching.engine import title_matches_allowed_role
+            role_allowed, role_reason = title_matches_allowed_role(job.title)
+            if not role_allowed:
+                return False, f"Job title '{job.title}' not in configured search scope: {role_reason}"
         
         # 9. Gemini suspicious flag (if analysis available)
         if job_analysis and job_analysis.suspicious:

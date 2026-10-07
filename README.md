@@ -1,5 +1,46 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT D5: First Verified Native Naukri Application
+
+**Status: FIRST VERIFIED NATIVE NAUKRI APPLICATION: SUCCESS**
+
+**APPLIED count: 1**
+
+- Job 23, NetM Corporate Solutions, "Software Engineer / Developer"
+- D4 applied click submitted the application to Naukri
+- D5 investigation confirmed `#already-applied` span visible after page reload
+- `detect_applied_state()` returns `(True, "Applied")` on live page
+- Database: application 18 → APPLIED, applied_at=2026-10-07, method=NAUKRI_NATIVE, confirmation_evidence="Applied"
+
+**D5 Fix (surgical):**
+
+`start_application()` in [`backend/services/naukri/adapter.py`](backend/services/naukri/adapter.py) now adds one bounded page reload after the 8-second in-page timeout. If `detect_applied_state()` finds evidence on the reloaded page, the application is confirmed as APPLIED. This is read-only — the Apply button is NOT clicked again.
+
+**Test coverage:** 238 focused tests passing, 14 new D5 tests, 0 failures
+
+---
+
+## CHECKPOINT D4: First Verified Native Naukri Application (Apply clicked — evidence confirmed by D5)
+
+**Status:** Physical Apply click reached and executed. Evidence confirmed by D5 reload validation.
+
+**Live run (conducted):**
+- Discovery: 103–104 current-run jobs
+- 70 hard-filtered; 11 pre-analyzed candidates proceeded to application phase
+- 7 EXTERNAL detected (no external submission)
+- 1 candidate (NetM Corporate Solutions) reached NAUKRI_NATIVE classification
+- Apply button physically clicked ONCE
+- No post-click Applied evidence within 8 seconds
+- Application 18 recorded as NEEDS_ATTENTION with no confirmation_evidence
+
+**Bug fixes applied:**
+- `run_autonomous_cycle.py`: Pre-existing analyses no longer block the cycle (tracked as `pre_analyzed`)
+- `backend/services/applications/service.py`: Title scope check uses `title_matches_allowed_role()` instead of strict substring matching
+
+**Test coverage:** 224 focused tests passing, 0 failures
+
+---
+
 ## CHECKPOINT D1: Autonomous Discovery Tracking
 
 Implemented current-run job ID tracking to prevent historical DB jobs from being processed when live discovery fails. The autonomous cycle now tracks the current DiscoveryRun and only processes jobs from that specific run.

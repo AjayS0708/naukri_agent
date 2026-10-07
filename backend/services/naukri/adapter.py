@@ -40,6 +40,9 @@ class NaukriAdapter(JobPlatformAdapter):
     """
     platform_name = "naukri"
     post_apply_timeout_seconds = 8
+    # D5: After the in-page timeout, reload once and recheck.
+    # Naukri instant-apply may navigate/redirect before the Applied badge appears.
+    post_apply_reload_settle_seconds = 5
     application_type_settle_seconds = 0.5
     _header_apply_selector = "#job_header button#apply-button"
     _fallback_apply_selector = "button#apply-button"
@@ -142,7 +145,13 @@ class NaukriAdapter(JobPlatformAdapter):
                 raise Exception(f"Security Verification Required: {indicator}")
 
         # Login required indicators
-        if "login" in url_lower or "sign in" in visible_lower:
+        # Check URL first (most reliable)
+        if "login" in url_lower:
+            raise Exception("Naukri login required")
+        # Check body text for explicit login page elements with word boundaries
+        # to avoid false positives like "design" containing "sign"
+        import re
+        if re.search(r'\bsign\s+in\b', visible_lower):
             raise Exception("Naukri login required")
 
         # Blocked access indicators
@@ -699,7 +708,13 @@ class NaukriAdapter(JobPlatformAdapter):
         - Applied: visible #already-applied, .already-applied, exact "Applied" text,
                    or banner matching 'Applied to "<title>"'
         - Form opened: visible application container
-        - Neither within timeout: NEEDS_ATTENTION
+        - Neither within timeout: reload once and recheck (D5)
+        - Still no evidence after reload: NEEDS_ATTENTION
+
+        D5 note: Naukri instant-apply may perform a server-side redirect before
+        the Applied badge renders in-page.  A single bounded page reload after
+        the initial timeout safely detects that persistent server-side state
+        without clicking Apply again.
         """
         try:
             button, source = await self._find_scoped_apply_button(page)
@@ -711,7 +726,7 @@ class NaukriAdapter(JobPlatformAdapter):
             await button.click()
             await self._check_security(page)
 
-            # Phase 10: Bounded wait for explicit post-click evidence
+            # Phase 10 / D5: Bounded in-page polling for explicit post-click evidence.
             deadline = (
                 asyncio.get_running_loop().time()
                 + self.post_apply_timeout_seconds
@@ -720,19 +735,47 @@ class NaukriAdapter(JobPlatformAdapter):
                 # Check for explicit Applied state (visible evidence only)
                 applied, evidence = await self.detect_applied_state(page)
                 if applied:
-                    logger.info(f"Applied state detected with evidence: {evidence}")
+                    logger.info(f"Applied state detected (in-page) with evidence: {evidence}")
                     return ApplicationStartResult.APPLIED
 
-                # Check for visible application container
+                # Check for visible application container (questionnaire/form)
                 if await self._has_visible_application_container(page):
                     logger.info("Application container detected after click")
                     return ApplicationStartResult.FORM_OPENED
 
                 await asyncio.sleep(0.25)
 
-            # Bounded wait expired without explicit evidence
+            # D5: In-page timeout expired without evidence.  Naukri instant-apply
+            # may update the job page state only after the server-side redirect
+            # completes.  Reload once and check the persistent page state.
+            # This is NOT a retry of the Apply click — it is a read-only confirmation
+            # of whether Naukri persisted the application server-side.
+            logger.info(
+                "No in-page post-click evidence after %ss; performing one reload check",
+                self.post_apply_timeout_seconds,
+            )
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=20000)
+                await asyncio.sleep(self.post_apply_reload_settle_seconds)
+                await self._check_security(page)
+
+                applied, evidence = await self.detect_applied_state(page)
+                if applied:
+                    logger.info(
+                        "Applied state confirmed after reload with evidence: %s", evidence
+                    )
+                    return ApplicationStartResult.APPLIED
+
+                # Container visible after reload means a form was left open
+                if await self._has_visible_application_container(page):
+                    logger.info("Application container visible after reload")
+                    return ApplicationStartResult.FORM_OPENED
+
+            except Exception as reload_exc:
+                logger.warning("Post-click reload check failed: %s", reload_exc)
+
             logger.warning(
-                f"No explicit post-click evidence after {self.post_apply_timeout_seconds}s"
+                "No post-click Applied evidence after in-page wait and reload check"
             )
             return ApplicationStartResult.NEEDS_ATTENTION
         except Exception as e:

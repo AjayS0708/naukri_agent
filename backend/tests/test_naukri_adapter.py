@@ -194,6 +194,35 @@ class TestSecurityDetection:
         assert "login required" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
+    async def test_check_security_sign_in_substring_false_positive(self):
+        """Words containing 'sign' (like 'design', 'assignment', 'signing')
+        must NOT trigger login required. Only the exact phrase 'sign in'
+        with word boundaries should trigger."""
+        adapter = NaukriAdapter()
+        # Real-world false positive: company name "Communications Test Design India Ltd"
+        mock_page = self._make_page(
+            "Communications Test Design India Ltd\n"
+            "Software Engineer\n"
+            "Bengaluru\n"
+            "Apply Now"
+        )
+
+        # Must not raise - "design" contains "sign" but is not "sign in"
+        await adapter._check_security(mock_page)
+
+    @pytest.mark.asyncio
+    async def test_check_security_sign_in_standalone_phrase_triggers(self):
+        """The exact standalone phrase 'sign in' (with word boundaries)
+        MUST still trigger login required to preserve genuine auth detection."""
+        adapter = NaukriAdapter()
+        mock_page = self._make_page("Please sign in to continue")
+
+        with pytest.raises(Exception) as exc_info:
+            await adapter._check_security(mock_page)
+
+        assert "login required" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
     async def test_check_security_access_denied(self):
         adapter = NaukriAdapter()
         mock_page = self._make_page("Access denied")
@@ -422,6 +451,7 @@ class TestApplicationTypeDetection:
     async def test_start_application_supports_current_native_apply_button(self):
         adapter = NaukriAdapter()
         adapter.post_apply_timeout_seconds = 0
+        adapter.post_apply_reload_settle_seconds = 0
         page = self._make_page()
         apply_button = self._visible_control()
         page.query_selector_all.side_effect = lambda selector: (
@@ -460,6 +490,7 @@ class TestApplicationTypeDetection:
     async def test_header_button_avoids_global_strict_mode_ambiguity(self):
         adapter = NaukriAdapter()
         adapter.post_apply_timeout_seconds = 0
+        adapter.post_apply_reload_settle_seconds = 0
         page = self._make_page()
         header_button = self._visible_control()
         page.query_selector_all.side_effect = lambda selector: (
@@ -488,6 +519,7 @@ class TestApplicationTypeDetection:
 
         assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
         adapter.post_apply_timeout_seconds = 0
+        adapter.post_apply_reload_settle_seconds = 0
         with patch.object(adapter, "_check_security", new_callable=AsyncMock):
             assert await adapter.start_application(page) == ApplicationStartResult.NEEDS_ATTENTION
 
@@ -501,6 +533,7 @@ class TestApplicationTypeDetection:
         assert 'id="no-button"' in fixture
         adapter = NaukriAdapter()
         adapter.post_apply_timeout_seconds = 0
+        adapter.post_apply_reload_settle_seconds = 0
         page = self._make_page("Job details")
         page.query_selector_all.return_value = []
 
@@ -562,6 +595,320 @@ class TestApplicationTypeDetection:
         )
 
         assert await adapter.detect_application_questions(page) == []
+
+
+
+class TestD5PostClickEvidenceDetection:
+    """D5: Verify post-click Applied evidence detection and the reload-based fallback.
+
+    Live investigation (D5) confirmed:
+    - After a successful Naukri instant-apply, the Apply button is REPLACED by
+      <span id="already-applied" class="styles_already-applied__4KDhw already-applied">Applied</span>
+    - The transition may NOT happen within the initial 8-second in-page window.
+    - A single page reload after the timeout correctly reveals the persistent Applied state.
+    - The existing selectors #already-applied / .already-applied work correctly.
+    """
+
+    def _make_page(self, visible_text: str = "Software Engineer Apply") -> AsyncMock:
+        mock_page = AsyncMock()
+        mock_page.inner_text.return_value = visible_text
+        mock_page.content.return_value = "<html></html>"
+        mock_page.url = "https://www.naukri.com/job-listings-test"
+        return mock_page
+
+    def _visible_el(self, text: str = "Applied") -> AsyncMock:
+        el = AsyncMock()
+        el.is_visible.return_value = True
+        el.inner_text.return_value = text
+        return el
+
+    def _hidden_el(self, text: str = "Applied") -> AsyncMock:
+        el = AsyncMock()
+        el.is_visible.return_value = False
+        el.inner_text.return_value = text
+        return el
+
+    # ── detect_applied_state ──────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_already_applied_id_visible_returns_applied(self):
+        """#already-applied element visible with text 'Applied' → (True, 'Applied')."""
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        el = self._visible_el("Applied")
+        page.query_selector_all.side_effect = lambda sel: (
+            [el] if sel == "#job_header #already-applied" else []
+        )
+        detected, evidence = await adapter.detect_applied_state(page)
+        assert detected is True
+        assert evidence == "Applied"
+
+    @pytest.mark.asyncio
+    async def test_already_applied_class_visible_returns_applied(self):
+        """.already-applied element visible → (True, evidence)."""
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        el = self._visible_el("Applied")
+        page.query_selector_all.side_effect = lambda sel: (
+            [el] if sel == "#already-applied" else []
+        )
+        detected, evidence = await adapter.detect_applied_state(page)
+        assert detected is True
+        assert evidence == "Applied"
+
+    @pytest.mark.asyncio
+    async def test_hidden_already_applied_not_detected(self):
+        """A hidden #already-applied element must NOT be accepted as evidence."""
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        el = self._hidden_el("Applied")
+        page.query_selector_all.side_effect = lambda sel: (
+            [el] if sel in ("#already-applied", ".already-applied",
+                            "#job_header #already-applied", "#job_header .already-applied",
+                            "#job_header *") else []
+        )
+        detected, evidence = await adapter.detect_applied_state(page)
+        assert detected is False
+        assert evidence == ""
+
+    @pytest.mark.asyncio
+    async def test_unrelated_applied_text_not_accepted(self):
+        """Generic 'applied' text in a nav element must NOT be treated as Applied evidence."""
+        adapter = NaukriAdapter()
+        page = self._make_page("You have already applied for 100+ jobs this month.")
+        # No #already-applied / .already-applied elements
+        page.query_selector_all.return_value = []
+        detected, evidence = await adapter.detect_applied_state(page)
+        assert detected is False
+
+    @pytest.mark.asyncio
+    async def test_applied_to_banner_text_accepted(self):
+        """'Applied to "Title"' banner visible → (True, banner_text)."""
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        el = self._visible_el('Applied to "Software Engineer"')
+        # Not via #already-applied ID, but via generic * scan
+        page.query_selector_all.side_effect = lambda sel: (
+            [el] if sel == "#job_header *" else []
+        )
+        detected, evidence = await adapter.detect_applied_state(page)
+        assert detected is True
+        assert evidence == 'Applied to "Software Engineer"'
+
+    @pytest.mark.asyncio
+    async def test_no_evidence_returns_false(self):
+        """When no Applied elements exist, must return (False, '')."""
+        adapter = NaukriAdapter()
+        page = self._make_page("Software Engineer job description nothing else")
+        page.query_selector_all.return_value = []
+        detected, evidence = await adapter.detect_applied_state(page)
+        assert detected is False
+        assert evidence == ""
+
+    # ── start_application with reload path ───────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_applied_detected_in_page_no_reload_needed(self):
+        """If Applied state appears within the in-page window, reload is NOT triggered."""
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 10  # generous window
+        adapter.post_apply_reload_settle_seconds = 0
+
+        page = self._make_page()
+        apply_button = self._visible_el("Apply")
+        applied_el = self._visible_el("Applied")
+
+        call_count = 0
+
+        def qsa(sel):
+            nonlocal call_count
+            call_count += 1
+            if sel == "#job_header button#apply-button":
+                return [apply_button]
+            if sel in ("#job_header #already-applied", "#already-applied"):
+                return [applied_el]
+            return []
+
+        page.query_selector_all.side_effect = qsa
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.start_application(page)
+
+        assert result == ApplicationStartResult.APPLIED
+        # reload must NOT have been called
+        page.reload.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_applied_detected_after_reload_when_in_page_timeout_expires(self):
+        """D5 core: Applied state visible only after reload → APPLIED returned."""
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0  # force timeout immediately
+        adapter.post_apply_reload_settle_seconds = 0
+
+        page = self._make_page()
+        apply_button = self._visible_el("Apply")
+        applied_el = self._visible_el("Applied")
+
+        # Before reload: apply-button exists, no already-applied
+        # After reload: already-applied exists, no apply-button
+        reload_called = {"count": 0}
+        orig_reload = page.reload
+
+        async def fake_reload(**kwargs):
+            reload_called["count"] += 1
+
+        page.reload = fake_reload
+
+        def qsa_before_reload(sel):
+            if sel == "#job_header button#apply-button":
+                return [apply_button]
+            return []
+
+        def qsa_after_reload(sel):
+            if sel == "#job_header #already-applied":
+                return [applied_el]
+            return []
+
+        # Switch behavior after reload is called
+        call_after_reload = {"triggered": False}
+        original_qsa = qsa_before_reload
+
+        def qsa_switcher(sel):
+            if call_after_reload["triggered"]:
+                return qsa_after_reload(sel)
+            return qsa_before_reload(sel)
+
+        page.query_selector_all.side_effect = qsa_switcher
+
+        # Trigger the switch when reload is called
+        async def fake_reload_switch(**kwargs):
+            reload_called["count"] += 1
+            call_after_reload["triggered"] = True
+
+        page.reload = fake_reload_switch
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.start_application(page)
+
+        assert result == ApplicationStartResult.APPLIED
+        assert reload_called["count"] == 1  # exactly one reload
+
+    @pytest.mark.asyncio
+    async def test_no_evidence_after_reload_returns_needs_attention(self):
+        """If still no evidence after reload, must return NEEDS_ATTENTION (not APPLIED)."""
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0
+        adapter.post_apply_reload_settle_seconds = 0
+
+        page = self._make_page()
+        apply_button = self._visible_el("Apply")
+        page.query_selector_all.side_effect = lambda sel: (
+            [apply_button] if sel == "#job_header button#apply-button" else []
+        )
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.start_application(page)
+
+        assert result == ApplicationStartResult.NEEDS_ATTENTION
+        page.reload.assert_awaited_once()  # reload was attempted
+
+    @pytest.mark.asyncio
+    async def test_reload_failure_returns_needs_attention_safely(self):
+        """If the reload itself fails, must return NEEDS_ATTENTION without raising."""
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0
+        adapter.post_apply_reload_settle_seconds = 0
+
+        page = self._make_page()
+        apply_button = self._visible_el("Apply")
+        page.query_selector_all.side_effect = lambda sel: (
+            [apply_button] if sel == "#job_header button#apply-button" else []
+        )
+        page.reload.side_effect = Exception("Network error during reload")
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.start_application(page)
+
+        assert result == ApplicationStartResult.NEEDS_ATTENTION
+
+    @pytest.mark.asyncio
+    async def test_reload_triggered_exactly_once_not_multiple_times(self):
+        """The reload path must fire at most once, never looping."""
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0
+        adapter.post_apply_reload_settle_seconds = 0
+
+        page = self._make_page()
+        apply_button = self._visible_el("Apply")
+        page.query_selector_all.side_effect = lambda sel: (
+            [apply_button] if sel == "#job_header button#apply-button" else []
+        )
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            await adapter.start_application(page)
+
+        # reload called at most once
+        assert page.reload.await_count <= 1
+
+    @pytest.mark.asyncio
+    async def test_questionnaire_after_click_returns_form_opened_no_reload(self):
+        """A visible application container (form) detected in-page → FORM_OPENED, no reload."""
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 10
+        adapter.post_apply_reload_settle_seconds = 0
+
+        page = self._make_page()
+        apply_button = self._visible_el("Apply")
+        form_el = self._visible_el("")
+        form_el.is_visible.return_value = True
+
+        def qsa(sel):
+            if sel == "#job_header button#apply-button":
+                return [apply_button]
+            if sel == '[role="dialog"]':
+                return [form_el]
+            return []
+
+        page.query_selector_all.side_effect = qsa
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.start_application(page)
+
+        assert result == ApplicationStartResult.FORM_OPENED
+        page.reload.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_confirmation_evidence_text_preserved_from_applied_element(self):
+        """The evidence text from #already-applied must be the exact inner_text."""
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        el = self._visible_el("Applied")
+        page.query_selector_all.side_effect = lambda sel: (
+            [el] if sel == "#job_header .already-applied" else []
+        )
+        detected, evidence = await adapter.detect_applied_state(page)
+        assert detected is True
+        assert evidence == "Applied"  # exact text preserved for confirmation_evidence
+
+    @pytest.mark.asyncio
+    async def test_apply_button_gone_after_applied_state(self):
+        """When Applied state is present, the Apply button must be gone (no duplicate click risk)."""
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        applied_el = self._visible_el("Applied")
+
+        page.query_selector_all.side_effect = lambda sel: (
+            [applied_el] if sel == "#job_header #already-applied" else []
+        )
+
+        # detect_applied_state should find evidence
+        detected, evidence = await adapter.detect_applied_state(page)
+        assert detected is True
+
+        # _find_scoped_apply_button should find nothing (button replaced by Applied badge)
+        button, source = await adapter._find_scoped_apply_button(page)
+        assert button is None
+
 
 
 class TestStartSession:

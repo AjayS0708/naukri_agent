@@ -260,7 +260,7 @@ def test_it_filter_with_non_it_industry_even_with_it_role():
     assert is_strict_it_job(job) is False
 
 def test_it_filter_with_missing_metadata():
-    """Job with missing IT metadata should fail IT filter."""
+    """Job with missing industry should pass IT filter if title has IT keywords."""
     from backend.services.matching.engine import is_strict_it_job
     from backend.models.job import Job
 
@@ -270,6 +270,21 @@ def test_it_filter_with_missing_metadata():
         department="Engineering - Software & QA",
         role_category="Software Engineer"
     )
+    # Should pass because title contains "software" and "engineer" keywords
+    assert is_strict_it_job(job) is True
+
+def test_it_filter_with_missing_metadata_no_it_keywords():
+    """Job with missing industry and no IT keywords should fail IT filter."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    job = Job(
+        title="Marketing Manager",
+        industry=None,
+        department="Marketing",
+        role_category="Marketing"
+    )
+    # Should fail because title has no IT keywords
     assert is_strict_it_job(job) is False
 
 def test_it_filter_with_non_it_industry():

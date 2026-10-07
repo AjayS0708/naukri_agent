@@ -1,5 +1,134 @@
 # Development Status
 
+## CHECKPOINT D5: First Verified Native Naukri Application: COMPLETE
+
+**Status:** FIRST VERIFIED NATIVE NAUKRI APPLICATION: SUCCESS
+
+**D5 Live Investigation Finding:**
+
+Opening Job 23 (NetM Corporate Solutions) read-only after the D4 apply click confirmed:
+- `<span id="already-applied" class="styles_already-applied__4KDhw already-applied">Applied</span>` is visible in `#job_header`
+- The Apply button is absent (replaced by the Applied badge)
+- Selectors `#already-applied`, `.already-applied`, `#job_header #already-applied`, `#job_header .already-applied` all correctly match
+- `detect_applied_state()` returns `(True, "Applied")` on the live page
+
+**Root cause of D4 failure:**
+
+Naukri instant-apply performs a server-side submission that updates the job page state. The Applied badge (`#already-applied`) does NOT appear within the initial 8-second in-page polling window. It becomes visible only after the page reloads/refreshes. The D4 implementation had no post-timeout reload check, so the window expired and returned `NEEDS_ATTENTION` — even though the application was actually submitted.
+
+**D5 Fix implemented:**
+
+`start_application()` now adds a single bounded reload check after the 8-second in-page window expires:
+
+```
+Apply click
+    ↓
+8-second in-page polling (unchanged)
+    ↓
+If no evidence found → reload page once (bounded, 20s timeout)
+    ↓
+Wait post_apply_reload_settle_seconds (5s) for JS to render
+    ↓
+detect_applied_state() called on reloaded page
+    ↓
+If Applied evidence found → return APPLIED
+If no evidence → return NEEDS_ATTENTION
+```
+
+This is NOT a retry of the Apply click. It is a read-only confirmation of Naukri's persistent server-side state.
+
+**D5 Live Validation:**
+
+Application record 18 (Job 23, NetM Corporate Solutions) updated from `NEEDS_ATTENTION` to `APPLIED`:
+- `status = APPLIED`
+- `applied_at = 2026-10-07 12:33:17 UTC`
+- `method = NAUKRI_NATIVE`
+- `confirmation_evidence = "Applied (confirmed by D5 live reload validation)"`
+- `is_dry_run = False`
+- **APPLIED count: 1**
+
+**Test Coverage:**
+- 238 focused tests passing (test_autonomous_cycle.py, test_matching_rules.py, test_naukri_adapter.py, test_application_safety_gate.py)
+- 14 new D5 tests in `TestD5PostClickEvidenceDetection`
+- 0 failures
+
+**Safety rules held throughout:**
+- No Apply button clicked again
+- No CAPTCHA bypass
+- No external application
+- No questionnaire answered
+- Evidence required before APPLIED persisted
+- Reload is read-only, not a resubmission
+
+**Files Changed in D5:**
+- `backend/services/naukri/adapter.py`: Added `post_apply_reload_settle_seconds`, reload check in `start_application`
+- `backend/tests/test_naukri_adapter.py`: Added `TestD5PostClickEvidenceDetection` (14 tests), updated 4 existing tests
+
+**Database state after D5:**
+- Total applications: 21
+- APPLIED: 1 (first verified application)
+- Application 18: APPLIED, method=NAUKRI_NATIVE, evidence=Applied, applied_at=2026-10-07
+
+---
+
+## CHECKPOINT D4: First Verified Native Naukri Application: APPLY CLICKED — EVIDENCE DETECTED BY D5
+
+Objective: reach and physically click the real native Naukri Apply button for one legitimate eligible job, observe Naukri's post-click state, and persist APPLIED evidence.
+
+**D4 Live Run Results (conducted after D1 base):**
+
+- Authenticated Naukri session opened successfully
+- Discovery: 103–104 jobs discovered in current run
+- Hard filters applied: 70 jobs rejected (Java, PHP, Sales, unpaid salary, non-IT, etc.)
+- 11 pre-analyzed candidates from current run available (with existing Gemini APPLY analyses)
+- Final safety gate evaluated all 11 candidates
+- 2 EXTERNAL jobs correctly identified and recorded (no external submission)
+- 1 job (Blue Yonder, Associate Software Engineer) blocked by safety gate: Gemini `NEEDS_ATTENTION` recommendation
+- 7 jobs detected as EXTERNAL by NaukriAdapter during application type classification
+- 1 candidate (NetM Corporate Solutions, "Software Engineer / Developer") passed all gates as `NAUKRI_NATIVE`
+- Apply button found via `#job_header button#apply-button` / `button#apply-button` selector
+- Apply button physically clicked ONCE
+- 8-second post-click evidence wait executed
+- **NO post-click Applied evidence detected within 8 seconds**
+- Application correctly recorded as `NEEDS_ATTENTION` (not APPLIED)
+- `confirmation_evidence` remains NULL
+- APPLIED count: **0** — no verified application
+
+**Boundary that blocked D4:** H — Post-click Applied evidence detection
+
+The `detect_applied_state` method polls for: `#already-applied`, `.already-applied`, exact "Applied" text, or `Applied to "<title>"` banner. None of these were detected within 8 seconds after the Apply click on NetM Corporate Solutions job. This could mean:
+- The job required a hidden questionnaire or form not detected by container selectors
+- The Applied state appeared with different text/element structure than the current selectors expect
+- The page redirected silently after the click
+
+**Safety rules held throughout:**
+- No CAPTCHA bypass
+- No external application submitted
+- No questionnaire answered automatically
+- max_applications=1 respected
+- No APPLIED status persisted without evidence
+
+**Bug fixes applied during D4:**
+
+1. **Pre-analyzed candidate bypass** (`run_autonomous_cycle.py`): The `_apply_hard_filters_and_enqueue` step previously counted pre-existing job analyses as `hard_filtered`, causing a premature "0 eligible jobs found" stop when all current-run jobs had existing analyses. Fixed by separating `pre_analyzed` from `hard_filtered` and adjusting the early-exit condition.
+
+2. **Title scope check in final safety gate** (`backend/services/applications/service.py`): The safety gate's title scope check used strict substring matching against configured job titles like "Python Developer Fresher", which rejected real jobs titled "Python Developer". Fixed by replacing the check with the deterministic `title_matches_allowed_role()` function from the match engine (already applied by MatchEngine during hard filtering), which uses the canonical allowed-role-families logic.
+
+**Test Coverage:**
+- 224 focused tests passing (test_autonomous_cycle.py, test_matching_rules.py, test_naukri_adapter.py, test_application_safety_gate.py)
+- 0 failures
+
+**Files Changed in D4:**
+- `run_autonomous_cycle.py`: Pre-analyzed bypass, updated stats output
+- `backend/services/applications/service.py`: Title scope check fix using `title_matches_allowed_role`
+
+**Database state after D4:**
+- Total applications: 21
+- APPLIED: 0 (no verified application)
+- Application 18 (NetM Corporate Solutions): NEEDS_ATTENTION, method=NAUKRI_NATIVE, evidence=None
+
+---
+
 ## CHECKPOINT D1: Autonomous Discovery Tracking: COMPLETE — LIVE READ-ONLY VALIDATED
 
 Implemented current-run job ID tracking to prevent historical DB jobs from being processed when live discovery fails. The autonomous cycle now tracks the current DiscoveryRun and only processes jobs from that specific run, ensuring discovery failures don't silently fall back to stale database records.

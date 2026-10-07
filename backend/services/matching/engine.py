@@ -34,8 +34,8 @@ DEFAULT_IT_KEYWORDS = (
 
 # Allowed role families for deterministic title targeting
 ALLOWED_ROLE_FAMILIES = {
-    "data": ["data analyst", "data engineer"],
-    "software": ["software engineer", "software developer", "developer"],
+    "data": ["data analyst", "data engineer", "data analytic"],
+    "software": ["software engineer", "software developer", "developer", "software development engineer"],
     "devops": ["devops"],
     "python": ["python developer"],
 }
@@ -85,16 +85,15 @@ def is_strict_it_job(job: Job, industries: list[str] | None = None,
     allowed_industries = industries or list(DEFAULT_IT_INDUSTRIES)
     allowed_keywords = keywords or list(DEFAULT_IT_KEYWORDS)
 
-    # Industry field is mandatory for IT gate
-    if not job.industry:
-        return False
+    # Industry field is preferred but not mandatory if title contains IT keywords
+    # If industry is present, it must match IT industries
+    # If industry is missing, allow job if title contains IT keywords
+    if job.industry:
+        industry_lower = job.industry.strip().lower()
+        if not any(value.lower() in industry_lower for value in allowed_industries):
+            return False
 
-    # Industry must be in allowed IT industries
-    industry_lower = job.industry.strip().lower()
-    if not any(value.lower() in industry_lower for value in allowed_industries):
-        return False
-
-    # Title must contain IT keyword
+    # Title must contain IT keyword (always required)
     return _contains_keyword(job.title, allowed_keywords)
 
 

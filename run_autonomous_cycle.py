@@ -40,6 +40,7 @@ from backend.models.ai_queue import AIQueueItem
 from backend.models.application import Application
 from backend.schemas.application import ApplicationStatus
 from backend.schemas.ai_queue import AIQueueStatus
+from backend.schemas.ai import JobAnalysis
 from backend.schemas.agent import AgentState
 from backend.core.logging import get_logger
 from backend.models.discovery import DiscoveryRun
@@ -191,24 +192,49 @@ class AutonomousCycle:
             enqueue_stats = await self._apply_hard_filters_and_enqueue(db, profile, preferences)
             print(f"  Discovered: {enqueue_stats['discovered']}")
             print(f"  Hard filtered: {enqueue_stats['hard_filtered']}")
+            print(f"  Pre-analyzed (existing): {enqueue_stats['pre_analyzed']}")
             print(f"  Skipped on experience: {enqueue_stats['skipped_experience']}")
             print(f"  Skipped non-IT: {enqueue_stats['skipped_non_it']}")
+            print(f"  Capped by max_jobs: {enqueue_stats['capped']}")
             print(f"  Queued for AI: {enqueue_stats['queued']}")
 
-            if enqueue_stats["queued"] == 0:
+            # Only stop if nothing was newly queued AND no pre-analyzed candidates exist
+            # in the current run. Pre-existing analyses from prior runs on the same jobs
+            # are valid — _run_applications already enforces current_run_job_ids scope.
+            if enqueue_stats["queued"] == 0 and enqueue_stats["pre_analyzed"] == 0:
                 print("\n0 eligible jobs found")
                 self.tracker.print_table()
                 return 0
 
-            # Step 3: Process AI queue
-            print("\n[3/5] Processing AI queue...")
-            ai_stats = await self._process_ai_queue(db, profile)
-            print(f"  AI processed: {ai_stats['processed']}")
-            print(f"  AI completed: {ai_stats['completed']}")
-            print(f"  AI blocked: {ai_stats['quota_blocked']}")
+            # Step 3: Process AI queue — only when new items were freshly queued
+            ai_stats: dict = {"processed": 0, "completed": 0, "quota_blocked": 0, "errors": []}
+            if enqueue_stats["queued"] > 0:
+                print("\n[3/5] Processing AI queue...")
+                ai_stats = await self._process_ai_queue(db, profile)
+                print(f"  AI processed: {ai_stats['processed']}")
+                print(f"  AI completed: {ai_stats['completed']}")
+                print(f"  AI blocked: {ai_stats['quota_blocked']}")
+            else:
+                print("\n[3/5] Skipping AI queue (all current-run candidates already analyzed)")
 
-            if ai_stats["completed"] == 0:
-                print("\nNo jobs completed AI analysis")
+            # Count current-run jobs that have a completed analysis (covers both
+            # freshly-processed items and pre-existing analyses from earlier runs).
+            ready_count = 0
+            if self.current_discovery_run and self.current_discovery_run.current_run_job_ids:
+                try:
+                    cur_ids = [int(x) for x in self.current_discovery_run.current_run_job_ids.split(",")]
+                    from sqlalchemy import func as _sqlfunc
+                    ready_count = db.execute(
+                        select(_sqlfunc.count()).select_from(JobAnalysisModel)
+                        .where(JobAnalysisModel.job_id.in_(cur_ids))
+                    ).scalar() or 0
+                except Exception:
+                    ready_count = ai_stats["completed"]
+            else:
+                ready_count = ai_stats["completed"]
+
+            if ready_count == 0:
+                print("\nNo jobs have a completed AI analysis in the current run")
                 self.tracker.print_table()
                 return 0
 
@@ -232,6 +258,8 @@ class AutonomousCycle:
             print(f"Skipped on experience: {enqueue_stats['skipped_experience']}")
             print(f"Skipped non-IT: {enqueue_stats['skipped_non_it']}")
             print(f"Hard filtered: {enqueue_stats['hard_filtered']}")
+            print(f"Pre-analyzed (existing): {enqueue_stats['pre_analyzed']}")
+            print(f"Capped by max_jobs: {enqueue_stats['capped']}")
             print(f"Queued for AI: {enqueue_stats['queued']}")
             print(f"AI processed: {ai_stats['processed']}")
             print(f"AI completed: {ai_stats['completed']}")
@@ -262,7 +290,8 @@ class AutonomousCycle:
         """Apply hard filters and enqueue eligible jobs."""
         stats = {
             "discovered": 0, "hard_filtered": 0, "queued": 0,
-            "skipped_experience": 0, "skipped_non_it": 0, "errors": [],
+            "skipped_experience": 0, "skipped_non_it": 0, "capped": 0,
+            "pre_analyzed": 0, "errors": [],
         }
 
         # Get discovered jobs ONLY from the current discovery run
@@ -292,8 +321,7 @@ class AutonomousCycle:
                 Job.id.in_(current_run_job_ids)
             )
 
-        if self.max_jobs:
-            stmt = stmt.limit(self.max_jobs)
+        # Do NOT apply max_jobs here - apply it AFTER hard filtering
         stmt = stmt.order_by(Job.discovered_at.desc())
 
         jobs = db.execute(stmt).scalars().all()
@@ -305,7 +333,21 @@ class AutonomousCycle:
         match_engine = MatchEngine(db)
         ai_queue_service = AIQueueService(db)
 
+        # Track eligible jobs to cap at max_jobs AFTER hard filtering
+        eligible_count = 0
+
+        # Collect eligible jobs first for deterministic selection
+        eligible_jobs = []
+
         for job in jobs:
+            # Check if we've reached max_jobs cap for eligible jobs
+            if self.max_jobs and eligible_count >= self.max_jobs:
+                # Still count remaining jobs as discovered but mark as capped
+                stats["capped"] += 1
+                self.tracker.add_decision(
+                    job.id, job.company, job.title, "N/A", False, False, False, "N/A", "max_jobs cap", "CAPPED"
+                )
+                continue
             # Skip excluded job
             if job.external_job_id == EXCLUDED_JOB_ID:
                 stats["hard_filtered"] += 1
@@ -314,13 +356,14 @@ class AutonomousCycle:
                 )
                 continue
 
-            # Check if already analyzed or queued
+            # Check if already analyzed — count separately so the cycle can proceed
+            # to applications even when all current-run jobs have prior analyses.
             existing_analysis = db.execute(
                 select(JobAnalysisModel).where(JobAnalysisModel.job_id == job.id)
             ).scalars().first()
 
             if existing_analysis:
-                stats["hard_filtered"] += 1
+                stats["pre_analyzed"] += 1
                 continue
 
             existing_queue = db.execute(
@@ -340,18 +383,15 @@ class AutonomousCycle:
             employment_pass = match_decision.decision.value == "APPLY" or "employment" not in match_decision.reason.lower()
 
             if match_decision.decision.value == "APPLY":
-                queue_item = ai_queue_service.enqueue_job(
-                    job_id=job.id,
-                    priority=match_decision.match_score or 50,
-                    priority_reason="Hard filters passed, ready for AI analysis",
-                    queue_source="AUTONOMOUS_CYCLE",
-                )
-
-                if queue_item:
-                    stats["queued"] += 1
-                    self.tracker.add_decision(
-                        job.id, job.company, job.title, "N/A", salary_pass, experience_pass, employment_pass, "PENDING", "PENDING", "QUEUED"
-                    )
+                # Collect eligible job for deterministic selection
+                eligible_jobs.append({
+                    "job": job,
+                    "match_score": match_decision.match_score or 50,
+                    "salary_pass": salary_pass,
+                    "experience_pass": experience_pass,
+                    "employment_pass": employment_pass,
+                })
+                eligible_count += 1
             else:
                 stats["hard_filtered"] += 1
                 if match_decision.skip_reason and match_decision.skip_reason.value == "EXPERIENCE_TOO_HIGH":
@@ -361,6 +401,56 @@ class AutonomousCycle:
                 self.tracker.add_decision(
                     job.id, job.company, job.title, "N/A", salary_pass, experience_pass, employment_pass, "N/A", match_decision.reason, "HARD_FILTERED"
                 )
+
+        # Deterministic selection: pick the single best candidate by match_score (descending), then by discovered_at (descending)
+        # For first-application mode with max_applications=1, only enqueue ONE job to avoid burning Gemini quota
+        if eligible_jobs:
+            # Sort by match_score descending, then by discovered_at descending (most recent)
+            eligible_jobs.sort(key=lambda x: (-x["match_score"], x["job"].discovered_at or datetime.min), reverse=False)
+
+            # Only enqueue the top candidate when max_applications=1
+            if self.max_applications == 1:
+                selected = eligible_jobs[0]
+                queue_item = ai_queue_service.enqueue_job(
+                    job_id=selected["job"].id,
+                    priority=selected["match_score"],
+                    priority_reason="Selected as top candidate for first-application mode",
+                    queue_source="AUTONOMOUS_CYCLE",
+                )
+
+                if queue_item:
+                    stats["queued"] += 1
+                    self.tracker.add_decision(
+                        selected["job"].id, selected["job"].company, selected["job"].title, "N/A",
+                        selected["salary_pass"], selected["experience_pass"], selected["employment_pass"],
+                        "PENDING", "PENDING", "QUEUED (SELECTED)"
+                    )
+
+                # Mark other eligible jobs as capped for quota safety
+                for other in eligible_jobs[1:]:
+                    stats["capped"] += 1
+                    self.tracker.add_decision(
+                        other["job"].id, other["job"].company, other["job"].title, "N/A",
+                        other["salary_pass"], other["experience_pass"], other["employment_pass"],
+                        "N/A", "quota cap (not selected)", "CAPPED"
+                    )
+            else:
+                # Normal mode: enqueue all eligible jobs
+                for eligible in eligible_jobs:
+                    queue_item = ai_queue_service.enqueue_job(
+                        job_id=eligible["job"].id,
+                        priority=eligible["match_score"],
+                        priority_reason="Hard filters passed, ready for AI analysis",
+                        queue_source="AUTONOMOUS_CYCLE",
+                    )
+
+                    if queue_item:
+                        stats["queued"] += 1
+                        self.tracker.add_decision(
+                            eligible["job"].id, eligible["job"].company, eligible["job"].title, "N/A",
+                            eligible["salary_pass"], eligible["experience_pass"], eligible["employment_pass"],
+                            "PENDING", "PENDING", "QUEUED"
+                        )
 
         return stats
 
@@ -413,7 +503,23 @@ class AutonomousCycle:
             Application, Application.job_id == Job.id
         ).where(
             (Application.id == None) | (Application.status == ApplicationStatus.SKIPPED.value)
-        ).order_by(Job.discovered_at.desc())
+        )
+
+        # Restrict to current discovery run to avoid processing stale historical candidates
+        if self.current_discovery_run and self.current_discovery_run.current_run_job_ids:
+            try:
+                current_run_job_ids = [int(jid) for jid in self.current_discovery_run.current_run_job_ids.split(",")]
+                stmt = stmt.where(Job.id.in_(current_run_job_ids))
+            except (ValueError, AttributeError):
+                # If parsing fails, return no candidates to be safe
+                print("WARNING: Failed to parse current_run_job_ids, returning no application candidates")
+                return stats
+        else:
+            # No current discovery run or no job IDs - return no candidates to be safe
+            print("WARNING: No current discovery run or current_run_job_ids, returning no application candidates")
+            return stats
+
+        stmt = stmt.order_by(Job.discovered_at.desc())
 
         if self.max_jobs:
             stmt = stmt.limit(self.max_jobs)
@@ -470,14 +576,25 @@ class AutonomousCycle:
         if not analysis_model:
             return "SKIPPED"
 
+        # Construct proper JobAnalysis object from persisted analysis_model
+        job_analysis = JobAnalysis(
+            match_score=analysis_model.match_score,
+            role_match=analysis_model.role_match,
+            skill_match=analysis_model.skill_match,
+            experience_match=analysis_model.experience_match,
+            location_match=analysis_model.location_match,
+            salary_match=analysis_model.salary_match,
+            job_quality=analysis_model.job_quality,
+            duplicate_probability=analysis_model.duplicate_probability,
+            suspicious=analysis_model.suspicious,
+            recommendation=analysis_model.recommendation,
+            short_reason=analysis_model.short_reason
+        )
+
         # Run final safety gate
         application_service = ApplicationService(db)
         allowed, reason = application_service.run_final_safety_gate(
-            job, profile, preferences,
-            type("obj", (object,), {
-                "recommendation": analysis_model.recommendation,
-                "match_score": analysis_model.match_score,
-            })()
+            job, profile, preferences, job_analysis
         )
 
         if not allowed:
