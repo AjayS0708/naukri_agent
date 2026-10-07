@@ -1,5 +1,58 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT D6.2: Bounded Gemini Candidate Evaluation
+
+**Status:** D6.2 IMPLEMENTED AND TESTED
+
+**D6.2 Summary:**
+
+D6.1's Gemini budget was applied TOO LATE in the pipeline. The autonomous cycle was calling MatchEngine.evaluate_job() for every job that passed deterministic filters, and MatchEngine would invoke Gemini for each job before returning. Only AFTER those Gemini calls did the D6.1 enqueue budget get applied. This defeated the purpose of bounded Gemini usage.
+
+**D6.2 Fix:**
+- Moved the Gemini budget boundary BEFORE NEW MatchEngine semantic evaluation
+- Added `evaluate_job_deterministic()` method to MatchEngine that runs only deterministic checks (no Gemini)
+- Autonomous cycle now: deterministic filters → bounded candidate selection → Gemini evaluation for only bounded candidates
+- Gemini budget formula: `max_applications * 2` (unchanged from D6.1)
+- Application limit: `max_applications` (unchanged)
+- Cached analyses do not consume NEW Gemini evaluation budget
+- Deterministically rejected jobs never call Gemini
+
+**D6.2 Implementation:**
+- Added `MatchEngine.evaluate_job_deterministic()` method in `backend/services/matching/engine.py`
+- Updated `run_autonomous_cycle.py` to use deterministic-only evaluation for candidate collection
+- Applied Gemini budget (max_applications * 2) BEFORE enqueuing to AI queue
+- Added 8 D6.2 regression tests to `test_autonomous_cycle.py`
+- All existing D4/D5/D6.1 tests preserved and passing
+
+**D6.2 Test Coverage:**
+- 8 new D6.2 tests added
+- Total: 98 tests passing in test_autonomous_cycle.py (90 autonomous_cycle + 8 D6.2)
+- 0 failures
+
+**Key D6.2 Tests:**
+1. `test_deterministic_evaluation_passes_without_gemini` → deterministic evaluation works without Gemini
+2. `test_deterministic_evaluation_fails_unpaid_job` → deterministic checks reject unpaid jobs
+3. `test_gemini_budget_bounded_for_max_applications_2` → Gemini budget=4 for max_applications=2
+4. `test_gemini_budget_for_max_applications_1` → Gemini budget=2 for max_applications=1
+5. `test_gemini_budget_for_max_applications_3` → Gemini budget=6 for max_applications=3
+6. `test_cached_analysis_not_counted_as_new_gemini` → cached analyses don't trigger new Gemini calls
+7. `test_deterministic_rejects_no_gemini_call` → deterministically rejected jobs never call Gemini
+8. `test_application_limit_separate_from_gemini_budget` → application limit separate from Gemini budget
+
+**Gemini Safety:**
+- NEW Gemini evaluations during autonomous cycle are now bounded BEFORE invocation
+- For max_applications=1: NEW Gemini evaluations <= 2
+- For max_applications=2: NEW Gemini evaluations <= 4
+- For max_applications=3: NEW Gemini evaluations <= 6
+- Deterministically rejected jobs never call Gemini
+- Cached analyses do not cause NEW Gemini calls
+- Application attempts remain hard-capped by max_applications
+- Gemini remains advisory, Python rules remain final authority
+
+**Note:** D7 live validation has NOT been performed as part of this checkpoint. D6.2 is a source implementation checkpoint only.
+
+---
+
 ## CHECKPOINT D6.1: Bounded Gemini Look-Ahead for Multi-Application Runs
 
 **Status:** D6.1 IMPLEMENTED AND TESTED
@@ -56,6 +109,8 @@ D6 exposed a candidate-selection issue where `max_applications` was incorrectly 
 - No uncontrolled AI processing
 - No fallback to AI-free application
 - Existing quota exhaustion behavior preserved
+
+**Note:** D6.1's original implementation bounded the downstream AI queue, but MatchEngine could still invoke Gemini before that boundary. D6.2 fixes this by bounding NEW Gemini evaluations before invocation.
 
 ---
 

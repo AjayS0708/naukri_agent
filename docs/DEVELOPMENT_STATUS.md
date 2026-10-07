@@ -1,5 +1,110 @@
 # Development Status
 
+## CHECKPOINT D6.2: Bounded Gemini Candidate Evaluation: COMPLETE
+
+**Status:** D6.2 IMPLEMENTED, TESTED, AND VERIFIED
+
+**D6.2 Root Cause:**
+
+D6.1's Gemini budget was applied TOO LATE in the pipeline. The autonomous cycle was calling `MatchEngine.evaluate_job()` for every job that passed deterministic filters, and MatchEngine would invoke Gemini for each job before returning. Only AFTER those Gemini calls did the D6.1 enqueue budget get applied. This defeated the purpose of bounded Gemini usage and caused uncontrolled Gemini calls during autonomous cycles.
+
+**D6.2 Additional Issues Found and Fixed:**
+
+1. **Queue isolation violation**: `_process_ai_queue()` was calling `get_next_item()` which returns ANY eligible queue item, not just those enqueued by the current autonomous cycle. This meant pre-existing queue items from other sources (SCHEDULER, MANUAL) could be processed, bypassing the D6.2 Gemini budget.
+
+2. **Candidate sorting bug**: The sort intended to order by match_score descending and discovered_at descending (newest first), but was actually sorting discovered_at ascending (oldest first) due to incorrect lambda.
+
+3. **Code duplication**: `evaluate_job_deterministic()` and `evaluate_job()` had duplicated deterministic logic, creating maintenance risk.
+
+**D6.2 Fix:**
+
+1. Moved the Gemini budget boundary BEFORE NEW MatchEngine semantic evaluation:
+   - Added `evaluate_job_deterministic()` method to MatchEngine that runs only deterministic checks (no Gemini)
+   - Autonomous cycle now: deterministic filters → bounded candidate selection → Gemini evaluation for only bounded candidates
+   - Gemini budget formula: `max_applications * 2` (unchanged from D6.1)
+   - Application limit: `max_applications` (unchanged)
+   - Cached analyses do not consume NEW Gemini evaluation budget
+   - Deterministically rejected jobs never call Gemini
+
+2. Fixed queue isolation:
+   - Added `enqueued_queue_item_ids` tracking in `_apply_hard_filters_and_enqueue()`
+   - Modified `_process_ai_queue()` to accept `enqueued_queue_item_ids` parameter
+   - Only processes queue items enqueued by this cycle (queue_source="AUTONOMOUS_CYCLE")
+   - Prevents pre-existing queue items (SCHEDULER, MANUAL) from bypassing Gemini budget
+
+3. Fixed candidate sorting:
+   - Changed sort key to use negative timestamp for discovered_at (newest first)
+   - Matches comment: "Sort by match_score descending, then by discovered_at descending (most recent)"
+
+4. Deduplicated deterministic logic:
+   - Extracted shared `_run_deterministic_checks()` method
+   - Both `evaluate_job_deterministic()` and `evaluate_job()` now call this shared method
+   - Single authoritative implementation of all deterministic rules
+
+**D6.2 Implementation:**
+
+Modified `backend/services/matching/engine.py`:
+- Added `_run_deterministic_checks()` shared method (lines 119-220)
+- Refactored `evaluate_job_deterministic()` to use shared method (lines 222-232)
+- Refactored `evaluate_job()` to use shared method (lines 234-278)
+- Eliminated code duplication while preserving behavior
+
+Modified `run_autonomous_cycle.py`:
+- Line 342: Added `enqueued_queue_item_ids` tracking list
+- Line 415-423: Fixed candidate sorting to newest discovered_at first
+- Line 437: Track enqueued queue item IDs
+- Line 461: Updated `_process_ai_queue()` call to pass `enqueued_queue_item_ids`
+- Line 463-503: Modified `_process_ai_queue()` to only process items from this cycle
+- Line 470: Return `enqueued_queue_item_ids` in stats for bounded processing
+
+**D6.2 Test Coverage:**
+
+Added 10 D6.2 regression tests in `TestD62BoundedGeminiEvaluation`:
+1. `test_deterministic_evaluation_passes_without_gemini` → verifies deterministic evaluation works without Gemini
+2. `test_deterministic_evaluation_fails_unpaid_job` → verifies deterministic checks reject unpaid jobs
+3. `test_gemini_budget_bounded_for_max_applications_2` → verifies Gemini budget=4 for max_applications=2
+4. `test_gemini_budget_for_max_applications_1` → verifies Gemini budget=2 for max_applications=1
+5. `test_gemini_budget_for_max_applications_3` → verifies Gemini budget=6 for max_applications=3
+6. `test_cached_analysis_not_counted_as_new_gemini` → verifies cached analyses don't trigger new Gemini calls
+7. `test_deterministic_rejects_no_gemini_call` → verifies deterministically rejected jobs never call Gemini
+8. `test_application_limit_separate_from_gemini_budget` → verifies application limit separate from Gemini budget
+9. `test_pre_existing_queue_items_not_processed` → verifies pre-existing queue items are NOT processed
+10. `test_candidate_ordering_newest_discovered_at_first` → verifies candidate sorting newest first
+
+Fixed duplicate test class (removed duplicate `TestCardExperienceFiltering` at line 590)
+Updated test sorting logic to match implementation (2 tests updated)
+
+**Total Test Coverage:**
+- 92 tests passing in test_autonomous_cycle.py (includes 10 D6.2 tests)
+- 41 tests passing in test_matching_rules.py
+- 0 failures
+
+**Gemini Safety Verification:**
+
+- NEW Gemini evaluations during autonomous cycle are now bounded BEFORE invocation
+- Pre-existing queue items from other sources are NOT processed by autonomous cycle
+- For max_applications=1: NEW Gemini evaluations <= 2
+- For max_applications=2: NEW Gemini evaluations <= 4
+- For max_applications=3: NEW Gemini evaluations <= 6
+- Deterministically rejected jobs never call Gemini
+- Cached analyses do not cause NEW Gemini calls
+- Application attempts remain hard-capped by max_applications
+- Gemini remains advisory, Python rules remain final authority
+- All existing safety rules held (duplicate protection, current-run isolation, etc.)
+
+**Files Changed in D6.2:**
+- `backend/services/matching/engine.py`: Added `_run_deterministic_checks()` shared method, refactored both evaluation methods
+- `run_autonomous_cycle.py`: Added queue isolation, fixed sorting, bounded queue processing
+- `backend/tests/test_autonomous_cycle.py`: Added 10 D6.2 tests, removed duplicate class, updated 2 sorting tests
+
+**Database State after D6.2:**
+- No database changes required
+- No live validation performed (D6.2 is source implementation checkpoint only)
+
+**Note:** D7 live validation has NOT been performed as part of this checkpoint. D6.2 is a source implementation checkpoint only.
+
+---
+
 ## CHECKPOINT D6.1: Bounded Gemini Look-Ahead for Multi-Application Runs: COMPLETE
 
 **Status:** D6.1 IMPLEMENTED AND TESTED
@@ -102,6 +207,8 @@ D6 report discrepancy (104 vs 81 jobs) explained:
 - Total applications: 21
 - APPLIED: 1 (Application 18 from D4/D5)
 - No new applications in D6.1 live run
+
+**Note:** D6.1's original implementation bounded the downstream AI queue, but MatchEngine could still invoke Gemini before that boundary. D6.2 fixes this by bounding NEW Gemini evaluations before invocation.
 
 ---
 

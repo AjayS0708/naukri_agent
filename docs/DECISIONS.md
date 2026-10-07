@@ -1,6 +1,9 @@
 # Architecture Decisions
 
 
+|| Bounded Gemini Candidate Evaluation (Checkpoint D6.2) | D6.1 bounded the downstream AI queue, but MatchEngine was calling Gemini for every job that passed deterministic filters BEFORE the enqueue budget was applied. D6.2 moves the Gemini boundary before NEW semantic evaluation: autonomous cycle runs deterministic-only filters first, selects top candidates (max_applications * 2), and only then invokes Gemini. Gemini budget = max_applications * 2. Application limit = max_applications. Deterministic rejects do not consume Gemini budget. Cached analyses do not consume NEW Gemini budget. Autonomous-cycle queue isolation (tracking enqueued_queue_item_ids) prevents pre-existing MANUAL/SCHEDULER items from bypassing the cycle budget. Gemini remains advisory; Python remains authoritative. D7 has NOT yet been validated. | 2026-10 |
+
+
 || Bounded Gemini Look-Ahead (Checkpoint D6.1) | Previously, `max_applications` was used as both the Gemini candidate cap AND the actual application limit. This prevented backup candidates when initial candidates were rejected (EXTERNAL or NEEDS_ATTENTION). Separated these concerns: `max_gemini_candidates = max_applications * 2` provides bounded look-ahead (backup candidates) while preventing uncontrolled Gemini usage. Actual application attempts remain capped at `max_applications`. Example: `max_applications=2` enqueues 4 candidates to Gemini, but only attempts 2 applications. If the first 2 candidates are rejected, the system can evaluate candidates 3 and 4. This enables multi-application runs without uncontrolled AI processing. All existing safety rules, quota handling, and current-run isolation preserved. | 2026-10 |
 
 

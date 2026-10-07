@@ -206,11 +206,11 @@ class AutonomousCycle:
                 self.tracker.print_table()
                 return 0
 
-            # Step 3: Process AI queue — only when new items were freshly queued
+            # Step 3: Process AI queue — only process items enqueued by this cycle
             ai_stats: dict = {"processed": 0, "completed": 0, "quota_blocked": 0, "errors": []}
             if enqueue_stats["queued"] > 0:
                 print("\n[3/5] Processing AI queue...")
-                ai_stats = await self._process_ai_queue(db, profile)
+                ai_stats = await self._process_ai_queue(db, profile, enqueue_stats.get("enqueued_queue_item_ids", []))
                 print(f"  AI processed: {ai_stats['processed']}")
                 print(f"  AI completed: {ai_stats['completed']}")
                 print(f"  AI blocked: {ai_stats['quota_blocked']}")
@@ -341,6 +341,9 @@ class AutonomousCycle:
         # Collect eligible jobs first for deterministic selection
         eligible_jobs = []
 
+        # Track queue item IDs enqueued in this cycle for bounded Gemini processing
+        enqueued_queue_item_ids = []
+
         for job in jobs:
             # Check if we've reached max_jobs cap for eligible jobs
             if self.max_jobs and eligible_count >= self.max_jobs:
@@ -376,8 +379,8 @@ class AutonomousCycle:
                 stats["hard_filtered"] += 1
                 continue
 
-            # Evaluate hard filters
-            match_decision = match_engine.evaluate_job(job, profile, preferences)
+            # D6.2: Evaluate deterministic filters ONLY (no Gemini call yet)
+            match_decision = match_engine.evaluate_job_deterministic(job, profile, preferences)
 
             # Track filter results
             salary_pass = match_decision.decision.value == "APPLY" or "salary" not in match_decision.reason.lower()
@@ -385,7 +388,7 @@ class AutonomousCycle:
             employment_pass = match_decision.decision.value == "APPLY" or "employment" not in match_decision.reason.lower()
 
             if match_decision.decision.value == "APPLY":
-                # Collect eligible job for deterministic selection
+                # Collect eligible job for bounded Gemini selection
                 eligible_jobs.append({
                     "job": job,
                     "match_score": match_decision.match_score or 50,
@@ -404,17 +407,25 @@ class AutonomousCycle:
                     job.id, job.company, job.title, "N/A", salary_pass, experience_pass, employment_pass, "N/A", match_decision.reason, "HARD_FILTERED"
                 )
 
-        # D6.1: Bounded Gemini look-ahead for multi-application runs
-        # Separate Gemini candidate budget from actual application limit
-        # max_gemini_candidates = max_applications * 2 provides backup candidates
-        # while keeping Gemini usage bounded and controlled
+        # D6.2: Bounded Gemini Candidate Evaluation
+        # The Gemini budget is enforced BEFORE any Gemini calls are made.
+        # This prevents uncontrolled Gemini usage during autonomous cycles.
+        # Gemini budget = max_applications * 2 (look-ahead for backup candidates)
+        # Application limit = max_applications (hard cap on actual applications)
         if eligible_jobs:
-            # Sort by match_score descending, then by discovered_at descending (most recent)
-            eligible_jobs.sort(key=lambda x: (-x["match_score"], x["job"].discovered_at or datetime.min), reverse=False)
+            # Sort by match_score descending, then by discovered_at descending (most recent first)
+            # For equal match_score, newest discovered_at should come first
+            # Use 0 as timestamp for None (oldest possible)
+            eligible_jobs.sort(
+                key=lambda x: (
+                    -x["match_score"],
+                    -(x["job"].discovered_at.timestamp() if x["job"].discovered_at else 0)
+                )
+            )
 
-            # D6.1: Bounded Gemini candidate budget (look-ahead)
-            # Enqueue up to max_applications * 2 candidates to provide backup options
-            # while preventing uncontrolled Gemini usage
+            # D6.2: Apply Gemini budget BEFORE enqueuing for AI processing
+            # Only enqueue up to max_applications * 2 candidates for Gemini evaluation
+            # This bounds NEW Gemini evaluations during the autonomous cycle
             gemini_budget = max(1, self.max_applications * 2)
             selected_jobs = eligible_jobs[:gemini_budget]
             capped_jobs = eligible_jobs[gemini_budget:]
@@ -429,25 +440,36 @@ class AutonomousCycle:
 
                 if queue_item:
                     stats["queued"] += 1
+                    enqueued_queue_item_ids.append(queue_item.id)
                     self.tracker.add_decision(
                         selected["job"].id, selected["job"].company, selected["job"].title, "N/A",
                         selected["salary_pass"], selected["experience_pass"], selected["employment_pass"],
                         "PENDING", "PENDING", "QUEUED (SELECTED)"
                     )
 
-            # Mark remaining eligible jobs as capped for quota safety
+            # Mark remaining eligible jobs as capped for Gemini quota safety
+            # These jobs passed deterministic filters but are not evaluated by Gemini
+            # because the Gemini budget was already consumed
             for other in capped_jobs:
                 stats["capped"] += 1
                 self.tracker.add_decision(
                     other["job"].id, other["job"].company, other["job"].title, "N/A",
                     other["salary_pass"], other["experience_pass"], other["employment_pass"],
-                    "N/A", f"Gemini budget cap (budget={gemini_budget})", "CAPPED"
+                    "N/A", f"D6.2 Gemini budget cap (budget={gemini_budget})", "CAPPED"
                 )
 
+        # Return stats including enqueued queue item IDs for bounded processing
+        stats["enqueued_queue_item_ids"] = enqueued_queue_item_ids
         return stats
 
-    async def _process_ai_queue(self, db: Session, profile: Profile) -> dict:
-        """Process AI queue items."""
+    async def _process_ai_queue(self, db: Session, profile: Profile, enqueued_queue_item_ids: list[int]) -> dict:
+        """
+        Process AI queue items enqueued by this autonomous cycle only.
+
+        This ensures the D6.2 Gemini budget is authoritative - only items selected
+        and enqueued by this cycle are processed, not pre-existing queue items from
+        other sources (SCHEDULER, MANUAL, etc.).
+        """
         stats = {"processed": 0, "completed": 0, "quota_blocked": 0, "errors": []}
 
         ai_queue_service = AIQueueService(db)
@@ -455,17 +477,23 @@ class AutonomousCycle:
 
         profile_context = str(profile.data) if profile and profile.data else ""
 
-        # Process up to max_jobs or all if not specified
-        max_items = self.max_jobs if self.max_jobs else 50
-        items_processed = 0
-
-        while items_processed < max_items:
-            next_item = ai_queue_service.get_next_item()
-            if not next_item:
-                break
-
+        # Process only queue items enqueued by this cycle
+        for queue_item_id in enqueued_queue_item_ids:
             try:
-                result = ai_queue_service.process_item(next_item.id, profile_context)
+                # Fetch the queue item directly by ID to ensure it's from this cycle
+                from backend.models.ai_queue import AIQueueItem
+                queue_item = db.execute(
+                    select(AIQueueItem).where(AIQueueItem.id == queue_item_id)
+                ).scalars().first()
+
+                if not queue_item:
+                    continue
+
+                # Only process if it's still in a processable state
+                if queue_item.status not in ["QUEUED", "RETRY_PENDING", "QUOTA_BLOCKED"]:
+                    continue
+
+                result = ai_queue_service.process_item(queue_item_id, profile_context)
                 stats["processed"] += 1
 
                 if result.status.value == "COMPLETED":
@@ -474,11 +502,8 @@ class AutonomousCycle:
                     stats["quota_blocked"] += 1
                     break
 
-                items_processed += 1
-
             except Exception as e:
                 stats["errors"].append(str(e))
-                items_processed += 1
 
         return stats
 

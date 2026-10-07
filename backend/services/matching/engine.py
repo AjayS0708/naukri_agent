@@ -116,16 +116,17 @@ class MatchEngine:
     def __init__(self, session: Session, ai_provider: Optional[AIProvider] = None):
         self.session = session
         self.ai = ai_provider or GeminiProvider()
-        
-    def evaluate_job(self, job: Job, profile: Profile, preference: JobPreference) -> MatchDecision:
+
+    def _run_deterministic_checks(self, job: Job, profile: Profile, preference: JobPreference) -> MatchDecision:
         """
-        Runs deterministic hard filters. If they pass, delegates to Gemini.
-        Returns the final strict MatchDecision.
+        Shared deterministic hard filter logic.
+        Returns a MatchDecision with decision=APPLY if all checks pass,
+        or SKIP/NEEDS_ATTENTION if any check fails.
         """
         matched_rules = []
         failed_rules = []
         warnings = []
-        
+
         # 1. Profile Status
         if not profile.confirmed:
             return MatchDecision(
@@ -134,20 +135,8 @@ class MatchEngine:
                 skip_reason=SkipReason.PROFILE_NOT_CONFIRMED,
                 failed_rules=["PROFILE_CONFIRMATION"]
             )
-            
-        # 2. Location Hard Filter
-        # Note: If no location provided in job.description or nowhere in job object, we ideally look for meta.
-        # But Phase 1-3 doesn't have a separated "job_locations" field, we'd need to extract it or assume it's valid if undefined.
-        # Let's assume description has location somewhere or metadata (in Phase 5). 
-        # For this test, we will create a dummy logic that safely assumes true if no strict explicit field, 
-        # but typically you parse it. We'll use a mocked location field if it existed, otherwise skip for now.
-        # If job doesn't provide location directly in a field, we will skip hard filter natively and let AI catch it,
-        # OR we wait till we update `Job` model to store location. Let's assume we do deterministic text search in description for now.
-        if job.description:
-            # Very basic placeholder logic for deterministic text since job lacks structured fields for Location/Salary yet.
-            pass
 
-        # 3. Duplicate Detection
+        # 2. Duplicate Detection
         duplicate = self._check_duplicate(job)
         if duplicate:
             return MatchDecision(
@@ -158,7 +147,7 @@ class MatchEngine:
             )
         matched_rules.append("DUPLICATE_CHECK")
 
-        # 4. Role/Title Targeting Check (deterministic before IT metadata)
+        # 3. Role/Title Targeting Check
         role_allowed, role_reason = title_matches_allowed_role(job.title)
         if not role_allowed:
             return MatchDecision(
@@ -169,7 +158,7 @@ class MatchEngine:
             )
         matched_rules.append("ROLE_TARGETING_CHECK")
 
-        # 5. Strict fresher experience and IT-only checks
+        # 4. Strict fresher experience and IT-only checks
         experience_ok, experience_reason = experience_passes_fresher_rule(job, preference)
         if not experience_ok:
             return MatchDecision(
@@ -189,9 +178,7 @@ class MatchEngine:
             )
         matched_rules.append("IT_SCOPE_CHECK")
 
-        # Salary Check: Treat salary_max == 0 (disclosed "Unpaid") as below minimum.
-        # Salary metadata is available even when a job description is not.
-        # salary NULL/None (undisclosed) is NOT rejected.
+        # Salary Check
         if job.salary_max == 0:
             return MatchDecision(
                 decision=MatchDecisionEnum.SKIP,
@@ -211,7 +198,7 @@ class MatchEngine:
                 )
         matched_rules.append("SALARY_CHECK")
 
-        # Employment type is also structured metadata, independent of description text.
+        # Employment type check
         if preference.employment_types and not is_employment_type_allowed(job.employment_type, preference.employment_types):
             return MatchDecision(
                 decision=MatchDecisionEnum.SKIP,
@@ -220,37 +207,75 @@ class MatchEngine:
                 failed_rules=["EMPLOYMENT_TYPE"]
             )
         matched_rules.append("EMPLOYMENT_TYPE_CHECK")
-        
-        # 5. Gemini Semantic Check (Only runs because hard checks haven't failed)
+
+        # All deterministic checks passed
+        return MatchDecision(
+            decision=MatchDecisionEnum.APPLY,
+            reason="All deterministic checks passed.",
+            skip_reason=None,
+            matched_rules=matched_rules,
+            failed_rules=failed_rules,
+            warnings=warnings,
+            match_score=50  # Default score, will be refined by Gemini
+        )
+
+    def evaluate_job_deterministic(self, job: Job, profile: Profile, preference: JobPreference) -> MatchDecision:
+        """
+        Runs deterministic hard filters only. Does NOT call Gemini.
+        Returns a MatchDecision with decision=APPLY if all deterministic checks pass,
+        or SKIP/NEEDS_ATTENTION if any deterministic check fails.
+        This is used for bounded candidate selection before invoking Gemini.
+        """
+        decision = self._run_deterministic_checks(job, profile, preference)
+        if decision.decision == MatchDecisionEnum.APPLY:
+            # Update reason to indicate readiness for Gemini evaluation
+            decision.reason = "All deterministic checks passed. Ready for Gemini evaluation."
+        return decision
+
+    def evaluate_job(self, job: Job, profile: Profile, preference: JobPreference) -> MatchDecision:
+        """
+        Runs deterministic hard filters. If they pass, delegates to Gemini.
+        Returns the final strict MatchDecision.
+        """
+        # Run shared deterministic checks
+        decision = self._run_deterministic_checks(job, profile, preference)
+
+        # If deterministic checks failed, return immediately
+        if decision.decision != MatchDecisionEnum.APPLY:
+            return decision
+
+        # All deterministic checks passed - now call Gemini
         job_context = f"Title: {job.title}\nCompany: {job.company}\nDescription: {job.description or ''}"
         profile_context = json.dumps(profile.data, default=str)
-        
+
         analysis: Optional[JobAnalysis] = self.ai.analyze_job(job_context, profile_context)
         if not analysis:
             return MatchDecision(
                 decision=MatchDecisionEnum.NEEDS_ATTENTION,
                 reason="Failed to analyze job via AI engine.",
                 skip_reason=SkipReason.UNKNOWN,
+                matched_rules=decision.matched_rules,
+                failed_rules=decision.failed_rules,
                 warnings=["AI_ANALYSIS_FAILED"]
             )
-            
-        # 6. Apply final AI result to strict Pydantic Decision
+
+        # Apply final AI result to strict Pydantic Decision
         decision_val = MatchDecisionEnum.APPLY
         skip_r = None
-        
+
         if analysis.recommendation == "SKIP":
             decision_val = MatchDecisionEnum.SKIP
             skip_r = SkipReason.INSUFFICIENT_RELEVANCE
         elif analysis.recommendation == "NEEDS_ATTENTION":
             decision_val = MatchDecisionEnum.NEEDS_ATTENTION
-            
+
         return MatchDecision(
             decision=decision_val,
             reason=analysis.short_reason,
             skip_reason=skip_r,
-            matched_rules=matched_rules,
-            failed_rules=failed_rules,
-            warnings=warnings,
+            matched_rules=decision.matched_rules,
+            failed_rules=decision.failed_rules,
+            warnings=decision.warnings,
             match_score=analysis.match_score
         )
 

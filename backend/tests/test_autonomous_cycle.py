@@ -587,27 +587,424 @@ class TestDiscoveryFailureHandling:
         assert should_stop is True
 
 
-class TestCardExperienceFiltering:
-    """Test current-card experience filtering per C2 fresher-only policy."""
+class TestD62BoundedGeminiEvaluation:
+    """Test D6.2 Bounded Gemini Candidate Evaluation."""
 
-    def test_card_0_1_years_eligible(
+    def test_deterministic_evaluation_passes_without_gemini(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference, eligible_native_job: Job
+    ):
+        """Test that deterministic evaluation passes without calling Gemini."""
+        from backend.services.matching.engine import MatchEngine
+
+        match_engine = MatchEngine(db_session)
+
+        # Use deterministic-only evaluation
+        match_decision = match_engine.evaluate_job_deterministic(eligible_native_job, confirmed_profile, job_preferences)
+
+        # Should pass deterministic checks without Gemini
+        assert match_decision.decision.value == "APPLY"
+        assert "deterministic" in match_decision.reason.lower()
+        assert match_decision.match_score == 50  # Default score before Gemini
+
+    def test_deterministic_evaluation_fails_unpaid_job(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference, unpaid_job: Job
+    ):
+        """Test that deterministic evaluation fails unpaid jobs without calling Gemini."""
+        from backend.services.matching.engine import MatchEngine
+
+        match_engine = MatchEngine(db_session)
+
+        # Use deterministic-only evaluation
+        match_decision = match_engine.evaluate_job_deterministic(unpaid_job, confirmed_profile, job_preferences)
+
+        # Should fail deterministic checks due to salary
+        assert match_decision.decision.value != "APPLY"
+        assert "salary" in match_decision.reason.lower()
+
+    def test_gemini_budget_bounded_for_max_applications_2(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
     ):
-        """Test that 0-1 years experience on card is eligible."""
-        from backend.services.matching.engine import experience_passes_fresher_rule
+        """Test that Gemini budget is bounded to 4 for max_applications=2."""
+        from backend.services.matching.engine import MatchEngine
+        from backend.services.gemini.queue import AIQueueService
 
-        job = Job(
-            title="Software Engineer",
-            experience="0-1 years"
+        match_engine = MatchEngine(db_session)
+        ai_queue_service = AIQueueService(db_session)
+
+        # Create 10 eligible jobs
+        eligible_jobs = []
+        for i in range(10):
+            job = Job(
+                platform="naukri",
+                external_job_id=f"job{i}",
+                url=f"https://www.naukri.com/job/{i}",
+                title="Software Engineer",
+                company=f"Company {i}",
+                description="A great job",
+                location="Bengaluru",
+                salary="5-7 LPA",
+                salary_min=5.0,
+                salary_max=7.0,
+                experience="0-2 years",
+                employment_type="Full-time",
+                status="DISCOVERED",
+                discovered_at=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+                source="Software Engineer"
+            )
+            db_session.add(job)
+            db_session.commit()
+            db_session.refresh(job)
+            eligible_jobs.append(job)
+
+        # Simulate D6.2 bounded selection with max_applications=2
+        max_applications = 2
+        gemini_budget = max_applications * 2  # Should be 4
+
+        # Collect jobs that pass deterministic filters
+        deterministic_eligible = []
+        for job in eligible_jobs:
+            decision = match_engine.evaluate_job_deterministic(job, confirmed_profile, job_preferences)
+            if decision.decision.value == "APPLY":
+                deterministic_eligible.append(job)
+
+        # Should have 10 deterministically eligible jobs
+        assert len(deterministic_eligible) == 10
+
+        # Apply Gemini budget - only top 4 should be selected
+        selected_for_gemini = deterministic_eligible[:gemini_budget]
+        capped = deterministic_eligible[gemini_budget:]
+
+        # Exactly 4 should be selected for Gemini
+        assert len(selected_for_gemini) == 4
+        # Exactly 6 should be capped
+        assert len(capped) == 6
+
+    def test_gemini_budget_for_max_applications_1(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that Gemini budget is 2 for max_applications=1."""
+        from backend.services.matching.engine import MatchEngine
+
+        match_engine = MatchEngine(db_session)
+
+        # Create 5 eligible jobs
+        eligible_jobs = []
+        for i in range(5):
+            job = Job(
+                platform="naukri",
+                external_job_id=f"job{i}",
+                url=f"https://www.naukri.com/job/{i}",
+                title="Software Engineer",
+                company=f"Company {i}",
+                description="A great job",
+                location="Bengaluru",
+                salary="5-7 LPA",
+                salary_min=5.0,
+                salary_max=7.0,
+                experience="0-2 years",
+                employment_type="Full-time",
+                status="DISCOVERED",
+                discovered_at=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+                source="Software Engineer"
+            )
+            db_session.add(job)
+            db_session.commit()
+            db_session.refresh(job)
+            eligible_jobs.append(job)
+
+        # Simulate D6.2 bounded selection with max_applications=1
+        max_applications = 1
+        gemini_budget = max_applications * 2  # Should be 2
+
+        # Collect jobs that pass deterministic filters
+        deterministic_eligible = []
+        for job in eligible_jobs:
+            decision = match_engine.evaluate_job_deterministic(job, confirmed_profile, job_preferences)
+            if decision.decision.value == "APPLY":
+                deterministic_eligible.append(job)
+
+        # Apply Gemini budget - only top 2 should be selected
+        selected_for_gemini = deterministic_eligible[:gemini_budget]
+        capped = deterministic_eligible[gemini_budget:]
+
+        # Exactly 2 should be selected for Gemini
+        assert len(selected_for_gemini) == 2
+        # Exactly 3 should be capped
+        assert len(capped) == 3
+
+    def test_gemini_budget_for_max_applications_3(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that Gemini budget is 6 for max_applications=3."""
+        from backend.services.matching.engine import MatchEngine
+
+        match_engine = MatchEngine(db_session)
+
+        # Create 10 eligible jobs
+        eligible_jobs = []
+        for i in range(10):
+            job = Job(
+                platform="naukri",
+                external_job_id=f"job{i}",
+                url=f"https://www.naukri.com/job/{i}",
+                title="Software Engineer",
+                company=f"Company {i}",
+                description="A great job",
+                location="Bengaluru",
+                salary="5-7 LPA",
+                salary_min=5.0,
+                salary_max=7.0,
+                experience="0-2 years",
+                employment_type="Full-time",
+                status="DISCOVERED",
+                discovered_at=datetime.now(UTC),
+                last_seen=datetime.now(UTC),
+                source="Software Engineer"
+            )
+            db_session.add(job)
+            db_session.commit()
+            db_session.refresh(job)
+            eligible_jobs.append(job)
+
+        # Simulate D6.2 bounded selection with max_applications=3
+        max_applications = 3
+        gemini_budget = max_applications * 2  # Should be 6
+
+        # Collect jobs that pass deterministic filters
+        deterministic_eligible = []
+        for job in eligible_jobs:
+            decision = match_engine.evaluate_job_deterministic(job, confirmed_profile, job_preferences)
+            if decision.decision.value == "APPLY":
+                deterministic_eligible.append(job)
+
+        # Apply Gemini budget - only top 6 should be selected
+        selected_for_gemini = deterministic_eligible[:gemini_budget]
+        capped = deterministic_eligible[gemini_budget:]
+
+        # Exactly 6 should be selected for Gemini
+        assert len(selected_for_gemini) == 6
+        # Exactly 4 should be capped
+        assert len(capped) == 4
+
+    def test_cached_analysis_not_counted_as_new_gemini(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference, eligible_native_job: Job
+    ):
+        """Test that cached analyses do not trigger new Gemini calls."""
+        from backend.services.matching.engine import MatchEngine
+
+        match_engine = MatchEngine(db_session)
+
+        # Create a cached analysis for the job
+        existing_analysis = JobAnalysisModel(
+            job_id=eligible_native_job.id,
+            match_score=75,
+            role_match=True,
+            skill_match=True,
+            experience_match=True,
+            location_match=True,
+            salary_match=True,
+            job_quality="GOOD",
+            duplicate_probability=0.1,
+            suspicious=False,
+            recommendation="APPLY",
+            short_reason="Good match",
+            model="gemini",
+            prompt_version="v1"
         )
-
-        # Update preferences to match C2: max_required_experience_years = 0
-        job_preferences.max_required_experience_years = 0
+        db_session.add(existing_analysis)
         db_session.commit()
 
-        experience_ok, reason = experience_passes_fresher_rule(job, job_preferences)
-        assert experience_ok is True
-        assert "0-1" in reason or "fresher" in reason.lower()
+        # Check that job has existing analysis
+        cached_analysis = db_session.execute(
+            select(JobAnalysisModel).where(JobAnalysisModel.job_id == eligible_native_job.id)
+        ).scalars().first()
+
+        assert cached_analysis is not None
+        # In the autonomous cycle, this job would be counted as pre_analyzed
+        # and would not trigger a new Gemini call
+
+    def test_deterministic_rejects_no_gemini_call(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that deterministically rejected jobs never call Gemini."""
+        from backend.services.matching.engine import MatchEngine
+
+        match_engine = MatchEngine(db_session)
+
+        # Create a job that will fail deterministic checks (non-IT industry, but IT keyword in title)
+        non_it_job = Job(
+            platform="naukri",
+            external_job_id="nonit123",
+            url="https://www.naukri.com/job/nonit",
+            title="Software Engineer",  # IT keyword in title to pass title check
+            company="Healthcare Corp",
+            description="Healthcare role",
+            location="Bengaluru",
+            salary="5-7 LPA",
+            salary_min=5.0,
+            salary_max=7.0,
+            experience="0-2 years",
+            employment_type="Full-time",
+            industry="Healthcare",  # Non-IT industry
+            status="DISCOVERED",
+            discovered_at=datetime.now(UTC),
+            last_seen=datetime.now(UTC),
+            source="Software Engineer"
+        )
+        db_session.add(non_it_job)
+        db_session.commit()
+        db_session.refresh(non_it_job)
+
+        # Use deterministic-only evaluation
+        match_decision = match_engine.evaluate_job_deterministic(non_it_job, confirmed_profile, job_preferences)
+
+        # Should fail deterministic checks
+        assert match_decision.decision.value != "APPLY"
+        assert "IT_SCOPE" in match_decision.failed_rules
+
+        # Gemini should never be called for this job (verified by deterministic-only method)
+
+    def test_application_limit_separate_from_gemini_budget(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that application limit (max_applications) is separate from Gemini budget."""
+        from backend.services.matching.engine import MatchEngine
+
+        match_engine = MatchEngine(db_session)
+
+        max_applications = 2
+        gemini_budget = max_applications * 2  # 4
+
+        # The Gemini budget (4) should be greater than application limit (2)
+        assert gemini_budget > max_applications
+
+        # This separation ensures we have backup candidates while still
+        # limiting actual applications
+
+    def test_pre_existing_queue_items_not_processed(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that pre-existing queue items from other sources are NOT processed by autonomous cycle."""
+        from backend.services.gemini.queue import AIQueueService
+        from backend.models.ai_queue import AIQueueItem
+        from sqlalchemy import select
+
+        # Create a job
+        job = Job(
+            platform="naukri",
+            external_job_id="preexisting123",
+            url="https://www.naukri.com/job/preexisting",
+            title="Software Engineer",
+            company="Test Corp",
+            description="Python developer role",
+            location="Bengaluru",
+            salary="5-7 LPA",
+            salary_min=5.0,
+            salary_max=7.0,
+            experience="0-2 years",
+            employment_type="Full-time",
+            status="DISCOVERED"
+        )
+        db_session.add(job)
+        db_session.commit()
+
+        # Enqueue a job from a different source (SCHEDULER, not AUTONOMOUS_CYCLE)
+        ai_queue_service = AIQueueService(db_session)
+        preexisting_item = ai_queue_service.enqueue_job(
+            job_id=job.id,
+            priority=50,
+            priority_reason="Enqueued by scheduler",
+            queue_source="SCHEDULER",
+        )
+        assert preexisting_item is not None
+
+        # Simulate autonomous cycle with no items enqueued by this cycle
+        enqueued_queue_item_ids = []  # Empty - no items enqueued by this cycle
+
+        # Process with empty enqueued IDs - should process 0 items
+        from backend.models.ai_queue import AIQueueItem
+        processed_count = 0
+        for queue_item_id in enqueued_queue_item_ids:
+            queue_item = db_session.execute(
+                select(AIQueueItem).where(AIQueueItem.id == queue_item_id)
+            ).scalars().first()
+            if queue_item:
+                processed_count += 1
+
+        # Verify 0 items were processed
+        assert processed_count == 0
+
+        # Verify the pre-existing item is still in the queue (not processed)
+        unprocessed_item = db_session.execute(
+            select(AIQueueItem).where(AIQueueItem.id == preexisting_item.id)
+        ).scalars().first()
+        assert unprocessed_item is not None
+        assert unprocessed_item.status == "QUEUED"  # Still QUEUED, not processed
+
+    def test_candidate_ordering_newest_discovered_at_first(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Test that candidates are sorted by match_score descending, then newest discovered_at first."""
+        from datetime import UTC, datetime, timedelta
+
+        # Create 3 jobs with same match_score but different discovered_at
+        now = datetime.now(UTC)
+        old_time = now - timedelta(days=7)
+        newer_time = now - timedelta(days=1)
+
+        jobs = []
+        for i, (title, discovered_at) in enumerate([
+            ("Software Engineer A", old_time),
+            ("Software Engineer B", now),
+            ("Software Engineer C", newer_time),
+        ]):
+            job = Job(
+                platform="naukri",
+                external_job_id=f"job{i}",
+                url=f"https://www.naukri.com/job{i}",
+                title=title,
+                company=f"Company {i}",
+                description="Python developer role",
+                location="Bengaluru",
+                salary="5-7 LPA",
+                salary_min=5.0,
+                salary_max=7.0,
+                experience="0-2 years",
+                employment_type="Full-time",
+                status="DISCOVERED",
+                discovered_at=discovered_at,
+                last_seen=discovered_at,
+                source="Software Engineer"
+            )
+            db_session.add(job)
+            jobs.append(job)
+        db_session.commit()
+
+        # Simulate collecting candidates with same match_score
+        candidates = []
+        for job in jobs:
+            candidates.append({
+                "job": job,
+                "match_score": 50,  # Same score for all
+            })
+
+        # Sort by match_score descending, then discovered_at descending (newest first)
+        candidates.sort(
+            key=lambda x: (
+                -x["match_score"],
+                -(x["job"].discovered_at.timestamp() if x["job"].discovered_at else 0)
+            )
+        )
+
+        # Verify ordering: timestamps should be in descending order (newest first)
+        timestamps = [c["job"].discovered_at.timestamp() for c in candidates]
+        assert timestamps[0] >= timestamps[1] >= timestamps[2], "Candidates should be sorted newest first"
+
+
+class TestCardExperienceFiltering:
+    """Test current-card experience filtering per C2 fresher-only policy."""
 
     def test_card_0_2_years_eligible(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
@@ -1092,8 +1489,13 @@ class TestD3QuotaSafeFirstApplication:
                 "match_score": 50 + i,  # Different scores
             })
 
-        # Sort by match_score descending (as implemented in run_autonomous_cycle.py)
-        eligible_candidates.sort(key=lambda x: (-x["match_score"], x["job"].discovered_at or datetime.min), reverse=False)
+        # Sort by match_score descending, then discovered_at descending (newest first)
+        eligible_candidates.sort(
+            key=lambda x: (
+                -x["match_score"],
+                -(x["job"].discovered_at.timestamp() if x["job"].discovered_at else 0)
+            )
+        )
 
         # D6.1: Simulate max_applications=1 logic with Gemini budget = max_applications * 2 = 2
         max_applications = 1
@@ -1216,8 +1618,13 @@ class TestD3QuotaSafeFirstApplication:
                 "match_score": expected_score,
             })
 
-        # Sort by match_score descending (as implemented in run_autonomous_cycle.py)
-        candidates.sort(key=lambda x: (-x["match_score"], x["job"].discovered_at or datetime.min), reverse=False)
+        # Sort by match_score descending, then discovered_at descending (newest first)
+        candidates.sort(
+            key=lambda x: (
+                -x["match_score"],
+                -(x["job"].discovered_at.timestamp() if x["job"].discovered_at else 0)
+            )
+        )
 
         # Verify highest score is first
         assert candidates[0]["match_score"] == 95

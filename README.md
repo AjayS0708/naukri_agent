@@ -1,5 +1,40 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT D6.2: Bounded Gemini Candidate Evaluation
+
+**Status: D6.2 IMPLEMENTED, TESTED, AND VERIFIED**
+
+**APPLIED count: 1 (from D4/D5 - no new applications in D6.2)**
+
+D6.1 bounded the AI queue enqueue budget, but MatchEngine was still calling Gemini for every job that passed deterministic filters BEFORE the enqueue budget was applied. This caused uncontrolled Gemini usage during autonomous cycles.
+
+**D6.2 Fix:**
+- Added `evaluate_job_deterministic()` method to MatchEngine that runs only deterministic checks (no Gemini)
+- Autonomous cycle now: deterministic filters → bounded candidate selection → Gemini evaluation for only bounded candidates
+- Gemini budget formula: `max_applications * 2` (unchanged from D6.1)
+- Application limit: `max_applications` (unchanged)
+- Fixed queue isolation: `_process_ai_queue()` only processes items enqueued by this cycle
+- Fixed candidate sorting: newest discovered_at first (matches comment)
+- Deduplicated deterministic logic via shared `_run_deterministic_checks()` method
+
+**D6.2 Test Coverage:**
+- 92 tests passing in test_autonomous_cycle.py (includes 10 D6.2 tests)
+- 41 tests passing in test_matching_rules.py
+- 0 failures
+
+**Gemini Safety Verification:**
+- NEW Gemini evaluations during autonomous cycle are bounded BEFORE invocation
+- Pre-existing queue items from other sources are NOT processed by autonomous cycle
+- For max_applications=1: NEW Gemini evaluations <= 2
+- For max_applications=2: NEW Gemini evaluations <= 4
+- For max_applications=3: NEW Gemini evaluations <= 6
+- Deterministically rejected jobs never call Gemini
+- Cached analyses do not cause NEW Gemini calls
+
+**Note:** D7 live validation has NOT been performed. D6.2 is a source implementation checkpoint only.
+
+---
+
 ## CHECKPOINT D6.1: Bounded Gemini Look-Ahead for Multi-Application Runs
 
 **Status: D6.1 IMPLEMENTED AND TESTED**
