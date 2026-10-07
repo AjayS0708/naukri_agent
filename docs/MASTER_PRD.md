@@ -1,5 +1,64 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT D6.1: Bounded Gemini Look-Ahead for Multi-Application Runs
+
+**Status:** D6.1 IMPLEMENTED AND TESTED
+
+**D6.1 Summary:**
+
+D6 exposed a candidate-selection issue where `max_applications` was incorrectly used as both the Gemini candidate cap AND the actual application limit. This prevented the system from having backup candidates when initial candidates were rejected (EXTERNAL or NEEDS_ATTENTION).
+
+**D6.1 Fix:**
+- Separated Gemini candidate budget from actual application limit
+- New formula: `max_gemini_candidates = max_applications * 2`
+- This provides bounded look-ahead (backup candidates) while preventing uncontrolled Gemini usage
+- Actual application attempts remain capped at `max_applications`
+
+**D6.1 Implementation:**
+- Modified `run_autonomous_cycle.py` enqueue logic to use `max_applications * 2` as Gemini budget
+- Updated summary output to show both `max_applications` and `Gemini candidate budget`
+- Added 11 D6.1 regression tests to `test_autonomous_cycle.py`
+- All existing D4/D5 tests preserved and passing
+
+**D6.1 Live Validation (2026-10-07):**
+- Command: `python run_autonomous_cycle.py --max-applications 2`
+- Result: 103 jobs discovered, 69 hard filtered, 11 pre-analyzed, 0 newly queued
+- Cycle was safe: 0 Apply clicks, 0 new APPLIED
+- No external applications submitted
+- No questionnaires answered
+- Application 18 (from D4/D5) correctly excluded
+- Current-run isolation verified correct
+
+**D6.1 Test Coverage:**
+- 11 new D6.1 tests added
+- Total: 261 tests passing (83 autonomous_cycle + 41 matching_rules + 119 naukri_adapter + 18 application_safety_gate)
+- 0 failures
+
+**Key D6.1 Tests:**
+1. `test_d61_gemini_budget_max_applications_1` → Gemini budget=2
+2. `test_d61_gemini_budget_max_applications_2` → Gemini budget=4
+3. `test_d61_gemini_budget_max_applications_3` → Gemini budget=6
+4. `test_d61_gemini_never_exceeds_bounded_budget` → 10 eligible, max_applications=2 → only 4 enqueued
+5. `test_d61_actual_applications_never_exceed_max_applications` → application limit enforced separately
+6. `test_d61_external_candidate_does_not_consume_slot` → EXTERNAL doesn't consume application slot
+7. `test_d61_needs_attention_does_not_consume_slot` → NEEDS_ATTENTION doesn't consume application slot
+8. `test_d61_rejected_candidate_allows_backup_evaluation` → backup candidates evaluated when earlier rejected
+9. `test_d61_current_run_isolation_preserved` → current-run filtering still works
+10. `test_d61_stale_queued_job_cannot_leak` → stale queue items don't leak into current run
+
+**Current-Run Isolation Investigation:**
+- D6 report discrepancy (104 vs 81 jobs) explained: discovery reports 104 total (1 new + 103 duplicates), but only 81 unique job IDs in current_run_job_ids
+- Job 107 was legitimately in current_run_job_ids (last 20 IDs included it)
+- No isolation bug found - system correctly isolates current runs
+
+**Gemini Safety:**
+- Gemini budget remains explicitly bounded (max_applications * 2)
+- No uncontrolled AI processing
+- No fallback to AI-free application
+- Existing quota exhaustion behavior preserved
+
+---
+
 ## CHECKPOINT D5: First Verified Native Naukri Application
 
 **Status:** FIRST VERIFIED NATIVE NAUKRI APPLICATION: SUCCESS

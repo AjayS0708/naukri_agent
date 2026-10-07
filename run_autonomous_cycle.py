@@ -253,6 +253,8 @@ class AutonomousCycle:
 
             print("\nSUMMARY")
             print("=" * 60)
+            print(f"max_applications: {self.max_applications}")
+            print(f"Gemini candidate budget: {self.max_applications * 2}")
             print(f"Cards scanned: {enqueue_stats['discovered']}")
             print(f"Total jobs discovered: {enqueue_stats['discovered']}")
             print(f"Skipped on experience: {enqueue_stats['skipped_experience']}")
@@ -402,19 +404,26 @@ class AutonomousCycle:
                     job.id, job.company, job.title, "N/A", salary_pass, experience_pass, employment_pass, "N/A", match_decision.reason, "HARD_FILTERED"
                 )
 
-        # Deterministic selection: pick the single best candidate by match_score (descending), then by discovered_at (descending)
-        # For first-application mode with max_applications=1, only enqueue ONE job to avoid burning Gemini quota
+        # D6.1: Bounded Gemini look-ahead for multi-application runs
+        # Separate Gemini candidate budget from actual application limit
+        # max_gemini_candidates = max_applications * 2 provides backup candidates
+        # while keeping Gemini usage bounded and controlled
         if eligible_jobs:
             # Sort by match_score descending, then by discovered_at descending (most recent)
             eligible_jobs.sort(key=lambda x: (-x["match_score"], x["job"].discovered_at or datetime.min), reverse=False)
 
-            # Only enqueue the top candidate when max_applications=1
-            if self.max_applications == 1:
-                selected = eligible_jobs[0]
+            # D6.1: Bounded Gemini candidate budget (look-ahead)
+            # Enqueue up to max_applications * 2 candidates to provide backup options
+            # while preventing uncontrolled Gemini usage
+            gemini_budget = max(1, self.max_applications * 2)
+            selected_jobs = eligible_jobs[:gemini_budget]
+            capped_jobs = eligible_jobs[gemini_budget:]
+
+            for selected in selected_jobs:
                 queue_item = ai_queue_service.enqueue_job(
                     job_id=selected["job"].id,
                     priority=selected["match_score"],
-                    priority_reason="Selected as top candidate for first-application mode",
+                    priority_reason=f"Selected as top candidate (Gemini budget={gemini_budget}, max_applications={self.max_applications})",
                     queue_source="AUTONOMOUS_CYCLE",
                 )
 
@@ -426,31 +435,14 @@ class AutonomousCycle:
                         "PENDING", "PENDING", "QUEUED (SELECTED)"
                     )
 
-                # Mark other eligible jobs as capped for quota safety
-                for other in eligible_jobs[1:]:
-                    stats["capped"] += 1
-                    self.tracker.add_decision(
-                        other["job"].id, other["job"].company, other["job"].title, "N/A",
-                        other["salary_pass"], other["experience_pass"], other["employment_pass"],
-                        "N/A", "quota cap (not selected)", "CAPPED"
-                    )
-            else:
-                # Normal mode: enqueue all eligible jobs
-                for eligible in eligible_jobs:
-                    queue_item = ai_queue_service.enqueue_job(
-                        job_id=eligible["job"].id,
-                        priority=eligible["match_score"],
-                        priority_reason="Hard filters passed, ready for AI analysis",
-                        queue_source="AUTONOMOUS_CYCLE",
-                    )
-
-                    if queue_item:
-                        stats["queued"] += 1
-                        self.tracker.add_decision(
-                            eligible["job"].id, eligible["job"].company, eligible["job"].title, "N/A",
-                            eligible["salary_pass"], eligible["experience_pass"], eligible["employment_pass"],
-                            "PENDING", "PENDING", "QUEUED"
-                        )
+            # Mark remaining eligible jobs as capped for quota safety
+            for other in capped_jobs:
+                stats["capped"] += 1
+                self.tracker.add_decision(
+                    other["job"].id, other["job"].company, other["job"].title, "N/A",
+                    other["salary_pass"], other["experience_pass"], other["employment_pass"],
+                    "N/A", f"Gemini budget cap (budget={gemini_budget})", "CAPPED"
+                )
 
         return stats
 

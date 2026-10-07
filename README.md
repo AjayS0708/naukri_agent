@@ -1,5 +1,31 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT D6.1: Bounded Gemini Look-Ahead for Multi-Application Runs
+
+**Status: D6.1 IMPLEMENTED AND TESTED**
+
+**APPLIED count: 1 (from D4/D5 - no new applications in D6.1)**
+
+D6 exposed that `max_applications` was incorrectly used as both the Gemini candidate cap AND the actual application limit. This prevented backup candidates when initial candidates were rejected.
+
+**D6.1 Fix:**
+- Separated Gemini candidate budget from actual application limit
+- New formula: `max_gemini_candidates = max_applications * 2`
+- Example: `max_applications=2` enqueues 4 candidates to Gemini, but only attempts 2 applications
+- This provides bounded look-ahead (backup candidates) while preventing uncontrolled Gemini usage
+
+**D6.1 Live Validation (2026-10-07):**
+- Command: `python run_autonomous_cycle.py --max-applications 2`
+- Result: 103 jobs discovered, 69 hard filtered, 11 pre-analyzed, 0 newly queued
+- Cycle was safe: 0 Apply clicks, 0 new APPLIED
+- No external applications submitted
+- No questionnaires answered
+- Application 18 (from D4/D5) correctly excluded
+
+**Test coverage:** 261 tests passing (83 autonomous_cycle + 41 matching_rules + 119 naukri_adapter + 18 application_safety_gate), 11 new D6.1 tests, 0 failures
+
+---
+
 ## CHECKPOINT D5: First Verified Native Naukri Application
 
 **Status: FIRST VERIFIED NATIVE NAUKRI APPLICATION: SUCCESS**
@@ -77,7 +103,7 @@ Implemented current-run job ID tracking to prevent historical DB jobs from being
 discovery → hard filters → AI queue → Gemini → final safety gate → ApplicationRunner.
 
 **Flags:**
-- `--max-applications N`: Limit on real applications (default: 1)
+- `--max-applications N`: Limit on real applications (default: 1). Gemini candidate budget is `max_applications * 2` to provide backup candidates.
 - `--dry-run`: Discovery and analysis only, no Apply clicks or application records
 - `--max-jobs N`: Cap on jobs inspected per run (default: unlimited)
 

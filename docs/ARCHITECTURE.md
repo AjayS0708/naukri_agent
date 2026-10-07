@@ -1,5 +1,78 @@
 # Architecture
 
+## CHECKPOINT D6.1: Bounded Gemini Look-Ahead for Multi-Application Runs
+
+**Status:** COMPLETE — Separated Gemini candidate budget from application limit
+
+**D6.1 Architecture Change:**
+
+Previously, `max_applications` was used as both:
+1. Maximum Gemini candidates to enqueue
+2. Maximum actual application attempts
+
+This prevented backup candidates when initial candidates were rejected.
+
+**New Architecture:**
+
+```text
+max_applications = N (actual application attempts)
+max_gemini_candidates = max_applications * 2 (Gemini evaluation budget)
+
+Pipeline:
+discovered (104)
+  ↓
+hard filters (69 rejected)
+  ↓
+eligible candidates (varies)
+  ↓
+deterministic ranking by match_score
+  ↓
+enqueue top max_gemini_candidates (e.g., 4 when max_applications=2)
+  ↓
+Gemini analysis (bounded by max_gemini_candidates)
+  ↓
+application candidates (varies based on Gemini results)
+  ↓
+actual applications (capped at max_applications)
+```
+
+**Implementation in `run_autonomous_cycle.py`:**
+
+```python
+# Line 413: Bounded Gemini budget
+gemini_budget = max(1, self.max_applications * 2)
+selected_jobs = eligible_jobs[:gemini_budget]
+capped_jobs = eligible_jobs[gemini_budget:]
+```
+
+**Example Behavior with max_applications=2:**
+
+- 10 eligible jobs pass hard filters
+- Top 4 (max_gemini_candidates) enqueued to Gemini
+- Gemini results:
+  - Candidate 1 → EXTERNAL (no application attempt)
+  - Candidate 2 → NEEDS_ATTENTION (no application attempt)
+  - Candidate 3 → APPLY (application attempt 1)
+  - Candidate 4 → APPLY (application attempt 2)
+- Final: 2 applications attempted, max_applications respected
+
+**Safety Verification:**
+
+- Gemini budget remains explicitly bounded (max_applications * 2)
+- No uncontrolled AI processing
+- No fallback to AI-free application
+- Existing quota exhaustion behavior preserved
+- Current-run isolation unchanged
+- All existing safety rules held
+
+**Test Coverage:**
+
+- 11 new D6.1 regression tests in `TestD61BoundedGeminiLookAhead`
+- Updated 3 existing tests to reflect new budget logic
+- Total: 261 tests passing, 0 failures
+
+---
+
 ## CHECKPOINT D5: Post-Click Evidence — Reload-Based Confirmation
 
 **Status:** COMPLETE — First verified native application confirmed

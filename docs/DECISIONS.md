@@ -1,6 +1,9 @@
 # Architecture Decisions
 
 
+|| Bounded Gemini Look-Ahead (Checkpoint D6.1) | Previously, `max_applications` was used as both the Gemini candidate cap AND the actual application limit. This prevented backup candidates when initial candidates were rejected (EXTERNAL or NEEDS_ATTENTION). Separated these concerns: `max_gemini_candidates = max_applications * 2` provides bounded look-ahead (backup candidates) while preventing uncontrolled Gemini usage. Actual application attempts remain capped at `max_applications`. Example: `max_applications=2` enqueues 4 candidates to Gemini, but only attempts 2 applications. If the first 2 candidates are rejected, the system can evaluate candidates 3 and 4. This enables multi-application runs without uncontrolled AI processing. All existing safety rules, quota handling, and current-run isolation preserved. | 2026-10 |
+
+
 | Post-Click Reload Confirmation (Checkpoint D5) | Naukri instant-apply updates the job page server-side after submission. The Applied badge (`#already-applied`) only becomes visible after the page reloads — not within the initial 8-second in-page polling window. `start_application()` now performs one bounded reload (20s, `domcontentloaded`) after the in-page timeout and re-runs `detect_applied_state()`. A reload-confirmed Applied state is strong evidence because Naukri must have persisted the application server-side. This is NOT a retry of the Apply click. Reload failure returns `NEEDS_ATTENTION` safely. Single reload only — no loop. Confirmed live: Job 23 shows `#already-applied` span after reload. | 2026-10 |
 
 
