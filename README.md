@@ -1,5 +1,35 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E2: Dashboard Operational Visibility & Safe Control Foundation
+
+**Status: E2 COMPLETE — Dashboard provides accurate operational view**
+
+**APPLIED count: 3 (unchanged from D7 — no new applications in E2)**
+
+E2 builds on E1's real backend → frontend integration to make the dashboard an accurate operational view of the Naukri Agent. The dashboard now provides visibility into what the system last did, what happened during the latest discovery/autonomous run, application outcomes, jobs needing attention, and system health status.
+
+**New read-only API endpoint:**
+- `GET /api/dashboard/needs-attention` — applications requiring user review with job title/company
+
+**Frontend changes:**
+- Latest Run section: displays latest discovery run status, ID, jobs discovered, new jobs, completion date
+- Needs Attention section: dedicated section for applications requiring review with skip/failure reasons
+- Refresh button: manual refresh with loading state and visual feedback (spin animation)
+- System Health: improved presentation using existing health endpoint data
+- E1 sections preserved: Metrics, Profile panel, Activity feed with real data
+
+**Security:** No secrets, API keys, credentials, cookies, `confirmation_evidence`, or `resume_hash` in any new response. All new endpoints are GET-only. No execution controls added.
+
+**Test coverage:**
+- 30 backend tests (`test_dashboard.py`): 21 E1 + 9 E2 — all PASS
+- Key regressions (41 tests): PASS
+- Frontend TypeScript: PASS
+- Frontend production build: PASS (3.10s)
+
+**Files modified:** `backend/schemas/dashboard.py`, `backend/api/routes/dashboard.py`, `backend/tests/test_dashboard.py`, `frontend/src/types/api.ts`, `frontend/src/services/api.ts`, `frontend/src/app/App.tsx`
+
+---
+
 ## CHECKPOINT E1: Frontend/API Integration Foundation
 
 **Status: E1 COMPLETE — Dashboard connected to real backend data**

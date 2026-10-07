@@ -42,13 +42,14 @@ def _make_application(
     job: Job,
     status: str = "APPLIED",
     method: str | None = "NAUKRI_NATIVE",
+    needs_attention: bool | None = None,
 ) -> Application:
     app = Application(
         job_id=job.id,
         status=status,
         application_method=method,
         applied_at=datetime.now(UTC) if status == "APPLIED" else None,
-        needs_attention=status == "NEEDS_ATTENTION",
+        needs_attention=needs_attention if needs_attention is not None else status == "NEEDS_ATTENTION",
     )
     db.add(app)
     db.flush()
@@ -268,3 +269,101 @@ class TestDashboardReadOnly:
     def test_recent_applications_is_get_only(self, client: TestClient) -> None:
         assert client.post("/api/dashboard/recent-applications").status_code == 405
         assert client.put("/api/dashboard/recent-applications").status_code == 405
+
+    def test_needs_attention_is_get_only(self, client: TestClient) -> None:
+        """Needs-attention endpoint must not accept POST/PUT/DELETE."""
+        assert client.post("/api/dashboard/needs-attention").status_code == 405
+        assert client.put("/api/dashboard/needs-attention").status_code == 405
+        assert client.delete("/api/dashboard/needs-attention").status_code == 405
+
+
+# ── Needs Attention endpoint (Checkpoint E2) ───────────────────────────────────
+
+class TestNeedsAttentionEmpty:
+    def test_returns_200(self, client: TestClient) -> None:
+        response = client.get("/api/dashboard/needs-attention")
+        assert response.status_code == 200
+
+    def test_empty_list_when_no_applications(self, client: TestClient) -> None:
+        data = client.get("/api/dashboard/needs-attention").json()
+        assert data["applications"] == []
+        assert data["total"] == 0
+
+
+class TestNeedsAttentionWithData:
+    def test_returns_needs_attention_applications(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db, title="Python Developer", company="Test Corp")
+        _make_application(db, job, status="NEEDS_ATTENTION")
+        db.commit()
+
+        data = client.get("/api/dashboard/needs-attention").json()
+        assert data["total"] == 1
+        item = data["applications"][0]
+        assert item["job_title"] == "Python Developer"
+        assert item["company"] == "Test Corp"
+        assert item["status"] == "NEEDS_ATTENTION"
+        assert item["needs_attention"] is True
+
+    def test_filters_by_needs_attention_flag(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db)
+        _make_application(db, job, status="APPLIED", needs_attention=False)
+        _make_application(db, job, status="SKIPPED", needs_attention=True)
+        db.commit()
+
+        data = client.get("/api/dashboard/needs-attention").json()
+        assert data["total"] == 1
+        assert data["applications"][0]["status"] == "SKIPPED"
+
+    def test_limit_parameter_respected(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db)
+        for _ in range(5):
+            _make_application(db, job, status="NEEDS_ATTENTION")
+        db.commit()
+
+        data = client.get("/api/dashboard/needs-attention?limit=3").json()
+        assert len(data["applications"]) == 3
+
+    def test_limit_capped_at_50(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db)
+        for _ in range(60):
+            _make_application(db, job, status="NEEDS_ATTENTION")
+        db.commit()
+
+        data = client.get("/api/dashboard/needs-attention?limit=100").json()
+        assert len(data["applications"]) <= 50
+
+    def test_required_fields_present(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db)
+        app = _make_application(db, job, status="NEEDS_ATTENTION")
+        app.skip_reason = "Test reason"
+        db.commit()
+
+        data = client.get("/api/dashboard/needs-attention").json()
+        item = data["applications"][0]
+        for field in ("application_id", "job_id", "job_title", "company", "status",
+                      "skip_reason", "failure_reason", "needs_attention", "created_at"):
+            assert field in item, f"Missing field: {field}"
+
+    def test_no_secrets_exposed(self, client: TestClient, db: Session) -> None:
+        """Verify needs-attention endpoint does not expose secrets."""
+        job = _make_job(db)
+        _make_application(db, job, status="NEEDS_ATTENTION")
+        db.commit()
+
+        data = client.get("/api/dashboard/needs-attention").json()
+        FORBIDDEN_KEYS = {
+            "api_key", "gemini_api_key", "password", "secret", "token",
+            "cookie", "session", "credential", "auth", "database_url",
+            "resume_hash", "confirmation_evidence", "external_url",
+        }
+
+        def check_no_secrets(obj: object) -> None:
+            if isinstance(obj, dict):
+                for key in obj:
+                    assert key.lower() not in FORBIDDEN_KEYS, f"Forbidden key '{key}' found"
+                    check_no_secrets(obj[key])
+            elif isinstance(obj, list):
+                for item in obj:
+                    check_no_secrets(item)
+
+        check_no_secrets(data)

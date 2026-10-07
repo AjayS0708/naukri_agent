@@ -17,6 +17,8 @@ from backend.schemas.dashboard import (
     ApplicationCounts,
     DashboardSummary,
     DiscoverySummary,
+    NeedsAttentionItem,
+    NeedsAttentionResponse,
     ProfileSummary,
     RecentApplicationItem,
     RecentApplicationsResponse,
@@ -187,3 +189,48 @@ def get_recent_applications(
     ]
 
     return RecentApplicationsResponse(applications=items, total=len(items))
+
+
+@router.get("/needs-attention", response_model=NeedsAttentionResponse)
+def get_needs_attention(
+    limit: int = 10,
+    db: Session = Depends(get_db),
+) -> NeedsAttentionResponse:
+    """
+    Return applications that require user attention.
+
+    Filters for applications with needs_attention=True or status=NEEDS_ATTENTION.
+    Joins with Job to provide job title and company context.
+
+    Limit is capped at 50 to prevent large payloads.
+    This endpoint is read-only. It performs no mutations.
+    """
+    if limit > 50:
+        limit = 50
+    if limit < 1:
+        limit = 1
+
+    rows = db.execute(
+        select(Application, Job)
+        .join(Job, Application.job_id == Job.id)
+        .where((Application.needs_attention.is_(True)) | (Application.status == "NEEDS_ATTENTION"))
+        .order_by(Application.created_at.desc())
+        .limit(limit)
+    ).all()
+
+    items = [
+        NeedsAttentionItem(
+            application_id=app.id,
+            job_id=app.job_id,
+            job_title=job.title,
+            company=job.company,
+            status=app.status,
+            skip_reason=app.skip_reason,
+            failure_reason=app.failure_reason,
+            needs_attention=app.needs_attention,
+            created_at=app.created_at,
+        )
+        for app, job in rows
+    ]
+
+    return NeedsAttentionResponse(applications=items, total=len(items))

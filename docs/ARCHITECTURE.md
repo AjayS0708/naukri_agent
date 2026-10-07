@@ -1,5 +1,61 @@
 # Architecture
 
+## CHECKPOINT E2: Dashboard Operational Visibility & Safe Control Foundation
+
+**Status:** COMPLETE — Dashboard provides accurate operational view
+
+**E2 Architecture:**
+
+E2 extends the E1 read-only dashboard API layer to provide comprehensive operational visibility without introducing execution controls. The dashboard now shows what the system last did, what happened during the latest discovery/autonomous run, application outcomes, jobs needing attention, and system health status.
+
+**Extended read-only routes (`backend/api/routes/dashboard.py`):**
+
+```text
+GET /api/dashboard/summary
+    → DiscoverySummary (latest completed run stats + total run count)
+    → ApplicationCounts (all-time status counts: applied, needs_attention, skipped, external, failed)
+    → ProfileSummary (status, confirmed, original_filename — NO secrets, NO resume_hash, NO profile data)
+
+GET /api/dashboard/recent-applications?limit=N   (N capped at 50)
+    → RecentApplicationItem[] (Application JOIN Job — title, company, status, method, dates)
+    → NO confirmation_evidence, NO external_url, NO credentials
+
+GET /api/dashboard/needs-attention?limit=N      (N capped at 50) [E2 NEW]
+    → NeedsAttentionItem[] (Application JOIN Job — title, company, status, skip_reason, failure_reason)
+    → NO confirmation_evidence, NO external_url, NO credentials
+```
+
+**Schema layer (`backend/schemas/dashboard.py`):**
+
+All schemas use `model_config = ConfigDict(extra="forbid")` to prevent extra fields from leaking into responses. Fields were chosen by explicit positive enumeration — not by forwarding entire model rows.
+
+**Frontend data flow (`frontend/src/app/App.tsx`):**
+
+```text
+mount
+  ├── getHealth()           → agent state, service version (existing)
+  ├── getNotifications()    → notification feed (existing)
+  ├── getDashboardSummary() → metrics + profile status (E1)
+  ├── getRecentApplications() → activity feed (E1)
+  └── getNeedsAttention()   → needs-attention items (E2 NEW)
+
+Per-section state: loading | error | empty | data
+Backend offline → each section degrades independently (no crash)
+Retry button → re-fetches all dashboard data (E1)
+Refresh button → manual refresh with loading state (E2 NEW)
+```
+
+**Security boundaries maintained:**
+- No secrets, API keys, credentials, cookies, session data, or environment variable values in any new response
+- `confirmation_evidence` (internal applied-state field) excluded from recent-applications and needs-attention schemas
+- `resume_hash`, `Profile.data` fields excluded from profile summary schema
+- All dashboard endpoints are HTTP GET only — no mutations possible via these routes
+- No execution controls added: no "Run Agent", "Apply Now", "Retry Application" buttons
+
+**Test file:** `backend/tests/test_dashboard.py` (30 tests: 21 E1 + 9 E2)
+
+---
+
 ## CHECKPOINT E1: Frontend/API Integration Foundation
 
 **Status:** COMPLETE — Dashboard connected to real backend data

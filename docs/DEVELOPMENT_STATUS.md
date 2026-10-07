@@ -1,5 +1,84 @@
 # Development Status
 
+## CHECKPOINT E2: Dashboard Operational Visibility & Safe Control Foundation: COMPLETE
+
+**Status:** E2 IMPLEMENTED, TESTED, AND VERIFIED
+
+**E2 Objective:**
+
+Build on E1's real backend → frontend integration to make the dashboard an accurate operational view of the Naukri Agent. The dashboard should allow the user to understand what the system last did, what happened during the latest discovery/autonomous run, application outcomes, jobs needing attention, and whether the backend/AI system is healthy. However, E2 must NOT introduce unrestricted "Run Agent" or "Apply" controls — the frontend remains primarily read-only.
+
+**Implementation:**
+
+Backend — new read-only endpoint:
+- `GET /api/dashboard/needs-attention`: returns applications requiring user review, filtered by `needs_attention=True` or `status=NEEDS_ATTENTION`, joined with `jobs` table for job title and company context
+
+Schema design decisions:
+- `NeedsAttentionItem` and `NeedsAttentionResponse` use `extra="forbid"` (Pydantic strict mode)
+- `confirmation_evidence`, `external_url`, and all credential fields excluded from needs-attention schema
+- No API keys, credentials, cookies, session data, or environment variable values in any response
+
+Frontend — changes to existing components:
+- `App.tsx`: added `needsAttention` state with loading/error/empty handling, added `isRefreshing` state for refresh button
+- Latest Run section: displays latest discovery run status, ID, jobs discovered, new jobs, completion date from dashboard summary
+- Needs Attention section: dedicated section showing applications requiring review with skip/failure reasons
+- Refresh button: manual refresh in topbar with loading state and visual feedback (spin animation)
+- System Health: improved presentation using existing health endpoint data (backend status, agent state)
+- `frontend/src/types/api.ts`: 2 new typed interfaces for needs-attention
+- `frontend/src/services/api.ts`: 1 new typed API client function for needs-attention
+
+**E2 Test Coverage:**
+
+New: 9 tests in `backend/tests/test_dashboard.py` (E2 additions)
+- `TestNeedsAttentionEmpty` (2): 200 response, empty list
+- `TestNeedsAttentionWithData` (5): needs-attention filtering, needs_attention flag, limit parameter, limit cap, required fields
+- `TestDashboardReadOnly` (1): needs-attention endpoint read-only (405 on POST/PUT/DELETE)
+- `TestNeedsAttentionWithData::test_no_secrets_exposed`: recursive check for forbidden keys
+
+Existing E1 tests (21): all preserved and passing
+- `TestDashboardSummaryEmpty` (5)
+- `TestDashboardSummaryWithData` (3)
+- `TestRecentApplicationsEmpty` (2)
+- `TestRecentApplicationsWithData` (5)
+- `TestDashboardNoSecretsExposed` (4)
+- `TestDashboardReadOnly` (2, E1)
+
+Total dashboard tests: 30 PASS
+
+Regression (passing):
+- Key regression tests (41 tests across health, analytics, profile, database isolation): PASS
+- Frontend TypeScript compilation: PASS
+- Frontend production build: PASS (3.10s, 275.91 kB JS bundle)
+
+**Security Verification:**
+- All new endpoints: HTTP GET only
+- No mutation of database state in any new route
+- All schemas use `extra="forbid"` — no implicit field forwarding
+- `confirmation_evidence` deliberately absent from `NeedsAttentionItem`
+- `external_url` deliberately absent from `NeedsAttentionItem`
+- Profile data fields (name, education, skills, etc.) not exposed via dashboard
+- No environment variables, connection strings, or filesystem paths in responses
+- No execution controls added: no "Run Agent", "Apply Now", "Retry Application" buttons
+
+**Files Added:**
+- None (E2 extends existing files)
+
+**Files Modified:**
+- `backend/schemas/dashboard.py` (added NeedsAttentionItem, NeedsAttentionResponse)
+- `backend/api/routes/dashboard.py` (added /needs-attention endpoint)
+- `backend/tests/test_dashboard.py` (added 9 E2 tests)
+- `frontend/src/types/api.ts` (added NeedsAttentionItem, NeedsAttentionResponse)
+- `frontend/src/services/api.ts` (added getNeedsAttention function)
+- `frontend/src/app/App.tsx` (added Latest Run section, Needs Attention section, Refresh button)
+
+**D7 Status:** PASS — unaffected. No automation logic changed.
+
+**E1 Status:** COMPLETE — unaffected. E1 functionality preserved.
+
+**No live Naukri action performed in E2.**
+
+---
+
 ## CHECKPOINT E1: Frontend/API Integration Foundation: COMPLETE
 
 **Status:** E1 IMPLEMENTED, TESTED, AND VERIFIED

@@ -88,3 +88,32 @@ class RecentApplicationsResponse(BaseModel):
 
     applications: list[RecentApplicationItem]
     total: int
+
+
+class NeedsAttentionItem(BaseModel):
+    """
+    A single application that requires user attention.
+
+    Includes job title, company, and the reason for attention.
+    Does not expose: API keys, cookies, session tokens, credentials,
+    or internal browser data.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    application_id: int
+    job_id: int
+    job_title: str
+    company: str
+    status: str
+    skip_reason: Optional[str] = None
+    failure_reason: Optional[str] = None
+    needs_attention: bool = True
+    created_at: datetime
+
+
+class NeedsAttentionResponse(BaseModel):
+    """Response wrapper for needs-attention applications."""
+    model_config = ConfigDict(extra="forbid")
+
+    applications: list[NeedsAttentionItem]
+    total: int

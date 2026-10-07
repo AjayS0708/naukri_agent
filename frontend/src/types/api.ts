@@ -70,3 +70,22 @@ export interface RecentApplicationsResponse {
   applications: RecentApplicationItem[];
   total: number;
 }
+
+// ── Needs Attention types (Checkpoint E2) ─────────────────────────────────────
+
+export interface NeedsAttentionItem {
+  application_id: number;
+  job_id: number;
+  job_title: string;
+  company: string;
+  status: string;
+  skip_reason: string | null;
+  failure_reason: string | null;
+  needs_attention: boolean;
+  created_at: string;
+}
+
+export interface NeedsAttentionResponse {
+  applications: NeedsAttentionItem[];
+  total: number;
+}

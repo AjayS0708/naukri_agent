@@ -1,4 +1,4 @@
-import type { DashboardSummary, HealthResponse, NotificationHistoryResponse, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse } from "../types/api";
+import type { DashboardSummary, HealthResponse, NeedsAttentionResponse, NotificationHistoryResponse, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse } from "../types/api";
 
 const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -75,3 +75,7 @@ export const getNotifications = () => apiRequest<NotificationHistoryResponse>("/
 export const getDashboardSummary = () => apiRequest<DashboardSummary>("/dashboard/summary");
 export const getRecentApplications = (limit = 10) =>
   apiRequest<RecentApplicationsResponse>(`/dashboard/recent-applications?limit=${limit}`);
+
+// ── Needs Attention endpoint (Checkpoint E2) ───────────────────────────────
+export const getNeedsAttention = (limit = 10) =>
+  apiRequest<NeedsAttentionResponse>(`/dashboard/needs-attention?limit=${limit}`);

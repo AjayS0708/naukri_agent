@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal } from "lucide-react";
-import { getDashboardSummary, getHealth, getNotifications, getRecentApplications } from "../services/api";
-import type { DashboardSummary, HealthResponse, Notification, ProfileResponse, RecentApplicationItem } from "../types/api";
+import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal, RefreshCw } from "lucide-react";
+import { getDashboardSummary, getHealth, getNeedsAttention, getNotifications, getRecentApplications } from "../services/api";
+import type { DashboardSummary, HealthResponse, NeedsAttentionItem, Notification, ProfileResponse, RecentApplicationItem } from "../types/api";
 import { ProfileWorkspace } from "../components/ProfileWorkspace";
 import { AIStatus } from "../components/AIStatus";
 import { JobPreferences } from "../components/JobPreferences";
@@ -50,6 +50,10 @@ export function App() {
   const [recentApps, setRecentApps] = useState<RecentApplicationItem[]>([]);
   const [recentAppsLoading, setRecentAppsLoading] = useState(true);
   const [recentAppsError, setRecentAppsError] = useState(false);
+  const [needsAttention, setNeedsAttention] = useState<NeedsAttentionItem[]>([]);
+  const [needsAttentionLoading, setNeedsAttentionLoading] = useState(true);
+  const [needsAttentionError, setNeedsAttentionError] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
     getHealth().then(setHealth).catch(() => setFailed(true));
@@ -68,6 +72,13 @@ export function App() {
       .then((data) => { setRecentApps(data.applications); setRecentAppsError(false); })
       .catch(() => setRecentAppsError(true))
       .finally(() => setRecentAppsLoading(false));
+
+    // Needs attention items
+    setNeedsAttentionLoading(true);
+    getNeedsAttention(10)
+      .then((data) => { setNeedsAttention(data.applications); setNeedsAttentionError(false); })
+      .catch(() => setNeedsAttentionError(true))
+      .finally(() => setNeedsAttentionLoading(false));
   }, []);
 
   const connection = failed ? "local_offline" : health ? "connected" : "checking";
@@ -82,6 +93,7 @@ export function App() {
     setFailed(false);
     setDashboardError(false);
     setRecentAppsError(false);
+    setNeedsAttentionError(false);
 
     getHealth().then(setHealth).catch(() => setFailed(true));
 
@@ -96,6 +108,23 @@ export function App() {
       .then((data) => { setRecentApps(data.applications); setRecentAppsError(false); })
       .catch(() => setRecentAppsError(true))
       .finally(() => setRecentAppsLoading(false));
+
+    setNeedsAttentionLoading(true);
+    getNeedsAttention(10)
+      .then((data) => { setNeedsAttention(data.applications); setNeedsAttentionError(false); })
+      .catch(() => setNeedsAttentionError(true))
+      .finally(() => setNeedsAttentionLoading(false));
+  };
+
+  const handleRefresh = () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+
+    Promise.all([
+      getDashboardSummary().then((data) => { setDashboard(data); setDashboardError(false); }).catch(() => setDashboardError(true)),
+      getRecentApplications(10).then((data) => { setRecentApps(data.applications); setRecentAppsError(false); }).catch(() => setRecentAppsError(true)),
+      getNeedsAttention(10).then((data) => { setNeedsAttention(data.applications); setNeedsAttentionError(false); }).catch(() => setNeedsAttentionError(true)),
+    ]).finally(() => setIsRefreshing(false));
   };
 
   const handleNavClick = (page: typeof currentPage) => {
@@ -154,6 +183,15 @@ export function App() {
           <p className="page-description">{currentPage === "overview" ? "Monitor and control your job search automation" : currentPage === "profile" ? "Manage your resume and professional profile" : currentPage === "preferences" ? "Configure job search preferences and automation settings" : currentPage === "analytics" ? "View performance metrics and decision analytics" : "Track agent activity and events"}</p>
         </div>
         <div className="topbar-actions">
+          <button
+            className="icon-button"
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            aria-label="Refresh dashboard"
+            title="Refresh dashboard data"
+          >
+            <RefreshCw size={20} className={isRefreshing ? "animate-spin" : ""} />
+          </button>
           <BackendState status={connection as any} onRetry={handleRetry} />
           <button className="icon-button" aria-label="Notifications"><Bell size={20} /></button>
         </div>
@@ -219,6 +257,52 @@ export function App() {
                 <span>Resume</span>
                 <b>{profileFilename ?? "Not uploaded"}</b>
               </div>
+            </section>
+
+            {/* Latest autonomous run — real data from dashboard summary */}
+            <section className="status-panel">
+              <div>
+                <p className="eyebrow">LATEST RUN</p>
+                <strong>{dashboardLoading ? "…" : dashboardError ? "Unavailable" : dashboard!.discovery.status ?? "No runs yet"}</strong>
+                <p>
+                  {dashboardLoading ? "Loading…" : dashboardError ? "Run data unavailable" : dashboard!.discovery.run_id
+                    ? `Run #${dashboard!.discovery.run_id} — ${dashboard!.discovery.jobs_discovered} jobs discovered, ${dashboard!.discovery.new_jobs} new jobs`
+                    : "No discovery runs recorded yet."}
+                </p>
+              </div>
+              {dashboard && dashboard.discovery.completed_at && (
+                <div className="status-meta">
+                  <span>Completed</span>
+                  <b>{fmtDate(dashboard.discovery.completed_at)}</b>
+                </div>
+              )}
+            </section>
+
+            {/* Needs attention section */}
+            <section className="activity" aria-labelledby="needs-attention-heading">
+              <div>
+                <p className="eyebrow">NEEDS ATTENTION</p>
+                <h2 id="needs-attention-heading">Items requiring review</h2>
+              </div>
+              {needsAttentionLoading ? (
+                <p className="text-[var(--color-text-secondary)]">Loading needs-attention items…</p>
+              ) : needsAttentionError ? (
+                <p className="error-text">Needs-attention data unavailable. Please retry.</p>
+              ) : needsAttention.length === 0 ? (
+                <p>No items need attention at this time.</p>
+              ) : (
+                <ul>
+                  {needsAttention.map((item) => (
+                    <li key={item.application_id}>
+                      <strong>{item.job_title}</strong> at {item.company}
+                      {" — "}
+                      <span style={{ color: "var(--color-warning)" }}>{fmtStatus(item.status)}</span>
+                      {item.skip_reason && <span className="text-[var(--color-text-secondary)]"> · {item.skip_reason}</span>}
+                      {item.failure_reason && <span className="text-[var(--color-text-secondary)]"> · {item.failure_reason}</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </section>
 
             <section id="ai-status"><AIStatus /></section>

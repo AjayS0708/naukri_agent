@@ -1,5 +1,85 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E2: Dashboard Operational Visibility & Safe Control Foundation
+
+**Status:** E2 IMPLEMENTED, TESTED, AND VERIFIED
+
+**E2 Summary:**
+
+E2 builds on E1's real backend → frontend integration to make the dashboard an accurate operational view of the Naukri Agent. The dashboard now provides visibility into what the system last did, what happened during the latest discovery/autonomous run, application outcomes, jobs needing attention, and system health status.
+
+**E2 Scope:**
+- Read-only from the frontend's perspective. No automation triggered from the dashboard.
+- No new Naukri automation behavior. No changes to Apply logic, Gemini budgets, or matching rules.
+- No live Naukri application performed.
+- D7 PASS result preserved.
+- E1 COMPLETE result preserved.
+
+**New Backend Endpoints:**
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `GET /api/dashboard/summary` | GET | Discovery stats, application status counts, profile status (E1) |
+| `GET /api/dashboard/recent-applications` | GET | Recent applications enriched with job title + company (E1) |
+| `GET /api/dashboard/needs-attention` | GET | Applications requiring user review (E2) |
+
+**Data Exposed (read-only, no secrets):**
+- Latest completed discovery run: `run_id`, `status`, `started_at`, `completed_at`, `jobs_discovered`, `new_jobs`, `pages_processed`, `total_runs` (E1)
+- Application counts (all-time): `total`, `applied`, `needs_attention`, `skipped`, `external_application`, `failed` (E1)
+- Profile summary: `status`, `confirmed`, `original_filename` — no `resume_hash`, no profile data fields, no API keys (E1)
+- Recent applications: `job_title`, `company`, `status`, `application_method`, `applied_at`, `skip_reason`, `needs_attention`, `is_dry_run` — no `confirmation_evidence`, no credentials (E1)
+- Needs-attention items: `job_title`, `company`, `status`, `skip_reason`, `failure_reason`, `needs_attention` — no secrets, no browser data (E2)
+
+**Data NOT Exposed:**
+- `GEMINI_API_KEY` — never in any response
+- Naukri credentials — never in any response
+- Cookies, session tokens, browser data — never in any response
+- `resume_hash`, `Profile.data` fields — excluded from dashboard schemas
+- `confirmation_evidence` — internal applied-state evidence, excluded from recent-applications and needs-attention
+- Database connection strings, environment variables, filesystem paths — never in any response
+
+**Frontend Changes:**
+- E1 metrics section: `Applied`, `Jobs discovered`, `Discovery runs`, `Needs attention` — all real values (E1)
+- E1 profile panel: real `status` and `confirmed` from dashboard summary (E1)
+- E1 activity feed (overview) and Activity page: real application records with job title/company (E1)
+- E2 Latest Run section: shows latest discovery run status, ID, jobs discovered, new jobs, completion date (E2)
+- E2 Needs Attention section: dedicated section for applications requiring user review with skip/failure reasons (E2)
+- E2 Refresh button: manual refresh with loading state and visual feedback (E2)
+- E2 improved System Health presentation: backend status, agent state from health endpoint (E2)
+- Per-section loading/error/empty states — backend offline does not crash the dashboard (E1)
+- Retry button re-fetches all dashboard data (E1)
+
+**Test Coverage:**
+- 30 tests in `backend/tests/test_dashboard.py` (21 E1 + 9 E2)
+- E1 tests: empty DB, counts, job enrichment, limit capping, required fields, no-secrets check, read-only (405 on POST/PUT/DELETE)
+- E2 tests: needs-attention filtering, limit capping, required fields, no-secrets check, read-only (405 on POST/PUT/DELETE)
+- All 30 tests: PASS
+- Key regression tests (41 tests across health, analytics, profile, database isolation): PASS
+- Frontend TypeScript compilation: PASS
+- Frontend production build: PASS (3.10s, 275.91 kB JS bundle)
+- No Gemini calls during tests. No live Naukri applications.
+
+**Security Review:**
+- `DashboardSummary`, `RecentApplicationItem`, `NeedsAttentionItem` schemas use `extra="forbid"` — Pydantic strict mode prevents extra fields leaking
+- `RecentApplicationItem` explicitly excludes `confirmation_evidence`, `external_url`, and all credential fields
+- `NeedsAttentionItem` explicitly excludes `confirmation_evidence`, `external_url`, and all credential fields
+- `ProfileSummary` explicitly excludes `resume_hash` and all `Profile.data` personal fields
+- All dashboard endpoints are HTTP GET only — no mutations possible via these routes
+- No environment variable values are read or serialised into responses
+
+**Files Added:**
+- `backend/api/routes/dashboard.py` — dashboard route implementations (E1, extended in E2)
+- `backend/schemas/dashboard.py` — Pydantic schemas for dashboard responses (E1, extended in E2)
+- `backend/tests/test_dashboard.py` — 30 endpoint tests (21 E1 + 9 E2)
+
+**Files Modified:**
+- `backend/main.py` — registered dashboard router (E1)
+- `frontend/src/types/api.ts` — added dashboard types (E1), added needs-attention types (E2)
+- `frontend/src/services/api.ts` — added dashboard client functions (E1), added needs-attention client function (E2)
+- `frontend/src/app/App.tsx` — wired dashboard data into metrics, profile panel, activity feed (E1), added Latest Run section, Needs Attention section, Refresh button (E2)
+
+---
+
 ## CHECKPOINT E1: Frontend/API Integration Foundation
 
 **Status:** E1 IMPLEMENTED, TESTED, AND VERIFIED
