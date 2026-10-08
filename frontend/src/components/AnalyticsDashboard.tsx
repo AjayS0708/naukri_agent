@@ -31,12 +31,36 @@ interface DecisionBreakdown {
   };
 }
 
+// Map internal priority names to human-readable outcome labels
+const OUTCOME_LABELS: Record<string, string> = {
+  HIGH_PRIORITY: "High Priority",
+  NORMAL_PRIORITY: "Applied",
+  LOW_PRIORITY: "External",
+  SKIP: "Skipped",
+  HARD_REJECT: "Hard Reject",
+  NEEDS_ATTENTION: "Needs Attention",
+};
+
 interface SkipReason {
   reason: string;
   count: number;
 }
 
-export function AnalyticsDashboard() {
+// Map outcome priority names to application status filters
+const OUTCOME_TO_STATUS_FILTER: Record<string, string | null> = {
+  HIGH_PRIORITY: "APPLIED",
+  NORMAL_PRIORITY: "APPLIED",
+  LOW_PRIORITY: "EXTERNAL_APPLICATION",
+  SKIP: "SKIPPED",
+  HARD_REJECT: null,
+  NEEDS_ATTENTION: "NEEDS_ATTENTION",
+};
+
+interface AnalyticsDashboardProps {
+  onOutcomeClick?: (filter: string | null) => void;
+}
+
+export function AnalyticsDashboard({ onOutcomeClick }: AnalyticsDashboardProps) {
   const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
   const [decisionBreakdown, setDecisionBreakdown] = useState<DecisionBreakdown | null>(null);
   const [skipReasons, setSkipReasons] = useState<SkipReason[]>([]);
@@ -103,7 +127,7 @@ export function AnalyticsDashboard() {
   return (
     <section className="analytics-section">
       <header>
-        <p className="eyebrow">DECISION ANALYTICS</p>
+        <p className="eyebrow">ANALYTICS</p>
         <h2>Agent Performance Overview</h2>
         <p className="period-text">Last {analytics.period_days} days</p>
       </header>
@@ -161,22 +185,37 @@ export function AnalyticsDashboard() {
         </div>
       </div>
 
-      {/* Decision Breakdown */}
+      {/* Application Outcome Distribution */}
       {decisionBreakdown && (
         <div className="decision-breakdown">
-          <h3>Decision Priority Distribution</h3>
+          <h3>Application Outcome Distribution</h3>
           <div className="breakdown-bars">
             {Object.entries(decisionBreakdown.breakdown).map(([priority, count]) => {
               const percentage = decisionBreakdown.percentages[priority] || 0;
               const countDisplay = count || 0;
+              const label = OUTCOME_LABELS[priority] || priority.replace('_', ' ');
+              const statusFilter = OUTCOME_TO_STATUS_FILTER[priority];
+              const isClickable = onOutcomeClick && statusFilter && countDisplay > 0;
+
               return (
-                <div key={priority} className="breakdown-item">
+                <div
+                  key={priority}
+                  className={`breakdown-item ${isClickable ? 'clickable' : ''}`}
+                  onClick={() => isClickable && onOutcomeClick(statusFilter)}
+                  role={isClickable ? "button" : undefined}
+                  tabIndex={isClickable ? 0 : undefined}
+                  onKeyDown={(e) => {
+                    if (isClickable && (e.key === "Enter" || e.key === " ")) {
+                      onOutcomeClick(statusFilter);
+                    }
+                  }}
+                >
                   <div className="breakdown-label">
-                    <span className="priority-badge">{priority.replace('_', ' ')}</span>
+                    <span className="priority-badge">{label}</span>
                     <span className="count-badge">{countDisplay}</span>
                   </div>
                   <div className="breakdown-bar">
-                    <div 
+                    <div
                       className="breakdown-fill"
                       style={{ width: `${percentage}%` }}
                     />
