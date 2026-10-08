@@ -59,7 +59,8 @@ mount
   ├── getAutonomousCycleStatus() → initial status
   ├── User clicks "Run Autonomous Cycle"
   │   → Confirmation modal (explains safety rules, max_applications)
-  │   → User confirms → POST /api/autonomous-cycle/run
+  │   → Modal includes selectable Maximum applications control (1-10, default 1)
+  │   → User confirms → POST /api/autonomous-cycle/run { max_applications }
   │   → Status changes to RUNNING
   │   → Poll GET /api/autonomous-cycle/status every 4 seconds
   │   → On COMPLETED/FAILED: refresh dashboard data
@@ -68,7 +69,7 @@ mount
 
 **Safety boundaries preserved:**
 
-- Server-authoritative `max_applications` (client cannot override)
+- Server-authoritative `max_applications` (client cannot control Gemini budget)
 - Gemini budget internally derived as `max_applications * 2` (not exposed to client)
 - All existing safety rules enforced: D6.1, D6.2, C2, D4/D5, D7
 - Frontend only calls control/status APIs — no direct Naukri or Gemini access

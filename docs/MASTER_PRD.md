@@ -14,7 +14,8 @@ E3 enables safe manual triggering of the autonomous job application cycle from t
 
 **E3 Scope:**
 - Safe manual autonomous-cycle trigger from dashboard with user confirmation
-- POST `/api/autonomous-cycle/run` with `max_applications` parameter (default 2, capped at 10)
+- POST `/api/autonomous-cycle/run` with `max_applications` parameter (1-10, default 1)
+- Dashboard confirmation modal includes a selectable Maximum applications control (1-10), defaulting to 1
 - GET `/api/autonomous-cycle/status` for real-time cycle status
 - Process-level concurrency lock (threading.Lock) to prevent concurrent cycles
 - Dashboard status polling at 4-second intervals while cycle is RUNNING
@@ -35,7 +36,7 @@ E3 enables safe manual triggering of the autonomous job application cycle from t
 
 **Request/Response Schemas:**
 
-- `AutonomousCycleStartRequest`: `max_applications` (1-10, default 2)
+- `AutonomousCycleStartRequest`: `max_applications` (1-10, default 1)
 - `AutonomousCycleStartResponse`: `run_id`, `status`, `max_applications`, `message`
 - `AutonomousCycleStatusResponse`: `status` (IDLE/RUNNING/COMPLETED/FAILED), `run_id`, `started_at`, `completed_at`, `max_applications`, `stats`
 
@@ -51,6 +52,7 @@ E3 enables safe manual triggering of the autonomous job application cycle from t
 - Autonomous Cycle status panel: shows IDLE/RUNNING/COMPLETED/FAILED state
 - Run Autonomous Cycle button with explicit confirmation modal
 - Confirmation modal explains: real Naukri applications, max_applications limit, safety rules, concurrency protection
+- Confirmation modal includes a selectable Maximum applications dropdown (1-10) with default 1; the value is sent as `max_applications` to `POST /api/autonomous-cycle/run`
 - Status polling at 4-second intervals while RUNNING
 - Dashboard data refresh (summary, recent apps, needs attention) after COMPLETED/FAILED
 - Completion stats display: applied, needs_attention, external applications

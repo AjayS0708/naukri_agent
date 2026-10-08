@@ -1,5 +1,45 @@
 # Development Status
 
+## CHECKPOINT E4-UI: Dashboard max_applications Control: COMPLETE
+
+**Status:** E4-UI IMPLEMENTED, TYPECHECKED, AND BUILT
+
+**E4-UI Objective:**
+
+The E4 live validation requires triggering exactly one autonomous cycle through the Dashboard UI with `max_applications = 1`. The existing E3 dashboard hardcoded `max_applications = 2` in `frontend/src/app/App.tsx:65` (`useState(2)`) and exposed no user control, so the UI could not satisfy the E4 acceptance criteria without a source change. E4-UI adds a selectable Maximum applications control to the confirmation modal, keeps the safe default at 1, and does not change any autonomous-cycle backend semantics.
+
+**Implementation:**
+
+Frontend (`frontend/src/app/App.tsx`):
+- Added `MAX_APPLICATION_OPTIONS = Array.from({ length: 10 }, (_, i) => i + 1)` (1-10, matching the server schema).
+- Changed `maxApplications` initial state from `2` to `1`.
+- Added `handleMaxApplicationsChange(value)` that rejects values outside the allowed set.
+- Added a `select` control inside the Run Confirmation Modal bound to `maxApplications`, with `aria-label="Maximum applications per cycle"`, disabled while starting.
+- Added a live confirmation line stating how many real Naukri applications will be attempted.
+- The control feeds `handleStartCycle`, which already sends `{ max_applications: maxApplications }` to `POST /api/autonomous-cycle/run`.
+
+Backend: NO CHANGES. `POST /api/autonomous-cycle/run` and `GET /api/autonomous-cycle/status` are untouched; server validation (1-10) and Gemini budget derivation (`max_applications * 2`) remain authoritative.
+
+**Verification:**
+- `npm run build` (`tsc -b && vite build`): PASS — 1588 modules transformed, 289.06 kB JS bundle, 13.43s.
+- Built bundle verified to contain the `Maximum applications` select, the `aria-label`, and no `useState(2)` literal.
+- Pre-flight `GET /api/health` and `GET /api/autonomous-cycle/status` confirmed the fresh non-reload backend returns the E4-R schema (`active_state`, `lock_held`, `active_run`, `last_run`) with `active_state=IDLE`, `lock_held=false`, `active_run=null`.
+
+**Test Coverage:**
+- Frontend: NO test infrastructure exists in this project. `frontend/package.json` declares no test runner/test libraries, and no `*.test.*`/`*.spec.*` files exist under `frontend/`. Coverage for this change is the TypeScript typecheck and the production build above.
+- Backend: unchanged; all existing tests remain passing.
+
+**Files Modified:**
+- `frontend/src/app/App.tsx` (state default, options constant, change handler, modal select control)
+
+**Safety Preserved:**
+- Backend semantics unchanged; client still cannot control the Gemini budget.
+- Explicit user confirmation modal still required before execution.
+- `max_applications` still validated server-side (1-10).
+- No live Naukri execution performed in this checkpoint.
+
+---
+
 ## CHECKPOINT E4-R: Autonomous Cycle Recovery & Execution-Safety Hardening: COMPLETE
 
 **E4 status: FAILED — preserved.** Two accidental curl-triggered autonomous-cycle attempts on 2026-10-08 failed before browser-session startup (including Discovery Run #34). They created no applications, made zero Apply clicks, triggered no CAPTCHA/security event, and made no external submissions. E4-R deliberately performed no live cycle; future E4 revalidation is pending.

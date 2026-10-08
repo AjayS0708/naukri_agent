@@ -1,5 +1,30 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E4-UI: Dashboard max_applications Control
+
+**Status: E4-UI COMPLETE — Dashboard can select max_applications=1**
+
+**APPLIED count: 3 (unchanged — no new applications in E4-UI)**
+
+The E3 dashboard hardcoded `max_applications = 2` and exposed no user control, so it could not satisfy the E4 live-validation requirement of `max_applications = 1`. E4-UI adds a selectable Maximum applications dropdown (1-10, default 1) to the Run Autonomous Cycle confirmation modal in `frontend/src/app/App.tsx`.
+
+**Frontend changes:**
+- `maxApplications` initial state changed from `2` to `1`
+- `MAX_APPLICATION_OPTIONS` constant (1-10) matching the server schema
+- `handleMaxApplicationsChange()` rejects out-of-range values
+- Modal `select` control bound to `max_applications`, disabled while starting, with `aria-label`
+- Live confirmation line stating how many real Naukri applications will be attempted
+
+**Backend: NO CHANGES.** `POST /api/autonomous-cycle/run` and `GET /api/autonomous-cycle/status` are untouched; server validation (1-10) and the `max_applications * 2` Gemini budget remain authoritative.
+
+**Verification:** `npm run build` PASS (1588 modules, 289.06 kB JS bundle). Built bundle verified to contain the select control and no `useState(2)` literal.
+
+**Files modified:** `frontend/src/app/App.tsx`
+
+**No live Naukri action performed in E4-UI.**
+
+---
+
 ## CHECKPOINT E4-R: Autonomous Cycle Recovery & Execution-Safety Hardening
 
 **Status: COMPLETE (source/test hardening only); E4 remains FAILED.** On 2026-10-08, two accidental curl-triggered E4 attempts failed before a browser session started. No jobs were discovered, no Apply click or CAPTCHA/security event occurred, and no application was submitted. E4-R does not run a live cycle; a future E4 revalidation remains pending.
