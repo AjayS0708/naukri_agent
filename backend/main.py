@@ -21,6 +21,7 @@ from backend.api.routes.analytics import router as analytics_router
 from backend.api.routes.worker import router as worker_router
 from backend.api.routes.notifications import router as notifications_router
 from backend.api.routes.dashboard import router as dashboard_router
+from backend.api.routes.autonomous_cycle import router as autonomous_cycle_router
 from backend.core.config import Settings, get_settings
 from backend.core.exceptions import ApplicationError
 from backend.core.logging import configure_logging, configure_production_logging, get_logger
@@ -163,3 +164,4 @@ app.include_router(analytics_router)
 app.include_router(worker_router, prefix="/api")
 app.include_router(notifications_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
+app.include_router(autonomous_cycle_router, prefix="/api")
