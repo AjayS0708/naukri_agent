@@ -136,20 +136,21 @@ class AnalyticsService:
         ]
     
     def get_decision_breakdown(self, days: int = 30) -> dict:
-        """Get decision priority breakdown."""
+        """Get decision priority breakdown based on Application status."""
         cutoff_date = datetime.now(UTC) - timedelta(days=days)
         
         stmt = select(
-            DecisionQualityRecord.priority,
-            func.count(DecisionQualityRecord.id).label('count')
+            Application.status,
+            func.count(Application.id).label('count')
         ).where(
-            DecisionQualityRecord.created_at >= cutoff_date
+            Application.created_at >= cutoff_date
         ).group_by(
-            DecisionQualityRecord.priority
+            Application.status
         )
         
         results = self.session.execute(stmt).all()
         
+        # Map Application statuses to decision priority categories
         breakdown = {
             "HIGH_PRIORITY": 0,
             "NORMAL_PRIORITY": 0,
@@ -160,7 +161,30 @@ class AnalyticsService:
         }
         
         for row in results:
-            breakdown[row.priority] = row.count
+            status = row.status
+            count = row.count
+            
+            # Map Application statuses to decision priorities
+            if status in ["APPLIED", "SUBMITTED"]:
+                # Applied jobs are considered HIGH or NORMAL priority
+                # Since we don't have the granular priority data, count them as NORMAL_PRIORITY
+                breakdown["NORMAL_PRIORITY"] += count
+            elif status == "SKIPPED":
+                breakdown["SKIP"] += count
+            elif status == "NEEDS_ATTENTION":
+                breakdown["NEEDS_ATTENTION"] += count
+            elif status == "EXTERNAL_APPLICATION":
+                # External applications are considered valid but lower priority
+                breakdown["LOW_PRIORITY"] += count
+            elif status in ["FAILED", "APPLICATION_STARTED"]:
+                # Failed applications are not counted in priority breakdown
+                # They represent execution failures, not decision priorities
+                pass
+            # DISCOVERED, AI_ANALYZED, APPROVED_BY_RULES, PRE_APPLY, FILTERED
+            # are intermediate states that don't represent final decisions
+            elif status in ["DISCOVERED", "AI_ANALYZED", "APPROVED_BY_RULES", "PRE_APPLY", "FILTERED"]:
+                # These are intermediate states - not final decisions
+                pass
         
         total = sum(breakdown.values())
         

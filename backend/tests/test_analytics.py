@@ -137,7 +137,19 @@ def sample_data(db_session: Session):
     )
     db_session.add(discovery_run)
     
-    # Create decision quality records
+    # Create additional applications with different statuses for decision breakdown testing
+    # Add EXTERNAL_APPLICATION applications
+    for i in range(3):
+        external_app = Application(
+            job_id=jobs[i].id,
+            status="EXTERNAL_APPLICATION",
+            application_method="EXTERNAL",
+            started_at=datetime.now(UTC) - timedelta(days=i),
+            applied_at=datetime.now(UTC) - timedelta(days=i)
+        )
+        db_session.add(external_app)
+    
+    # Create decision quality records for tests that need them
     for i, job in enumerate(jobs):
         priority = "HIGH_PRIORITY" if i < 2 else ("NORMAL_PRIORITY" if i < 4 else "LOW_PRIORITY")
         decision_record = DecisionQualityRecord(
@@ -246,7 +258,7 @@ class TestAnalyticsService:
         db_session: Session,
         sample_data
     ):
-        """Test getting decision breakdown."""
+        """Test getting decision breakdown based on Application status."""
         service = AnalyticsService(db_session)
         
         breakdown = service.get_decision_breakdown(days=30)
@@ -254,10 +266,23 @@ class TestAnalyticsService:
         assert "breakdown" in breakdown
         assert "total" in breakdown
         assert "percentages" in breakdown
+        # Should have at least the applications we created
         assert breakdown["total"] >= 5
         assert "HIGH_PRIORITY" in breakdown["breakdown"]
         assert "NORMAL_PRIORITY" in breakdown["breakdown"]
         assert "LOW_PRIORITY" in breakdown["breakdown"]
+        assert "SKIP" in breakdown["breakdown"]
+        assert "HARD_REJECT" in breakdown["breakdown"]
+        assert "NEEDS_ATTENTION" in breakdown["breakdown"]
+        
+        # Verify mapping: APPLIED/SUBMITTED -> NORMAL_PRIORITY
+        # SKIPPED -> SKIP
+        # NEEDS_ATTENTION -> NEEDS_ATTENTION
+        # EXTERNAL_APPLICATION -> LOW_PRIORITY
+        assert breakdown["breakdown"]["NORMAL_PRIORITY"] >= 2  # APPLIED applications
+        assert breakdown["breakdown"]["SKIP"] >= 2  # SKIPPED applications
+        assert breakdown["breakdown"]["NEEDS_ATTENTION"] >= 1  # NEEDS_ATTENTION application
+        assert breakdown["breakdown"]["LOW_PRIORITY"] >= 3  # EXTERNAL_APPLICATION applications
         
         # Verify percentages sum to approximately 100
         total_percentage = sum(breakdown["percentages"].values())
