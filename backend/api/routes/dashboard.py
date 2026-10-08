@@ -15,8 +15,12 @@ from backend.models.job import Job
 from backend.models.profile import Profile, Resume
 from backend.schemas.dashboard import (
     ApplicationCounts,
+    ApplicationListItem,
+    ApplicationsListResponse,
     DashboardSummary,
     DiscoverySummary,
+    JobListItem,
+    JobsListResponse,
     NeedsAttentionItem,
     NeedsAttentionResponse,
     ProfileSummary,
@@ -234,3 +238,111 @@ def get_needs_attention(
     ]
 
     return NeedsAttentionResponse(applications=items, total=len(items))
+
+
+@router.get("/applications", response_model=ApplicationsListResponse)
+def get_applications_list(
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+) -> ApplicationsListResponse:
+    """
+    Return a paginated list of applications with optional status filter.
+
+    Joins with Job to provide job title and company context.
+    Supports filtering by status (e.g., APPLIED, SKIPPED, NEEDS_ATTENTION, EXTERNAL_APPLICATION).
+    To view skipped jobs, use status=SKIPPED.
+
+    Limit is capped at 100 to prevent large payloads.
+    This endpoint is read-only. It performs no mutations.
+    """
+    if limit > 100:
+        limit = 100
+    if limit < 1:
+        limit = 1
+    if offset < 0:
+        offset = 0
+
+    query = select(Application, Job).join(Job, Application.job_id == Job.id)
+
+    if status:
+        query = query.where(Application.status == status)
+
+    query = query.order_by(Application.created_at.desc()).limit(limit).offset(offset)
+
+    rows = db.execute(query).all()
+
+    items = [
+        ApplicationListItem(
+            application_id=app.id,
+            job_id=app.job_id,
+            job_title=job.title,
+            company=job.company,
+            status=app.status,
+            application_method=app.application_method,
+            applied_at=app.applied_at,
+            skip_reason=app.skip_reason,
+            failure_reason=app.failure_reason,
+            needs_attention=app.needs_attention,
+            is_dry_run=app.is_dry_run,
+            created_at=app.created_at,
+        )
+        for app, job in rows
+    ]
+
+    # Get total count for pagination
+    count_query = select(func.count(Application.id))
+    if status:
+        count_query = count_query.where(Application.status == status)
+    total = db.execute(count_query).scalar() or 0
+
+    return ApplicationsListResponse(applications=items, total=total, status_filter=status)
+
+
+@router.get("/jobs", response_model=JobsListResponse)
+def get_jobs_list(
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+) -> JobsListResponse:
+    """
+    Return a paginated list of discovered jobs.
+
+    Includes key job information for read-only display.
+    Limit is capped at 100 to prevent large payloads.
+    This endpoint is read-only. It performs no mutations.
+    """
+    if limit > 100:
+        limit = 100
+    if limit < 1:
+        limit = 1
+    if offset < 0:
+        offset = 0
+
+    rows = db.execute(
+        select(Job)
+        .order_by(Job.discovered_at.desc())
+        .limit(limit)
+        .offset(offset)
+    ).scalars().all()
+
+    items = [
+        JobListItem(
+            job_id=job.id,
+            title=job.title,
+            company=job.company,
+            location=job.location,
+            experience=job.experience,
+            platform=job.platform,
+            source=job.source,
+            discovered_at=job.discovered_at,
+            status=job.status,
+        )
+        for job in rows
+    ]
+
+    # Get total count for pagination
+    total = db.execute(select(func.count(Job.id))).scalar() or 0
+
+    return JobsListResponse(jobs=items, total=total)

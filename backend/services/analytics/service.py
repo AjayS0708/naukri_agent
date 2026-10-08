@@ -136,7 +136,17 @@ class AnalyticsService:
         ]
     
     def get_decision_breakdown(self, days: int = 30) -> dict:
-        """Get decision priority breakdown based on Application status."""
+        """
+        Get application outcome breakdown based on Application status.
+
+        Note: This maps Application.status into outcome categories for analytics
+        display. This is NOT a true Gemini decision-priority dataset.
+        The mapping is:
+        - APPLIED/SUBMITTED → NORMAL_PRIORITY (shown as "Applied")
+        - EXTERNAL_APPLICATION → LOW_PRIORITY (shown as "External")
+        - NEEDS_ATTENTION → NEEDS_ATTENTION
+        - SKIPPED → SKIP
+        """
         cutoff_date = datetime.now(UTC) - timedelta(days=days)
         
         stmt = select(

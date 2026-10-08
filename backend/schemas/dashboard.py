@@ -117,3 +117,64 @@ class NeedsAttentionResponse(BaseModel):
 
     applications: list[NeedsAttentionItem]
     total: int
+
+
+class ApplicationListItem(BaseModel):
+    """
+    A single application record for the applications list view.
+
+    Includes job title, company, and key application details.
+    Does not expose: API keys, cookies, session tokens, credentials,
+    confirmation_evidence, resume_hash, or internal security information.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    application_id: int
+    job_id: int
+    job_title: str
+    company: str
+    status: str
+    application_method: Optional[str] = None
+    applied_at: Optional[datetime] = None
+    skip_reason: Optional[str] = None
+    failure_reason: Optional[str] = None
+    needs_attention: bool = False
+    is_dry_run: bool = False
+    created_at: datetime
+
+
+class ApplicationsListResponse(BaseModel):
+    """Response wrapper for applications list with optional status filter."""
+    model_config = ConfigDict(extra="forbid")
+
+    applications: list[ApplicationListItem]
+    total: int
+    status_filter: Optional[str] = None
+
+
+class JobListItem(BaseModel):
+    """
+    A single discovered job record for the jobs list view.
+
+    Includes key job information for read-only display.
+    Does not expose: internal processing metadata, raw HTML, or internal IDs.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: int
+    title: str
+    company: str
+    location: Optional[str] = None
+    experience: Optional[str] = None
+    platform: str
+    source: Optional[str] = None
+    discovered_at: datetime
+    status: str
+
+
+class JobsListResponse(BaseModel):
+    """Response wrapper for jobs list."""
+    model_config = ConfigDict(extra="forbid")
+
+    jobs: list[JobListItem]
+    total: int

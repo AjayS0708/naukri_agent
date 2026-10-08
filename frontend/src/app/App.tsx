@@ -8,6 +8,8 @@ import { JobPreferences } from "../components/JobPreferences";
 import { AgentControl } from "../components/AgentControl";
 import { AnalyticsDashboard } from "../components/AnalyticsDashboard";
 import { BackendState } from "../components/BackendState";
+import { ApplicationsList } from "../components/ApplicationsList";
+import { JobsList } from "../components/JobsList";
 
 const STATUS_LABEL: Record<string, string> = {
   APPLIED: "Applied",
@@ -41,7 +43,8 @@ export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [failed, setFailed] = useState(false);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
-  const [currentPage, setCurrentPage] = useState<"overview" | "profile" | "preferences" | "analytics" | "activity">("overview");
+  const [currentPage, setCurrentPage] = useState<"overview" | "profile" | "preferences" | "analytics" | "activity" | "applications" | "jobs">("overview");
+  const [applicationsFilter, setApplicationsFilter] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
@@ -219,7 +222,17 @@ export function App() {
 
   const handleNavClick = (page: typeof currentPage) => {
     setCurrentPage(page);
+    setApplicationsFilter(null);
     setSidebarOpen(false);
+  };
+
+  const handleViewApplications = (filter: string | null = null) => {
+    setApplicationsFilter(filter);
+    setCurrentPage("applications");
+  };
+
+  const handleViewJobs = () => {
+    setCurrentPage("jobs");
   };
 
   const closeSidebar = () => setSidebarOpen(false);
@@ -251,8 +264,8 @@ export function App() {
       <nav aria-label="Primary navigation">
         <a className={`nav-item ${currentPage === "overview" ? "active" : ""}`} href="#overview" onClick={(e) => { e.preventDefault(); handleNavClick("overview"); }}><LayoutDashboard size={18} />Overview</a>
         <a className={`nav-item ${currentPage === "activity" ? "active" : ""}`} href="#activity" onClick={(e) => { e.preventDefault(); handleNavClick("activity"); }}><Activity size={18} />Activity</a>
-        <span className="nav-item disabled"><BriefcaseBusiness size={18} />Jobs</span>
-        <span className="nav-item disabled"><ChartNoAxesColumn size={18} />Applications</span>
+        <a className={`nav-item ${currentPage === "jobs" ? "active" : ""}`} href="#jobs" onClick={(e) => { e.preventDefault(); handleNavClick("jobs"); }}><BriefcaseBusiness size={18} />Jobs</a>
+        <a className={`nav-item ${currentPage === "applications" ? "active" : ""}`} href="#applications" onClick={(e) => { e.preventDefault(); handleNavClick("applications"); }}><ChartNoAxesColumn size={18} />Applications</a>
         <a className={`nav-item ${currentPage === "analytics" ? "active" : ""}`} href="#analytics" onClick={(e) => { e.preventDefault(); handleNavClick("analytics"); }}><BarChart3 size={18} />Analytics</a>
         <a className={`nav-item ${currentPage === "profile" ? "active" : ""}`} href="#profile" onClick={(e) => { e.preventDefault(); handleNavClick("profile"); }}><User size={18} />Profile</a>
         <a className={`nav-item ${currentPage === "preferences" ? "active" : ""}`} href="#preferences" onClick={(e) => { e.preventDefault(); handleNavClick("preferences"); }}><Settings size={18} />Preferences</a>
@@ -269,8 +282,8 @@ export function App() {
       <header className="topbar">
         <div className="page-header">
           <p className="eyebrow">DASHBOARD</p>
-          <h1>{currentPage === "overview" ? "Agent Overview" : currentPage === "profile" ? "Profile" : currentPage === "preferences" ? "Preferences" : currentPage === "analytics" ? "Analytics" : "Activity"}</h1>
-          <p className="page-description">{currentPage === "overview" ? "Monitor and control your job search automation" : currentPage === "profile" ? "Manage your resume and professional profile" : currentPage === "preferences" ? "Configure job search preferences and automation settings" : currentPage === "analytics" ? "View performance metrics and decision analytics" : "Track agent activity and events"}</p>
+          <h1>{currentPage === "overview" ? "Agent Overview" : currentPage === "profile" ? "Profile" : currentPage === "preferences" ? "Preferences" : currentPage === "analytics" ? "Analytics" : currentPage === "applications" ? "Applications" : currentPage === "jobs" ? "Jobs" : "Activity"}</h1>
+          <p className="page-description">{currentPage === "overview" ? "Monitor and control your job search automation" : currentPage === "profile" ? "Manage your resume and professional profile" : currentPage === "preferences" ? "Configure job search preferences and automation settings" : currentPage === "analytics" ? "View performance metrics and decision analytics" : currentPage === "applications" ? "View and filter application history" : currentPage === "jobs" ? "View discovered jobs" : "Track agent activity and events"}</p>
         </div>
         <div className="topbar-actions">
           <button
@@ -399,14 +412,14 @@ export function App() {
 
             {/* Metrics — real data from /api/dashboard/summary */}
             <section className="metrics">
-              <article className="metric">
+              <article className="metric clickable" onClick={() => handleViewApplications("APPLIED")} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleViewApplications("APPLIED"); }}>
                 <BriefcaseBusiness size={20} />
                 <p>Applications total</p>
                 <strong aria-live="polite">
                   {dashboardLoading ? "…" : dashboardError ? "—" : dashboard!.applications.applied}
                 </strong>
               </article>
-              <article className="metric">
+              <article className="metric clickable" onClick={handleViewJobs} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleViewJobs(); }}>
                 <ChartNoAxesColumn size={20} />
                 <p>Jobs discovered</p>
                 <strong aria-live="polite">
@@ -420,7 +433,7 @@ export function App() {
                   {dashboardLoading ? "…" : dashboardError ? "Unavailable" : dashboard!.discovery.total_runs}
                 </strong>
               </article>
-              <article className="metric">
+              <article className="metric clickable" onClick={() => handleViewApplications("NEEDS_ATTENTION")} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleViewApplications("NEEDS_ATTENTION"); }}>
                 <CircleAlert size={20} />
                 <p>Needs attention</p>
                 <strong aria-live="polite">
@@ -532,7 +545,7 @@ export function App() {
               )}
             </section>
 
-            <section id="analytics-dashboard"><AnalyticsDashboard /></section>
+            <section id="analytics-dashboard"><AnalyticsDashboard onOutcomeClick={handleViewApplications} /></section>
           </>
         )}
 
@@ -580,6 +593,14 @@ export function App() {
             )}
           </section>
         )}
+
+        {currentPage === "applications" && (
+          <ApplicationsList statusFilter={applicationsFilter} onBack={() => handleNavClick("overview")} />
+        )}
+
+        {currentPage === "jobs" && (
+          <JobsList onBack={() => handleNavClick("overview")} />
+        )}
       </div>
     </section>
 
@@ -601,11 +622,19 @@ export function App() {
         <Activity size={20} />
         <span>Activity</span>
       </button>
-      <button className="bottom-nav-item" disabled aria-label="Jobs (disabled)">
+      <button
+        className={`bottom-nav-item ${currentPage === "jobs" ? "active" : ""}`}
+        onClick={() => handleNavClick("jobs")}
+        aria-label="Jobs"
+      >
         <BriefcaseBusiness size={20} />
         <span>Jobs</span>
       </button>
-      <button className="bottom-nav-item" disabled aria-label="Applications (disabled)">
+      <button
+        className={`bottom-nav-item ${currentPage === "applications" ? "active" : ""}`}
+        onClick={() => handleNavClick("applications")}
+        aria-label="Applications"
+      >
         <ChartNoAxesColumn size={20} />
         <span>Apps</span>
       </button>

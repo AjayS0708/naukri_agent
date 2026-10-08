@@ -1,4 +1,4 @@
-import type { AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, DashboardSummary, HealthResponse, NeedsAttentionResponse, NotificationHistoryResponse, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse } from "../types/api";
+import type { ApplicationsListResponse, AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, DashboardSummary, HealthResponse, JobsListResponse, NeedsAttentionResponse, NotificationHistoryResponse, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse } from "../types/api";
 
 const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -94,3 +94,19 @@ export const startAutonomousCycle = (request: AutonomousCycleStartRequest) =>
 
 export const getAutonomousCycleStatus = () =>
   apiRequest<AutonomousCycleStatusResponse>("/autonomous-cycle/status");
+
+// ── Drill-down endpoints (Checkpoint E5) ─────────────────────────────
+export const getApplicationsList = (status: string | null = null, limit = 50, offset = 0) => {
+  const params = new URLSearchParams();
+  if (status) params.append("status", status);
+  params.append("limit", limit.toString());
+  params.append("offset", offset.toString());
+  return apiRequest<ApplicationsListResponse>(`/dashboard/applications?${params.toString()}`);
+};
+
+export const getJobsList = (limit = 50, offset = 0) => {
+  const params = new URLSearchParams();
+  params.append("limit", limit.toString());
+  params.append("offset", offset.toString());
+  return apiRequest<JobsListResponse>(`/dashboard/jobs?${params.toString()}`);
+};

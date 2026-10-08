@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from backend.models.application import Application
@@ -367,3 +368,237 @@ class TestNeedsAttentionWithData:
                     check_no_secrets(item)
 
         check_no_secrets(data)
+
+
+# ── Applications List endpoint (Checkpoint E5) ───────────────────────────────────
+
+class TestApplicationsListEmpty:
+    def test_returns_200(self, client: TestClient) -> None:
+        response = client.get("/api/dashboard/applications")
+        assert response.status_code == 200
+
+    def test_empty_list_when_no_applications(self, client: TestClient, db: Session) -> None:
+        # Ensure no applications exist
+        db.execute(delete(Application))
+        db.commit()
+
+        data = client.get("/api/dashboard/applications").json()
+        assert data["applications"] == []
+        assert data["total"] == 0
+        assert data["status_filter"] is None
+
+
+class TestApplicationsListWithData:
+    def test_returns_all_applications(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db, title="Python Developer", company="Test Corp")
+        _make_application(db, job, status="APPLIED")
+        _make_application(db, job, status="SKIPPED")
+        db.commit()
+
+        data = client.get("/api/dashboard/applications").json()
+        assert data["total"] == 2
+        assert len(data["applications"]) == 2
+
+    def test_filters_by_status(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db)
+        _make_application(db, job, status="APPLIED")
+        _make_application(db, job, status="SKIPPED")
+        _make_application(db, job, status="NEEDS_ATTENTION")
+        db.commit()
+
+        data = client.get("/api/dashboard/applications?status=APPLIED").json()
+        assert data["total"] == 1
+        assert data["status_filter"] == "APPLIED"
+        assert data["applications"][0]["status"] == "APPLIED"
+
+    def test_skip_reasons_included(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db)
+        app = _make_application(db, job, status="SKIPPED")
+        app.skip_reason = "Test skip reason"
+        db.commit()
+
+        data = client.get("/api/dashboard/applications?status=SKIPPED").json()
+        assert data["applications"][0]["skip_reason"] == "Test skip reason"
+
+    def test_failure_reasons_included(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db)
+        app = _make_application(db, job, status="FAILED")
+        app.failure_reason = "Test failure reason"
+        db.commit()
+
+        data = client.get("/api/dashboard/applications?status=FAILED").json()
+        assert data["applications"][0]["failure_reason"] == "Test failure reason"
+
+    def test_limit_parameter_respected(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db)
+        for _ in range(5):
+            _make_application(db, job, status="SKIPPED")
+        db.commit()
+
+        data = client.get("/api/dashboard/applications?limit=3").json()
+        assert len(data["applications"]) == 3
+
+    def test_limit_capped_at_100(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db)
+        for _ in range(120):
+            _make_application(db, job, status="SKIPPED")
+        db.commit()
+
+        data = client.get("/api/dashboard/applications?limit=200").json()
+        assert len(data["applications"]) <= 100
+
+    def test_offset_parameter_respected(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db)
+        for i in range(5):
+            _make_application(db, job, status="SKIPPED")
+        db.commit()
+
+        data1 = client.get("/api/dashboard/applications?offset=0&limit=2").json()
+        data2 = client.get("/api/dashboard/applications?offset=2&limit=2").json()
+        assert len(data1["applications"]) == 2
+        assert len(data2["applications"]) == 2
+        # Verify the IDs are different (pagination works)
+        ids1 = {app["application_id"] for app in data1["applications"]}
+        ids2 = {app["application_id"] for app in data2["applications"]}
+        assert ids1.isdisjoint(ids2)
+
+    def test_required_fields_present(self, client: TestClient, db: Session) -> None:
+        job = _make_job(db)
+        _make_application(db, job, status="APPLIED")
+        db.commit()
+
+        data = client.get("/api/dashboard/applications").json()
+        item = data["applications"][0]
+        for field in ("application_id", "job_id", "job_title", "company", "status",
+                      "application_method", "applied_at", "skip_reason",
+                      "failure_reason", "needs_attention", "is_dry_run", "created_at"):
+            assert field in item, f"Missing field: {field}"
+
+    def test_no_secrets_exposed(self, client: TestClient, db: Session) -> None:
+        """Verify applications list does not expose secrets."""
+        job = _make_job(db)
+        app = _make_application(db, job, status="APPLIED")
+        app.confirmation_evidence = "Internal evidence"
+        app.external_url = "https://example.com/external"
+        db.commit()
+
+        data = client.get("/api/dashboard/applications").json()
+        item = data["applications"][0]
+        assert "confirmation_evidence" not in item
+        assert "external_url" not in item
+
+    def test_is_get_only(self, client: TestClient) -> None:
+        """Applications list must not accept POST/PUT/DELETE."""
+        assert client.post("/api/dashboard/applications").status_code == 405
+        assert client.put("/api/dashboard/applications").status_code == 405
+        assert client.delete("/api/dashboard/applications").status_code == 405
+
+
+# ── Jobs List endpoint (Checkpoint E5) ───────────────────────────────────────────
+
+class TestJobsListEmpty:
+    def test_returns_200(self, client: TestClient) -> None:
+        response = client.get("/api/dashboard/jobs")
+        assert response.status_code == 200
+
+    def test_empty_list_when_no_jobs(self, client: TestClient, db: Session) -> None:
+        # Ensure no jobs exist
+        db.execute(delete(Job))
+        db.commit()
+
+        data = client.get("/api/dashboard/jobs").json()
+        assert data["jobs"] == []
+        assert data["total"] == 0
+
+
+class TestJobsListWithData:
+    def test_returns_all_jobs(self, client: TestClient, db: Session) -> None:
+        _make_job(db, title="Python Developer", company="Test Corp")
+        _make_job(db, title="Data Analyst", company="Acme Inc")
+        db.commit()
+
+        data = client.get("/api/dashboard/jobs").json()
+        assert data["total"] == 2
+        assert len(data["jobs"]) == 2
+
+    def test_includes_job_metadata(self, client: TestClient, db: Session) -> None:
+        job = Job(
+            platform="naukri",
+            external_job_id="test-123",
+            url="https://www.naukri.com/job-listings/test",
+            title="Senior Developer",
+            company="Tech Corp",
+            location="Bangalore",
+            experience="5-10 years",
+            source="python developer",
+            discovered_at=datetime.now(UTC),
+        )
+        db.add(job)
+        db.commit()
+
+        data = client.get("/api/dashboard/jobs").json()
+        item = data["jobs"][0]
+        assert item["title"] == "Senior Developer"
+        assert item["company"] == "Tech Corp"
+        assert item["location"] == "Bangalore"
+        assert item["experience"] == "5-10 years"
+        assert item["platform"] == "naukri"
+        assert item["source"] == "python developer"
+
+    def test_limit_parameter_respected(self, client: TestClient, db: Session) -> None:
+        for i in range(5):
+            _make_job(db, title=f"Job {i}", company="Test Corp")
+        db.commit()
+
+        data = client.get("/api/dashboard/jobs?limit=3").json()
+        assert len(data["jobs"]) == 3
+
+    def test_limit_capped_at_100(self, client: TestClient, db: Session) -> None:
+        for i in range(120):
+            _make_job(db, title=f"Job {i}", company="Test Corp")
+        db.commit()
+
+        data = client.get("/api/dashboard/jobs?limit=200").json()
+        assert len(data["jobs"]) <= 100
+
+    def test_offset_parameter_respected(self, client: TestClient, db: Session) -> None:
+        for i in range(5):
+            _make_job(db, title=f"Job {i}", company="Test Corp")
+        db.commit()
+
+        data1 = client.get("/api/dashboard/jobs?offset=0&limit=2").json()
+        data2 = client.get("/api/dashboard/jobs?offset=2&limit=2").json()
+        assert len(data1["jobs"]) == 2
+        assert len(data2["jobs"]) == 2
+        # Verify the IDs are different (pagination works)
+        ids1 = {job["job_id"] for job in data1["jobs"]}
+        ids2 = {job["job_id"] for job in data2["jobs"]}
+        assert ids1.isdisjoint(ids2)
+
+    def test_required_fields_present(self, client: TestClient, db: Session) -> None:
+        _make_job(db)
+        db.commit()
+
+        data = client.get("/api/dashboard/jobs").json()
+        item = data["jobs"][0]
+        for field in ("job_id", "title", "company", "location", "experience",
+                      "platform", "source", "discovered_at", "status"):
+            assert field in item, f"Missing field: {field}"
+
+    def test_no_internal_fields_exposed(self, client: TestClient, db: Session) -> None:
+        """Verify jobs list does not expose internal processing fields."""
+        job = _make_job(db)
+        db.commit()
+
+        data = client.get("/api/dashboard/jobs").json()
+        item = data["jobs"][0]
+        # These fields should not be exposed
+        assert "description" not in item or item.get("description") is None
+        assert "external_job_id" not in item
+        assert "url" not in item
+
+    def test_is_get_only(self, client: TestClient) -> None:
+        """Jobs list must not accept POST/PUT/DELETE."""
+        assert client.post("/api/dashboard/jobs").status_code == 405
+        assert client.put("/api/dashboard/jobs").status_code == 405
+        assert client.delete("/api/dashboard/jobs").status_code == 405

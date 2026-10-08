@@ -111,3 +111,45 @@ export interface AutonomousCycleStatusResponse {
   max_applications: number | null;
   stats: Record<string, unknown>;
 }
+
+// ── Applications List types (Drill-down) ─────────────────────────────
+
+export interface ApplicationListItem {
+  application_id: number;
+  job_id: number;
+  job_title: string;
+  company: string;
+  status: string;
+  application_method: string | null;
+  applied_at: string | null;
+  skip_reason: string | null;
+  failure_reason: string | null;
+  needs_attention: boolean;
+  is_dry_run: boolean;
+  created_at: string;
+}
+
+export interface ApplicationsListResponse {
+  applications: ApplicationListItem[];
+  total: number;
+  status_filter: string | null;
+}
+
+// ── Jobs List types (Drill-down) ─────────────────────────────────────
+
+export interface JobListItem {
+  job_id: number;
+  title: string;
+  company: string;
+  location: string | null;
+  experience: string | null;
+  platform: string;
+  source: string | null;
+  discovered_at: string;
+  status: string;
+}
+
+export interface JobsListResponse {
+  jobs: JobListItem[];
+  total: number;
+}
