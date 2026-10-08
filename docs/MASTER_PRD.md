@@ -1,5 +1,36 @@
 # Naukri AI Job Application Agent
 
+## E4-R2 — Windows Playwright Runtime Requirement (Documentation Only)
+
+E4 live validation has **NOT** yet succeeded. This checkpoint documents the runtime/environment requirement discovered during E4 validation and resolves the E4 browser-startup blocker. It is documentation-only: no E4 execution occurred, no Dashboard Run was clicked, no `POST /api/autonomous-cycle/run` was called, no database was modified, no backend/frontend source code was modified, no Playwright configuration was changed, and no asyncio workaround was added.
+
+**Verified fact (Windows 11, Python 3.14.2, FastAPI 0.141.1, Starlette 1.6.0, Playwright 1.63.0):**
+
+- Uvicorn with `--reload` → spawned reload worker uses `WindowsSelectorEventLoop` → Playwright subprocess bootstrap raises `NotImplementedError` → autonomous cycle fails immediately during browser startup.
+- Uvicorn without `--reload` → `ProactorEventLoop` → Playwright driver starts successfully → configured Chromium persistent context starts successfully → standalone smoke test PASS.
+
+The Playwright installation itself was healthy and the Chromium installation is healthy — the blocker was the event loop selected by the reload worker, not the browser installation.
+
+**Resolution:**
+
+- No source-code workaround was required.
+- `--reload` is incompatible with the Windows Playwright subprocess requirement in this environment.
+- Live autonomous execution must use non-reload Uvicorn. The correct live runtime invocation is:
+
+  ```powershell
+  python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+  ```
+
+  WITHOUT `--reload`.
+
+**E4 status tracking:**
+
+- E4 live validation has NOT yet succeeded.
+- Historical E4 FAILED runs (including the two accidental curl-triggered attempts on 2026-10-08 that failed before browser startup) remain preserved and unaltered.
+- The next checkpoint is E4 final live validation against a non-reload Uvicorn backend.
+
+**Do not claim E4 PASS.**
+
 ## E4-R — Autonomous Cycle Recovery & Execution-Safety Hardening
 
 E4 is **FAILED**, not passed. Two accidental curl-triggered attempts on 2026-10-08 stopped before browser startup; no applications were created or submitted, no Apply click occurred, and no CAPTCHA/security event occurred. E4-R is a recovery/source-hardening checkpoint only and must not be treated as live validation. Runtime status must represent only current activity (`IDLE`/`RUNNING`) and retain terminal outcomes as a distinct last-run history. Read-only diagnostics must never execute a cycle. Lock release and restart recovery require mocked/unit-level verification. A future E4 revalidation remains pending.

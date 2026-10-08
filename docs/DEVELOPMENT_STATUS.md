@@ -1,5 +1,45 @@
 # Development Status
 
+## CHECKPOINT E4-R2: Windows Playwright Runtime Requirement: DOCUMENTATION ONLY
+
+**Status: DOCUMENTATION ONLY — E4 live validation has NOT yet succeeded. No live cycle was run in this checkpoint.**
+
+**E4-R2 Objective:**
+
+Document the runtime/environment requirement discovered during E4 validation and resolve the E4 browser-startup blocker, without executing E4.
+
+**Verified fact (Windows):**
+
+- Uvicorn with `--reload`: the spawned reload worker uses `WindowsSelectorEventLoop`; the Playwright subprocess bootstrap raises `NotImplementedError`; the autonomous cycle fails immediately during browser startup.
+- Uvicorn without `--reload`: the server runs on `ProactorEventLoop`; the Playwright driver starts successfully; the configured Chromium persistent context starts successfully; the standalone smoke test PASSes.
+
+**Verified environment:** Windows 11, Python 3.14.2, FastAPI 0.141.1, Starlette 1.6.0, Playwright 1.63.0. The Playwright installation itself was healthy and the Chromium installation is healthy — the blocker was the event loop selected by the reload worker, not the browser installation.
+
+**Resolution:**
+
+- No source-code workaround was required.
+- `--reload` is incompatible with the Windows Playwright subprocess requirement in this environment.
+- Live autonomous execution must use non-reload Uvicorn. The correct live runtime invocation is:
+
+  ```powershell
+  python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+  ```
+
+  WITHOUT `--reload`.
+
+**Checkpoint boundaries honored:** no E4 execution, no Dashboard Run click, no `POST /api/autonomous-cycle/run` call, no database modification, no backend/frontend source-code modification, no Playwright configuration change, no asyncio workaround.
+
+**E4 status tracking:**
+
+- E4 live validation has NOT yet succeeded.
+- Historical E4 FAILED runs (including the two accidental curl-triggered attempts on 2026-10-08 that failed before browser startup) remain preserved and unaltered.
+- The next checkpoint is E4 final live validation against a non-reload Uvicorn backend.
+- Do not claim E4 PASS.
+
+**Files modified:** `README.md`, `docs/MASTER_PRD.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT_STATUS.md`, `docs/DECISIONS.md` (documentation only).
+
+---
+
 ## CHECKPOINT E4-UI: Dashboard max_applications Control: COMPLETE
 
 **Status:** E4-UI IMPLEMENTED, TYPECHECKED, AND BUILT

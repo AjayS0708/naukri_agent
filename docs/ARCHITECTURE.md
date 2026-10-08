@@ -1,5 +1,46 @@
 # Architecture
 
+## E4-R2 Windows Playwright runtime requirement
+
+E4 live validation has NOT yet succeeded. This checkpoint documents a runtime/environment requirement and resolves the E4 browser-startup blocker; it is documentation-only (no E4 execution, no Dashboard Run click, no `POST /api/autonomous-cycle/run` call, no database modification, no backend/frontend source-code modification, no Playwright configuration change, no asyncio workaround).
+
+**Runtime model on Windows:**
+
+```text
+uvicorn --reload
+  → spawned reload worker uses WindowsSelectorEventLoop
+  → Playwright subprocess bootstrap raises NotImplementedError
+  → autonomous cycle fails immediately during browser startup
+
+uvicorn (no --reload)
+  → ProactorEventLoop
+  → Playwright driver starts successfully
+  → configured Chromium persistent context starts successfully
+  → standalone smoke test PASS
+```
+
+**Verified environment:** Windows 11, Python 3.14.2, FastAPI 0.141.1, Starlette 1.6.0, Playwright 1.63.0. The Playwright installation itself was healthy and the Chromium installation is healthy — the blocker was the event loop selected by the reload worker, not the browser installation.
+
+**Resolution:**
+
+- No source-code workaround was required.
+- `--reload` is incompatible with the Windows Playwright subprocess requirement in this environment.
+- Live autonomous execution must use non-reload Uvicorn. The correct live runtime invocation is:
+
+  ```powershell
+  python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+  ```
+
+  WITHOUT `--reload`.
+
+**E4 status tracking:**
+
+- E4 live validation has NOT yet succeeded.
+- Historical E4 FAILED runs (including the two accidental curl-triggered attempts on 2026-10-08 that failed before browser startup) remain preserved and unaltered.
+- The next checkpoint is E4 final live validation against a non-reload Uvicorn backend.
+
+**Do not claim E4 PASS.**
+
 ## E4-R autonomous-cycle runtime model
 
 The autonomous-cycle router owns a process-local runtime controller. It atomically holds a single execution lock and maintains separate `active_run` and `last_run` records. `active_state` is only `IDLE` or `RUNNING`; terminal `COMPLETED`/`FAILED` values belong only to `last_run`. A fresh backend process constructs an IDLE runtime, while persisted DiscoveryRun/Application records remain historical evidence. `GET /api/autonomous-cycle/status` snapshots this state without constructing `AutonomousCycle` or scheduling work. Completion, exception, and initialization-failure paths clear `active_run` and release the lock. E4-R did not run a live cycle; the E4 browser-start failure and no-submission evidence remain preserved.
