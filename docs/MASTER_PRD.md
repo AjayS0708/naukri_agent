@@ -1,5 +1,108 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E3: Safe Dashboard Autonomous-Cycle Control
+
+**Status:** E3 IMPLEMENTED, TESTED, AND VERIFIED
+
+**E3 Summary:**
+
+E3 enables safe manual triggering of the autonomous job application cycle from the dashboard, reusing the existing `AutonomousCycleService` extracted from the CLI. The dashboard now provides explicit user confirmation, status polling, and completion statistics while preserving all safety boundaries.
+
+**E3 Scope:**
+- Safe manual autonomous-cycle trigger from dashboard with user confirmation
+- POST `/api/autonomous-cycle/run` with `max_applications` parameter (default 2, capped at 10)
+- GET `/api/autonomous-cycle/status` for real-time cycle status
+- Process-level concurrency lock (threading.Lock) to prevent concurrent cycles
+- Dashboard status polling at 4-second intervals while cycle is RUNNING
+- Dashboard data refresh after cycle completion
+- No new automation logic — reuses existing `AutonomousCycleService`
+- Scheduler remains discovery-only (integration deferred)
+- No live Naukri execution performed during implementation/testing
+- D7 PASS result preserved
+- E2 COMPLETE result preserved
+- E1 COMPLETE result preserved
+
+**New Backend Endpoints:**
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `POST /api/autonomous-cycle/run` | POST | Start autonomous cycle with max_applications limit |
+| `GET /api/autonomous-cycle/status` | GET | Get current autonomous cycle status |
+
+**Request/Response Schemas:**
+
+- `AutonomousCycleStartRequest`: `max_applications` (1-10, default 2)
+- `AutonomousCycleStartResponse`: `run_id`, `status`, `max_applications`, `message`
+- `AutonomousCycleStatusResponse`: `status` (IDLE/RUNNING/COMPLETED/FAILED), `run_id`, `started_at`, `completed_at`, `max_applications`, `stats`
+
+**Safety Guarantees:**
+- Server-authoritative `max_applications` (client cannot control Gemini budget)
+- Process-level concurrency lock prevents concurrent cycles
+- HTTP 409 Conflict returned if cycle already running
+- All safety boundaries preserved: D6.1, D6.2, C2, D4/D5, D7
+- Gemini budget internally derived as `max_applications * 2`
+- Frontend only calls control/status APIs — no direct Naukri or Gemini access
+
+**Frontend Changes:**
+- Autonomous Cycle status panel: shows IDLE/RUNNING/COMPLETED/FAILED state
+- Run Autonomous Cycle button with explicit confirmation modal
+- Confirmation modal explains: real Naukri applications, max_applications limit, safety rules, concurrency protection
+- Status polling at 4-second intervals while RUNNING
+- Dashboard data refresh (summary, recent apps, needs attention) after COMPLETED/FAILED
+- Completion stats display: applied, needs_attention, external applications
+- HTTP 409 Conflict handling: shows "An autonomous cycle is already running" message
+- No accidental one-click trigger — requires explicit user confirmation
+
+**Test Coverage:**
+- 92 tests in `backend/tests/test_autonomous_cycle.py` (E3 autonomous cycle logic tests)
+- 11 tests in `backend/tests/test_autonomous_cycle_api.py` (E3 API endpoint tests)
+- 30 tests in `backend/tests/test_dashboard.py` (E1/E2 dashboard tests)
+- 181 total tests: autonomous_cycle + matching_rules + application_safety_gate + dashboard
+- All 181 tests: PASS
+- Frontend TypeScript compilation: PASS
+- Frontend production build: PASS (23.76s, 280.60 kB JS bundle)
+- No Gemini calls during tests. No live Naukri applications.
+
+**Security Review:**
+- `AutonomousCycleStartRequest` uses `extra="forbid"` — Pydantic strict mode
+- No `gemini_budget` parameter in request schema — client cannot control Gemini budget
+- `max_applications` validated (1-10) and server-authoritative
+- No secrets exposed in any response: no GEMINI_API_KEY, no Naukri credentials, no cookies, no session tokens
+- Process-level lock prevents concurrent cycles (V1 local-first)
+- Frontend only calls POST/GET endpoints — no direct service access
+
+**Files Added:**
+- `backend/services/autonomous_cycle/service.py` — extracted `AutonomousCycle` class (E3)
+- `backend/api/routes/autonomous_cycle.py` — autonomous cycle control endpoints (E3)
+- `backend/schemas/autonomous_cycle.py` — request/response schemas (E3)
+- `backend/tests/test_autonomous_cycle.py` — 92 autonomous cycle logic tests (E3)
+- `backend/tests/test_autonomous_cycle_api.py` — 11 API endpoint tests (E3)
+
+**Files Modified:**
+- `backend/main.py` — registered autonomous_cycle router (E3)
+- `backend/tests/conftest.py` — autonomous_cycle router registration for tests (E3)
+- `run_autonomous_cycle.py` — refactored to use extracted `AutonomousCycle` (E3)
+- `frontend/src/types/api.ts` — added autonomous cycle types (E3)
+- `frontend/src/services/api.ts` — added autonomous cycle API client methods (E3)
+- `frontend/src/app/App.tsx` — added autonomous cycle UI with confirmation, polling, completion stats (E3)
+
+**Preserved Features:**
+- D6.1 Gemini look-ahead budget (max_applications * 2)
+- D6.2 Gemini candidate evaluation budget
+- current-run queue isolation
+- deterministic filtering
+- candidate ordering (match_score desc, discovered_at desc)
+- C2 fresher-only policy
+- C2 IT-only policy
+- max_applications hard cap
+- duplicate protection
+- external application boundary
+- questionnaire boundary
+- CAPTCHA/security boundary
+- D4/D5 Apply/evidence behavior
+
+---
+
 ## CHECKPOINT E2: Dashboard Operational Visibility & Safe Control Foundation
 
 **Status:** E2 IMPLEMENTED, TESTED, AND VERIFIED

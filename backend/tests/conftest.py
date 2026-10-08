@@ -47,11 +47,20 @@ def isolated_database():
         import backend.services.discovery.service as discovery_module
         import backend.services.scheduler.service as scheduler_module
         import backend.api.routes.lifecycle as lifecycle_module
+        import backend.services.autonomous_cycle as autonomous_cycle_module
+        import backend.api.routes.autonomous_cycle as autonomous_cycle_routes_module
 
         main_module.SessionLocal = test_session_local
         discovery_module.SessionLocal = test_session_local
         scheduler_module.SessionLocal = test_session_local
         lifecycle_module.SessionLocal = test_session_local
+        autonomous_cycle_module.SessionLocal = test_session_local
+        autonomous_cycle_routes_module.SessionLocal = test_session_local
+
+        # Ensure autonomous_cycle router is registered in the test app
+        # (router is already registered in main.py; this is for test timing)
+        from backend.api.routes.autonomous_cycle import router as autonomous_cycle_router
+        main_module.app.include_router(autonomous_cycle_router, prefix="/api")
 
         Base.metadata.create_all(bind=test_engine)
         yield test_engine

@@ -1,5 +1,82 @@
 # Architecture
 
+## CHECKPOINT E3: Safe Dashboard Autonomous-Cycle Control
+
+**Status:** COMPLETE — Dashboard can safely trigger autonomous cycles
+
+**E3 Architecture:**
+
+E3 enables safe manual triggering of the autonomous job application cycle from the dashboard by extracting the existing autonomous cycle logic into a reusable service and adding control/status API endpoints. The architecture preserves all safety boundaries while providing explicit user confirmation, status polling, and completion statistics.
+
+**Service extraction (`backend/services/autonomous_cycle/service.py`):**
+
+The `AutonomousCycle` class is extracted from the CLI (`run_autonomous_cycle.py`) and made available to both CLI and FastAPI:
+
+```text
+AutonomousCycle
+  ├── __init__(max_applications, dry_run, max_jobs, max_cards, enable_cli_output)
+  ├── run() → dict {exit_code, run_id, status, stats}
+  ├── _apply_hard_filters_and_enqueue() → stats
+  ├── _process_ai_queue() → stats
+  └── _run_applications() → stats
+```
+
+- CLI: `run_autonomous_cycle.py` → `AutonomousCycle(enable_cli_output=True)`
+- FastAPI: `POST /api/autonomous-cycle/run` → `AutonomousCycle(enable_cli_output=False)`
+
+**Control/status routes (`backend/api/routes/autonomous_cycle.py`):**
+
+```text
+POST /api/autonomous-cycle/run
+    Request: {max_applications: 1-10}
+    Response: {run_id, status, max_applications, message}
+    → Acquires process-level lock (threading.Lock)
+    → Returns 409 Conflict if cycle already running
+    → Starts cycle in background (asyncio.create_task)
+    → Returns immediately with RUNNING status
+
+GET /api/autonomous-cycle/status
+    Response: {status, run_id, started_at, completed_at, max_applications, stats}
+    → status: IDLE | RUNNING | COMPLETED | FAILED
+    → stats: {jobs_discovered, hard_filtered, queued, completed, applied, needs_attention, external, skipped, failed}
+```
+
+**Concurrency protection:**
+
+- Process-level lock (`threading.Lock`) prevents concurrent cycles in V1 local-first deployment
+- Future cloud deployment would require distributed locking (deferred)
+- Lock acquired on POST, released on cycle completion/failure
+- HTTP 409 Conflict returned if lock is already held
+
+**Frontend control flow (`frontend/src/app/App.tsx`):**
+
+```text
+mount
+  ├── getAutonomousCycleStatus() → initial status
+  ├── User clicks "Run Autonomous Cycle"
+  │   → Confirmation modal (explains safety rules, max_applications)
+  │   → User confirms → POST /api/autonomous-cycle/run
+  │   → Status changes to RUNNING
+  │   → Poll GET /api/autonomous-cycle/status every 4 seconds
+  │   → On COMPLETED/FAILED: refresh dashboard data
+  └── Cycle stats display on completion
+```
+
+**Safety boundaries preserved:**
+
+- Server-authoritative `max_applications` (client cannot override)
+- Gemini budget internally derived as `max_applications * 2` (not exposed to client)
+- All existing safety rules enforced: D6.1, D6.2, C2, D4/D5, D7
+- Frontend only calls control/status APIs — no direct Naukri or Gemini access
+- Explicit user confirmation required before execution
+- Status polling stops immediately on COMPLETED/FAILED/error
+
+**Test files:**
+- `backend/tests/test_autonomous_cycle.py` (92 tests: logic, boundaries, budgets, filtering)
+- `backend/tests/test_autonomous_cycle_api.py` (11 tests: API endpoints, concurrency, security)
+
+---
+
 ## CHECKPOINT E2: Dashboard Operational Visibility & Safe Control Foundation
 
 **Status:** COMPLETE — Dashboard provides accurate operational view

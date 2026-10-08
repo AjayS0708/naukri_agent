@@ -1,4 +1,4 @@
-import type { DashboardSummary, HealthResponse, NeedsAttentionResponse, NotificationHistoryResponse, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse } from "../types/api";
+import type { AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, DashboardSummary, HealthResponse, NeedsAttentionResponse, NotificationHistoryResponse, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse } from "../types/api";
 
 const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -48,7 +48,11 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
 
   try {
     const response = await fetch(getApiUrl(path), { ...init, signal: controller.signal });
-    if (!response.ok) throw new ApiRequestError(messageForResponse(response.status));
+    if (!response.ok) {
+      const error = new ApiRequestError(messageForResponse(response.status));
+      (error as any).status = response.status;
+      throw error;
+    }
     try {
       return await response.json() as T;
     } catch {
@@ -79,3 +83,14 @@ export const getRecentApplications = (limit = 10) =>
 // ── Needs Attention endpoint (Checkpoint E2) ───────────────────────────────
 export const getNeedsAttention = (limit = 10) =>
   apiRequest<NeedsAttentionResponse>(`/dashboard/needs-attention?limit=${limit}`);
+
+// ── Autonomous Cycle endpoints (Checkpoint E3) ─────────────────────────────
+export const startAutonomousCycle = (request: AutonomousCycleStartRequest) =>
+  apiRequest<AutonomousCycleStartResponse>("/autonomous-cycle/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+export const getAutonomousCycleStatus = () =>
+  apiRequest<AutonomousCycleStatusResponse>("/autonomous-cycle/status");

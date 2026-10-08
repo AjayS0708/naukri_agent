@@ -89,3 +89,25 @@ export interface NeedsAttentionResponse {
   applications: NeedsAttentionItem[];
   total: number;
 }
+
+// ── Autonomous Cycle types (Checkpoint E3) ───────────────────────────────
+
+export interface AutonomousCycleStartRequest {
+  max_applications: number;
+}
+
+export interface AutonomousCycleStartResponse {
+  run_id: number | null;
+  status: string;
+  max_applications: number;
+  message: string;
+}
+
+export interface AutonomousCycleStatusResponse {
+  status: string; // IDLE, RUNNING, COMPLETED, FAILED
+  run_id: number | null;
+  started_at: string | null;
+  completed_at: string | null;
+  max_applications: number | null;
+  stats: Record<string, unknown>;
+}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal, RefreshCw } from "lucide-react";
-import { getDashboardSummary, getHealth, getNeedsAttention, getNotifications, getRecentApplications } from "../services/api";
-import type { DashboardSummary, HealthResponse, NeedsAttentionItem, Notification, ProfileResponse, RecentApplicationItem } from "../types/api";
+import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal, RefreshCw, Play, AlertTriangle } from "lucide-react";
+import { getDashboardSummary, getHealth, getNeedsAttention, getNotifications, getRecentApplications, startAutonomousCycle, getAutonomousCycleStatus } from "../services/api";
+import type { DashboardSummary, HealthResponse, NeedsAttentionItem, Notification, ProfileResponse, RecentApplicationItem, AutonomousCycleStatusResponse } from "../types/api";
 import { ProfileWorkspace } from "../components/ProfileWorkspace";
 import { AIStatus } from "../components/AIStatus";
 import { JobPreferences } from "../components/JobPreferences";
@@ -55,6 +55,14 @@ export function App() {
   const [needsAttentionError, setNeedsAttentionError] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Autonomous cycle state (E3)
+  const [cycleStatus, setCycleStatus] = useState<AutonomousCycleStatusResponse | null>(null);
+  const [cycleLoading, setCycleLoading] = useState(false);
+  const [showRunConfirmation, setShowRunConfirmation] = useState(false);
+  const [maxApplications, setMaxApplications] = useState(2);
+  const [startCycleLoading, setStartCycleLoading] = useState(false);
+  const [cycleConflict, setCycleConflict] = useState(false);
+
   useEffect(() => {
     getHealth().then(setHealth).catch(() => setFailed(true));
     getNotifications().then((response) => setNotifications(response.notifications)).catch(() => setNotifications([]));
@@ -79,7 +87,52 @@ export function App() {
       .then((data) => { setNeedsAttention(data.applications); setNeedsAttentionError(false); })
       .catch(() => setNeedsAttentionError(true))
       .finally(() => setNeedsAttentionLoading(false));
+
+    // Autonomous cycle status (E3)
+    setCycleLoading(true);
+    getAutonomousCycleStatus()
+      .then((data) => { setCycleStatus(data); setCycleConflict(false); })
+      .catch(() => setCycleStatus(null))
+      .finally(() => setCycleLoading(false));
   }, []);
+
+  // Poll autonomous cycle status while running (E3)
+  useEffect(() => {
+    if (!cycleStatus || cycleStatus.status !== "RUNNING") {
+      return;
+    }
+
+    const pollInterval = setInterval(() => {
+      getAutonomousCycleStatus()
+        .then((data) => {
+          setCycleStatus(data);
+          setCycleConflict(false);
+          // Stop polling when completed or failed and refresh dashboard
+          if (data.status === "COMPLETED" || data.status === "FAILED") {
+            clearInterval(pollInterval);
+            // Refresh dashboard data after completion
+            setDashboardLoading(true);
+            setRecentAppsLoading(true);
+            setNeedsAttentionLoading(true);
+            Promise.all([
+              getDashboardSummary().then((d) => { setDashboard(d); setDashboardError(false); }).catch(() => setDashboardError(true)),
+              getRecentApplications(10).then((d) => { setRecentApps(d.applications); setRecentAppsError(false); }).catch(() => setRecentAppsError(true)),
+              getNeedsAttention(10).then((d) => { setNeedsAttention(d.applications); setNeedsAttentionError(false); }).catch(() => setNeedsAttentionError(true)),
+            ]).finally(() => {
+              setDashboardLoading(false);
+              setRecentAppsLoading(false);
+              setNeedsAttentionLoading(false);
+            });
+          }
+        })
+        .catch(() => {
+          // Backend error - stop polling
+          clearInterval(pollInterval);
+        });
+    }, 4000); // Poll every 4 seconds
+
+    return () => clearInterval(pollInterval);
+  }, [cycleStatus?.status]);
 
   const connection = failed ? "local_offline" : health ? "connected" : "checking";
   // Use dashboard profile data when available; fall back to local profile state
@@ -125,6 +178,43 @@ export function App() {
       getRecentApplications(10).then((data) => { setRecentApps(data.applications); setRecentAppsError(false); }).catch(() => setRecentAppsError(true)),
       getNeedsAttention(10).then((data) => { setNeedsAttention(data.applications); setNeedsAttentionError(false); }).catch(() => setNeedsAttentionError(true)),
     ]).finally(() => setIsRefreshing(false));
+  };
+
+  // Autonomous cycle handlers (E3)
+  const handleStartCycle = async () => {
+    setStartCycleLoading(true);
+    setCycleConflict(false);
+
+    try {
+      const result = await startAutonomousCycle({ max_applications: maxApplications });
+      setCycleStatus({
+        status: result.status,
+        run_id: result.run_id,
+        started_at: null,
+        completed_at: null,
+        max_applications: result.max_applications,
+        stats: {},
+      });
+      setShowRunConfirmation(false);
+    } catch (error: any) {
+      if (error?.status === 409) {
+        setCycleConflict(true);
+        // Refresh status to get current run info
+        getAutonomousCycleStatus()
+          .then((data) => setCycleStatus(data))
+          .catch(() => {});
+      }
+    } finally {
+      setStartCycleLoading(false);
+    }
+  };
+
+  const handleConfirmRunCycle = () => {
+    setShowRunConfirmation(true);
+  };
+
+  const handleCancelRunCycle = () => {
+    setShowRunConfirmation(false);
   };
 
   const handleNavClick = (page: typeof currentPage) => {
@@ -213,6 +303,99 @@ export function App() {
             </section>
 
             <section id="agent-control"><AgentControl /></section>
+
+            {/* Autonomous Cycle Control (E3) */}
+            <section className="status-panel">
+              <div>
+                <p className="eyebrow">AUTONOMOUS CYCLE</p>
+                <strong className={`agent-state ${(cycleStatus?.status || "IDLE").toLowerCase()}`}>
+                  {cycleStatus?.status === "RUNNING" ? "Running" : cycleStatus?.status === "COMPLETED" ? "Completed" : cycleStatus?.status === "FAILED" ? "Failed" : "Idle"}
+                </strong>
+                {cycleStatus?.status === "RUNNING" && <p>Discovery and application in progress...</p>}
+                {cycleStatus?.status === "COMPLETED" && <p>Cycle completed successfully.</p>}
+                {cycleStatus?.status === "FAILED" && <p className="error-text">Cycle failed. Check logs for details.</p>}
+                {cycleConflict && <p className="error-text">An autonomous cycle is already running.</p>}
+              </div>
+              <div className="control-buttons">
+                {(!cycleStatus || cycleStatus.status === "IDLE" || cycleStatus.status === "COMPLETED" || cycleStatus.status === "FAILED") && !cycleConflict && (
+                  <button
+                    onClick={handleConfirmRunCycle}
+                    disabled={startCycleLoading || cycleStatus?.status === "RUNNING"}
+                    className="btn btn-primary"
+                  >
+                    <Play size={16} />
+                    {startCycleLoading ? "Starting..." : "Run Autonomous Cycle"}
+                  </button>
+                )}
+                {cycleConflict && (
+                  <button
+                    onClick={() => getAutonomousCycleStatus().then((data) => setCycleStatus(data)).catch(() => {})}
+                    className="btn btn-secondary"
+                  >
+                    Refresh Status
+                  </button>
+                )}
+              </div>
+              {cycleStatus?.run_id && (
+                <div className="status-meta">
+                  <span>Run ID</span>
+                  <b>#{cycleStatus.run_id}</b>
+                </div>
+              )}
+              {/* Completion stats */}
+              {cycleStatus?.status === "COMPLETED" && cycleStatus.stats && Object.keys(cycleStatus.stats).length > 0 && (
+                <div className="status-meta">
+                  <span>Stats</span>
+                  <b>
+                    {cycleStatus.stats.applied !== undefined ? `${cycleStatus.stats.applied} applied` : "Not available"}
+                    {cycleStatus.stats.needs_attention !== undefined && `, ${cycleStatus.stats.needs_attention} needs attention`}
+                    {cycleStatus.stats.external !== undefined && `, ${cycleStatus.stats.external} external`}
+                  </b>
+                </div>
+              )}
+            </section>
+
+            {/* Run Confirmation Modal (E3) */}
+            {showRunConfirmation && (
+              <div className="modal-overlay" onClick={handleCancelRunCycle}>
+                <div className="modal" onClick={(e) => e.stopPropagation()}>
+                  <div className="modal-header">
+                    <h2>Run Autonomous Cycle</h2>
+                    <button onClick={handleCancelRunCycle} className="icon-button"><X size={20} /></button>
+                  </div>
+                  <div className="modal-body">
+                    <p>This will run the autonomous job application cycle, which may:</p>
+                    <ul>
+                      <li>Discover jobs from Naukri</li>
+                      <li>Apply deterministic hard filters</li>
+                      <li>Evaluate candidates with Gemini AI</li>
+                      <li><strong>Submit real Naukri applications</strong> (up to {maxApplications})</li>
+                    </ul>
+                    <p><strong>Maximum applications: {maxApplications}</strong></p>
+                    <p>Gemini budget is internally derived as {maxApplications * 2} for candidate evaluation.</p>
+                    <p>All existing safety rules will be enforced:</p>
+                    <ul>
+                      <li>Duplicate protection</li>
+                      <li>External application boundary</li>
+                      <li>Post-click evidence verification</li>
+                      <li>CAPTCHA/security challenge handling</li>
+                      <li>max_applications hard cap</li>
+                    </ul>
+                    <p className="warning-text">Only one autonomous cycle can run at a time.</p>
+                  </div>
+                  <div className="modal-footer">
+                    <button onClick={handleCancelRunCycle} className="btn btn-secondary">Cancel</button>
+                    <button
+                      onClick={handleStartCycle}
+                      disabled={startCycleLoading}
+                      className="btn btn-primary"
+                    >
+                      {startCycleLoading ? "Starting..." : "Run Cycle"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Metrics — real data from /api/dashboard/summary */}
             <section className="metrics">

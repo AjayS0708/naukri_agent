@@ -1,5 +1,56 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E3: Safe Dashboard Autonomous-Cycle Control
+
+**Status: E3 COMPLETE — Dashboard can safely trigger autonomous cycles**
+
+**APPLIED count: 3 (unchanged from D7 — no new applications in E3)**
+
+E3 enables safe manual triggering of the autonomous job application cycle from the dashboard by extracting the existing autonomous cycle logic into a reusable service and adding control/status API endpoints. The dashboard now provides explicit user confirmation, status polling, and completion statistics while preserving all safety boundaries.
+
+**New control/status API endpoints:**
+- `POST /api/autonomous-cycle/run` — start autonomous cycle with max_applications limit (1-10, default 2)
+- `GET /api/autonomous-cycle/status` — get current cycle status (IDLE/RUNNING/COMPLETED/FAILED) with stats
+
+**Service extraction:**
+- `backend/services/autonomous_cycle/service.py` — extracted `AutonomousCycle` class from CLI
+- Both CLI and FastAPI now use the same service for consistent behavior
+- All safety boundaries preserved: D6.1, D6.2, C2, D4/D5, D7
+
+**Frontend changes:**
+- Autonomous Cycle status panel: shows IDLE/RUNNING/COMPLETED/FAILED state
+- Run Autonomous Cycle button with explicit confirmation modal
+- Confirmation modal explains: real Naukri applications, max_applications limit, safety rules, concurrency protection
+- Status polling at 4-second intervals while RUNNING
+- Dashboard data refresh after COMPLETED/FAILED
+- Completion stats display: applied, needs_attention, external applications
+- HTTP 409 Conflict handling: shows "An autonomous cycle is already running"
+
+**Safety:**
+- Process-level concurrency lock (threading.Lock) prevents concurrent cycles
+- Server-authoritative max_applications (client cannot control Gemini budget)
+- HTTP 409 Conflict returned if cycle already running
+- No secrets, API keys, credentials, cookies, or session data in any response
+- Frontend only calls control/status APIs — no direct Naukri or Gemini access
+
+**Test coverage:**
+- 92 backend tests (`test_autonomous_cycle.py`): logic, boundaries, budgets, filtering — all PASS
+- 11 backend tests (`test_autonomous_cycle_api.py`): API endpoints, concurrency, security — all PASS
+- 30 dashboard tests (E1/E2): PASS
+- 181 total tests (autonomous_cycle + matching_rules + application_safety_gate + dashboard): PASS
+- Frontend TypeScript: PASS
+- Frontend production build: PASS (23.76s)
+
+**Files added:** `backend/services/autonomous_cycle/service.py`, `backend/api/routes/autonomous_cycle.py`, `backend/schemas/autonomous_cycle.py`, `backend/tests/test_autonomous_cycle.py`, `backend/tests/test_autonomous_cycle_api.py`
+
+**Files modified:** `backend/main.py`, `backend/tests/conftest.py`, `run_autonomous_cycle.py`, `frontend/src/types/api.ts`, `frontend/src/services/api.ts`, `frontend/src/app/App.tsx`
+
+**Scheduler:** Discovery-only. Integration with autonomous cycle deferred.
+
+**No live Naukri action performed in E3.**
+
+---
+
 ## CHECKPOINT E2: Dashboard Operational Visibility & Safe Control Foundation
 
 **Status: E2 COMPLETE — Dashboard provides accurate operational view**
