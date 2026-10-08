@@ -45,9 +45,20 @@ class AutonomousCycleStatusResponse(BaseModel):
     """Response for autonomous cycle status."""
     model_config = ConfigDict(extra="forbid")
 
-    status: str  # IDLE, RUNNING, COMPLETED, FAILED
+    active_state: str  # IDLE or RUNNING; never a historical terminal result
+    lock_held: bool
+    active_run: Optional["AutonomousCycleRunResponse"] = None
+    last_run: Optional["AutonomousCycleRunResponse"] = None
+
+
+class AutonomousCycleRunResponse(BaseModel):
+    """Safe summary of either an active or completed autonomous cycle."""
+    model_config = ConfigDict(extra="forbid")
+
     run_id: Optional[int] = None
+    status: str
+    max_applications: Optional[int] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    max_applications: Optional[int] = None
     stats: dict = Field(default_factory=dict)
+    error: Optional[str] = None

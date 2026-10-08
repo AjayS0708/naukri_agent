@@ -101,7 +101,7 @@ export function App() {
 
   // Poll autonomous cycle status while running (E3)
   useEffect(() => {
-    if (!cycleStatus || cycleStatus.status !== "RUNNING") {
+    if (!cycleStatus || cycleStatus.active_state !== "RUNNING") {
       return;
     }
 
@@ -111,7 +111,7 @@ export function App() {
           setCycleStatus(data);
           setCycleConflict(false);
           // Stop polling when completed or failed and refresh dashboard
-          if (data.status === "COMPLETED" || data.status === "FAILED") {
+          if (data.active_state === "IDLE") {
             clearInterval(pollInterval);
             // Refresh dashboard data after completion
             setDashboardLoading(true);
@@ -135,7 +135,7 @@ export function App() {
     }, 4000); // Poll every 4 seconds
 
     return () => clearInterval(pollInterval);
-  }, [cycleStatus?.status]);
+  }, [cycleStatus?.active_state]);
 
   const connection = failed ? "local_offline" : health ? "connected" : "checking";
   // Use dashboard profile data when available; fall back to local profile state
@@ -191,12 +191,10 @@ export function App() {
     try {
       const result = await startAutonomousCycle({ max_applications: maxApplications });
       setCycleStatus({
-        status: result.status,
-        run_id: result.run_id,
-        started_at: null,
-        completed_at: null,
-        max_applications: result.max_applications,
-        stats: {},
+        active_state: "RUNNING",
+        lock_held: true,
+        active_run: { status: "RUNNING", run_id: result.run_id, started_at: null, completed_at: null, max_applications: result.max_applications, stats: {}, error: null },
+        last_run: cycleStatus?.last_run ?? null,
       });
       setShowRunConfirmation(false);
     } catch (error: any) {
@@ -236,6 +234,9 @@ export function App() {
   };
 
   const closeSidebar = () => setSidebarOpen(false);
+  const activeCycle = cycleStatus?.active_run ?? null;
+  const lastCycle = cycleStatus?.last_run ?? null;
+  const isCycleRunning = cycleStatus?.active_state === "RUNNING";
 
   return <main className="app-shell">
     <a href="#main-content" className="skip-to-content">Skip to main content</a>
@@ -321,19 +322,19 @@ export function App() {
             <section className="status-panel">
               <div>
                 <p className="eyebrow">AUTONOMOUS CYCLE</p>
-                <strong className={`agent-state ${(cycleStatus?.status || "IDLE").toLowerCase()}`}>
-                  {cycleStatus?.status === "RUNNING" ? "Running" : cycleStatus?.status === "COMPLETED" ? "Completed" : cycleStatus?.status === "FAILED" ? "Failed" : "Idle"}
+                <strong className={`agent-state ${(isCycleRunning ? "RUNNING" : "IDLE").toLowerCase()}`}>
+                  {isCycleRunning ? "Running" : "Idle"}
                 </strong>
-                {cycleStatus?.status === "RUNNING" && <p>Discovery and application in progress...</p>}
-                {cycleStatus?.status === "COMPLETED" && <p>Cycle completed successfully.</p>}
-                {cycleStatus?.status === "FAILED" && <p className="error-text">Cycle failed. Check logs for details.</p>}
+                {isCycleRunning && <p>Discovery and application in progress...</p>}
+                {!isCycleRunning && lastCycle?.status === "COMPLETED" && <p>Last cycle completed successfully.</p>}
+                {!isCycleRunning && lastCycle?.status === "FAILED" && <p className="error-text">Last cycle failed. Check logs for details.</p>}
                 {cycleConflict && <p className="error-text">An autonomous cycle is already running.</p>}
               </div>
               <div className="control-buttons">
-                {(!cycleStatus || cycleStatus.status === "IDLE" || cycleStatus.status === "COMPLETED" || cycleStatus.status === "FAILED") && !cycleConflict && (
+                {!isCycleRunning && !cycleConflict && (
                   <button
                     onClick={handleConfirmRunCycle}
-                    disabled={startCycleLoading || cycleStatus?.status === "RUNNING"}
+                    disabled={startCycleLoading || isCycleRunning}
                     className="btn btn-primary"
                   >
                     <Play size={16} />
@@ -349,20 +350,20 @@ export function App() {
                   </button>
                 )}
               </div>
-              {cycleStatus?.run_id && (
+              {(activeCycle?.run_id ?? lastCycle?.run_id) && (
                 <div className="status-meta">
                   <span>Run ID</span>
-                  <b>#{cycleStatus.run_id}</b>
+                  <b>#{activeCycle?.run_id ?? lastCycle?.run_id}</b>
                 </div>
               )}
               {/* Completion stats */}
-              {cycleStatus?.status === "COMPLETED" && cycleStatus.stats && Object.keys(cycleStatus.stats).length > 0 && (
+              {!isCycleRunning && lastCycle?.status === "COMPLETED" && Object.keys(lastCycle.stats).length > 0 && (
                 <div className="status-meta">
                   <span>Stats</span>
                   <b>
-                    {cycleStatus.stats.applied !== undefined ? `${cycleStatus.stats.applied} applied` : "Not available"}
-                    {cycleStatus.stats.needs_attention !== undefined && `, ${cycleStatus.stats.needs_attention} needs attention`}
-                    {cycleStatus.stats.external !== undefined && `, ${cycleStatus.stats.external} external`}
+                    {lastCycle.stats.applied !== undefined ? `${lastCycle.stats.applied} applied` : "Not available"}
+                    {lastCycle.stats.needs_attention !== undefined && `, ${lastCycle.stats.needs_attention} needs attention`}
+                    {lastCycle.stats.external !== undefined && `, ${lastCycle.stats.external} external`}
                   </b>
                 </div>
               )}

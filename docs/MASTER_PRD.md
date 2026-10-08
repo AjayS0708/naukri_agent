@@ -1,5 +1,9 @@
 # Naukri AI Job Application Agent
 
+## E4-R — Autonomous Cycle Recovery & Execution-Safety Hardening
+
+E4 is **FAILED**, not passed. Two accidental curl-triggered attempts on 2026-10-08 stopped before browser startup; no applications were created or submitted, no Apply click occurred, and no CAPTCHA/security event occurred. E4-R is a recovery/source-hardening checkpoint only and must not be treated as live validation. Runtime status must represent only current activity (`IDLE`/`RUNNING`) and retain terminal outcomes as a distinct last-run history. Read-only diagnostics must never execute a cycle. Lock release and restart recovery require mocked/unit-level verification. A future E4 revalidation remains pending.
+
 ## CHECKPOINT E3: Safe Dashboard Autonomous-Cycle Control
 
 **Status:** E3 IMPLEMENTED, TESTED, AND VERIFIED

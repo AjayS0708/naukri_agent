@@ -91,7 +91,11 @@ class DiscoveryService:
         try:
             started = await self.adapter.start_session()
             if not started:
-                self._finalize_run(db, DISCOVERY_STATUS_FAILED, "Failed to start browser session.")
+                detail = getattr(self.adapter, "last_startup_error", None)
+                error_message = "Failed to start browser session."
+                if detail:
+                    error_message = f"{error_message} {detail}"
+                self._finalize_run(db, DISCOVERY_STATUS_FAILED, error_message)
                 self.state_manager.transition_to(AgentState.CRITICAL_ERROR)
                 return
 

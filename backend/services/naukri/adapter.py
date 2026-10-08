@@ -57,9 +57,11 @@ class NaukriAdapter(JobPlatformAdapter):
         self.playwright = None
         self.browser: BrowserContext = None
         self.browser_type = browser_type.lower()
+        self.last_startup_error: Optional[str] = None
 
     async def start_session(self) -> bool:
         try:
+            self.last_startup_error = None
             self.playwright = await async_playwright().start()
 
             # Select browser channel based on configuration
@@ -84,7 +86,11 @@ class NaukriAdapter(JobPlatformAdapter):
                 )
             return True
         except Exception as e:
-            logger.error(f"Failed to start Playwright browser: {e}")
+            self.last_startup_error = f"{type(e).__name__}: {e}"
+            logger.exception("playwright_browser_start_failed", extra={"browser_type": self.browser_type})
+            if self.playwright:
+                await self.playwright.stop()
+                self.playwright = None
             return False
 
     async def stop_session(self):

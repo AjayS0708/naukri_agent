@@ -1,5 +1,11 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E4-R: Autonomous Cycle Recovery & Execution-Safety Hardening
+
+**Status: COMPLETE (source/test hardening only); E4 remains FAILED.** On 2026-10-08, two accidental curl-triggered E4 attempts failed before a browser session started. No jobs were discovered, no Apply click or CAPTCHA/security event occurred, and no application was submitted. E4-R does not run a live cycle; a future E4 revalidation remains pending.
+
+Runtime diagnostics now distinguish process-local `active_state` (`IDLE`/`RUNNING`) from the historical `last_run` result. `GET /api/autonomous-cycle/status` is strictly read-only and reports lock state plus safe active/last-run details; it cannot execute a cycle. The execution lock is released on success, failure, and initialization errors. Browser launch failures retain the underlying Playwright exception in the failed discovery-run record and server log instead of only the former generic message.
+
 ## CHECKPOINT E3: Safe Dashboard Autonomous-Cycle Control
 
 **Status: E3 COMPLETE — Dashboard can safely trigger autonomous cycles**

@@ -15,6 +15,14 @@ import pytest
 import asyncio
 from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
+from backend.services.autonomous_cycle.runtime import AutonomousCycleRuntime
+
+
+@pytest.fixture(autouse=True)
+def reset_runtime():
+    """Every test receives a fresh process-local runtime, like a restart."""
+    import backend.api.routes.autonomous_cycle as route_module
+    route_module._runtime = AutonomousCycleRuntime()
 
 
 @pytest.fixture(autouse=True)
@@ -86,17 +94,22 @@ class TestAutonomousCycleStatus:
         response = client.get("/api/autonomous-cycle/status")
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] in ["IDLE", "RUNNING", "COMPLETED", "FAILED"]
+        assert data["active_state"] == "IDLE"
+        assert data["last_run"] is None
 
     def test_status_returns_structure(self, client: TestClient) -> None:
         """Status endpoint should return the correct structure."""
         response = client.get("/api/autonomous-cycle/status")
         assert response.status_code == 200
         data = response.json()
-        assert "status" in data
-        assert "run_id" in data
-        assert "max_applications" in data
-        assert "stats" in data
+        assert set(data) == {"active_state", "lock_held", "active_run", "last_run"}
+
+    def test_status_is_read_only_and_never_constructs_cycle(self, client: TestClient) -> None:
+        """GET diagnostics must not invoke the execution path."""
+        with patch("backend.api.routes.autonomous_cycle.AutonomousCycle") as cycle:
+            response = client.get("/api/autonomous-cycle/status")
+        assert response.status_code == 200
+        cycle.assert_not_called()
 
 
 class TestAutonomousCycleSecurity:

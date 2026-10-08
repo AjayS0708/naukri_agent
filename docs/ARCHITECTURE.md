@@ -1,5 +1,9 @@
 # Architecture
 
+## E4-R autonomous-cycle runtime model
+
+The autonomous-cycle router owns a process-local runtime controller. It atomically holds a single execution lock and maintains separate `active_run` and `last_run` records. `active_state` is only `IDLE` or `RUNNING`; terminal `COMPLETED`/`FAILED` values belong only to `last_run`. A fresh backend process constructs an IDLE runtime, while persisted DiscoveryRun/Application records remain historical evidence. `GET /api/autonomous-cycle/status` snapshots this state without constructing `AutonomousCycle` or scheduling work. Completion, exception, and initialization-failure paths clear `active_run` and release the lock. E4-R did not run a live cycle; the E4 browser-start failure and no-submission evidence remain preserved.
+
 ## CHECKPOINT E3: Safe Dashboard Autonomous-Cycle Control
 
 **Status:** COMPLETE — Dashboard can safely trigger autonomous cycles

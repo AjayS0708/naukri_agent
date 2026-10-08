@@ -1,5 +1,11 @@
 # Development Status
 
+## CHECKPOINT E4-R: Autonomous Cycle Recovery & Execution-Safety Hardening: COMPLETE
+
+**E4 status: FAILED — preserved.** Two accidental curl-triggered autonomous-cycle attempts on 2026-10-08 failed before browser-session startup (including Discovery Run #34). They created no applications, made zero Apply clicks, triggered no CAPTCHA/security event, and made no external submissions. E4-R deliberately performed no live cycle; future E4 revalidation is pending.
+
+**E4-R implementation:** process-local runtime state now separates `active_state` (`IDLE`/`RUNNING`) from `last_run` terminal history. The lock is acquired atomically before execution and released for completion, failure, and initialization exceptions. `GET /api/autonomous-cycle/status` is a read-only diagnostic that exposes active state, lock state, and safe active/last-run timestamps, status, stats, and error; it never constructs or invokes the execution path. Browser launch errors are persisted with the underlying Playwright exception and logged, replacing the old opaque discovery error. Unit/API tests cover fresh runtime, success/failure recovery, lock release, rejection while active, restart-clean state, historical retention, and GET diagnostic non-execution.
+
 ## CHECKPOINT E3: Safe Dashboard Autonomous-Cycle Control: COMPLETE
 
 **Status:** E3 IMPLEMENTED, TESTED, AND VERIFIED

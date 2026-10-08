@@ -104,12 +104,20 @@ export interface AutonomousCycleStartResponse {
 }
 
 export interface AutonomousCycleStatusResponse {
-  status: string; // IDLE, RUNNING, COMPLETED, FAILED
+  active_state: "IDLE" | "RUNNING";
+  lock_held: boolean;
+  active_run: AutonomousCycleRun | null;
+  last_run: AutonomousCycleRun | null;
+}
+
+export interface AutonomousCycleRun {
   run_id: number | null;
+  status: "RUNNING" | "COMPLETED" | "FAILED";
   started_at: string | null;
   completed_at: string | null;
   max_applications: number | null;
   stats: Record<string, unknown>;
+  error: string | null;
 }
 
 // ── Applications List types (Drill-down) ─────────────────────────────
