@@ -1,5 +1,34 @@
 # Naukri AI Job Application Agent
 
+## E4 — Dashboard Live-Run Outcome (Run #52)
+
+**Status: E4 LIVE CYCLE EXECUTED — runtime/dashboard validation PASSED; application-submission objective UNRESOLVED.**
+
+This checkpoint documents the actual outcome of the E4 live cycle (Run #52) triggered through the Dashboard UI. It is documentation and Git only: no new autonomous cycle was executed, no source code was modified, and no database was modified during this checkpoint.
+
+**Verified Run #52 result (triggered by Dashboard UI):**
+
+- Trigger: Dashboard UI "Run Autonomous Cycle" button with `max_applications = 1`.
+- Run ID: `52`.
+- Discovery run ID: `52`.
+- Terminal status: `COMPLETED`.
+- Jobs discovered: `103`.
+- Jobs processed from the current run: `81`.
+- Candidates considered for application: `3`.
+- New applications submitted during Run #52: `0`.
+- Apply clicks during Run #52: `0`.
+- Runtime returned to `IDLE`, with `lock_held = false`.
+
+**Distinction between successful execution and zero applications:**
+
+- The cycle executed end-to-end: discovery, filtering, candidate evaluation, and safe completion. The runtime returned to `IDLE` and released its lock. The Dashboard UI, control/status APIs, non-reload Uvicorn runtime, and `max_applications = 1` control all behaved as designed. Runtime/dashboard validation therefore PASSED.
+- However, zero applications were submitted during Run #52. The three candidates considered did not reach a safe native Apply click. The application-submission objective remains UNRESOLVED and is recorded as an open issue for a separate investigation checkpoint.
+- The three existing applications referenced in earlier reports (records #18, #24, #25) belong to earlier runs (D4/D5 and D7), NOT to Run #52. They are preserved and unaltered.
+
+**Open issue (carried forward):** Why did Run #52 submit zero applications despite successful execution? Root cause has not been determined. Investigation is deferred to a separate checkpoint after this push. Do not claim the application objective was achieved.
+
+**Historical E4 records preserved:** The two accidental curl-triggered E4 attempts on 2026-10-08 that failed before browser startup remain preserved and unaltered. Run #52 is the first E4 cycle to execute end-to-end through the Dashboard UI.
+
 ## E4-R2 — Windows Playwright Runtime Requirement (Documentation Only)
 
 E4 live validation has **NOT** yet succeeded. This checkpoint documents the runtime/environment requirement discovered during E4 validation and resolves the E4 browser-startup blocker. It is documentation-only: no E4 execution occurred, no Dashboard Run was clicked, no `POST /api/autonomous-cycle/run` was called, no database was modified, no backend/frontend source code was modified, no Playwright configuration was changed, and no asyncio workaround was added.
@@ -25,15 +54,18 @@ The Playwright installation itself was healthy and the Chromium installation is 
 
 **E4 status tracking:**
 
-- E4 live validation has NOT yet succeeded.
+- E4 live cycle has since EXECUTED end-to-end in Run #52 (triggered by Dashboard UI, `max_applications=1`, terminal status `COMPLETED`, `lock_held=false`). See the **E4 — Dashboard Live-Run Outcome (Run #52)** section at the top of this document.
+- Runtime/dashboard validation PASSED; the application-submission objective remains UNRESOLVED (zero applications in Run #52). Investigation is deferred to a separate checkpoint.
 - Historical E4 FAILED runs (including the two accidental curl-triggered attempts on 2026-10-08 that failed before browser startup) remain preserved and unaltered.
-- The next checkpoint is E4 final live validation against a non-reload Uvicorn backend.
+- The non-reload Uvicorn runtime requirement documented above was the runtime fix that made Run #52 possible.
 
-**Do not claim E4 PASS.**
+**Do not claim the E4 application objective was achieved.** Describe E4 as runtime/dashboard validation passed, with application submission still unresolved.
 
 ## E4-R — Autonomous Cycle Recovery & Execution-Safety Hardening
 
-E4 is **FAILED**, not passed. Two accidental curl-triggered attempts on 2026-10-08 stopped before browser startup; no applications were created or submitted, no Apply click occurred, and no CAPTCHA/security event occurred. E4-R is a recovery/source-hardening checkpoint only and must not be treated as live validation. Runtime status must represent only current activity (`IDLE`/`RUNNING`) and retain terminal outcomes as a distinct last-run history. Read-only diagnostics must never execute a cycle. Lock release and restart recovery require mocked/unit-level verification. A future E4 revalidation remains pending.
+E4-R prepared the runtime state model and recovery paths that Run #52 later exercised successfully. The two accidental curl-triggered attempts on 2026-10-08 stopped before browser startup; no applications were created or submitted, no Apply click occurred, and no CAPTCHA/security event occurred. E4-R is a recovery/source-hardening checkpoint only and must not be treated as live validation. Runtime status represents only current activity (`IDLE`/`RUNNING`) and retains terminal outcomes as a distinct last-run history. Read-only diagnostics must never execute a cycle. Lock release and restart recovery require mocked/unit-level verification.
+
+**Run #52 outcome:** The cycle started, acquired the lock (`active_state=RUNNING`), completed normally, and returned to `IDLE` with `lock_held=false`. The `COMPLETED` terminal status and zero-application outcome are recorded in `last_run`, distinct from the active state. See the **E4 — Dashboard Live-Run Outcome (Run #52)** section at the top of this document.
 
 ## CHECKPOINT E3: Safe Dashboard Autonomous-Cycle Control
 
@@ -137,6 +169,8 @@ E3 enables safe manual triggering of the autonomous job application cycle from t
 - questionnaire boundary
 - CAPTCHA/security boundary
 - D4/D5 Apply/evidence behavior
+
+**E3 Live Validation (Run #52, 2026-10-09):** The E3 control surface was exercised end-to-end through the Dashboard UI with `max_applications = 1`. The cycle started, acquired the lock, ran discovery/filtering/candidate evaluation, completed with status `COMPLETED`, and returned to `IDLE` with `lock_held = false`. This confirms the confirmation modal, selectable `max_applications` control, status polling, completion stats, and HTTP 409 concurrency protection all behave as designed in a live run. Zero applications were submitted in Run #52; the three pre-existing applications (records #18, #24, #25) belong to earlier runs (D4/D5 and D7) and were untouched. See the **E4 — Dashboard Live-Run Outcome (Run #52)** section at the top of this document.
 
 ---
 

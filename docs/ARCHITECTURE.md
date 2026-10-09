@@ -1,5 +1,34 @@
 # Architecture
 
+## E4 — Dashboard Live-Run Outcome (Run #52)
+
+**Status: E4 LIVE CYCLE EXECUTED — runtime/dashboard validation PASSED; application-submission objective UNRESOLVED.**
+
+This checkpoint documents the actual outcome of the E4 live cycle (Run #52) triggered through the Dashboard UI. It is documentation and Git only: no new autonomous cycle was executed, no source code was modified, and no database was modified during this checkpoint.
+
+**Verified Run #52 result (triggered by Dashboard UI):**
+
+- Trigger: Dashboard UI "Run Autonomous Cycle" button with `max_applications = 1`.
+- Run ID: `52`.
+- Discovery run ID: `52`.
+- Terminal status: `COMPLETED`.
+- Jobs discovered: `103`.
+- Jobs processed from the current run: `81`.
+- Candidates considered for application: `3`.
+- New applications submitted during Run #52: `0`.
+- Apply clicks during Run #52: `0`.
+- Runtime returned to `IDLE`, with `lock_held = false`.
+
+**Distinction between successful execution and zero applications:**
+
+- The cycle executed end-to-end: discovery, filtering, candidate evaluation, and safe completion. The runtime returned to `IDLE` and released its lock. The Dashboard UI, control/status APIs, non-reload Uvicorn runtime, and `max_applications = 1` control all behaved as designed. Runtime/dashboard validation therefore PASSED.
+- However, zero applications were submitted during Run #52. The three candidates considered did not reach a safe native Apply click. The application-submission objective remains UNRESOLVED and is recorded as an open issue for a separate investigation checkpoint.
+- The three existing applications referenced in earlier reports (records #18, #24, #25) belong to earlier runs (D4/D5 and D7), NOT to Run #52. They are preserved and unaltered.
+
+**Open issue (carried forward):** Why did Run #52 submit zero applications despite successful execution? Root cause has not been determined. Investigation is deferred to a separate checkpoint after this push. Do not claim the application objective was achieved.
+
+**Historical E4 records preserved:** The two accidental curl-triggered E4 attempts on 2026-10-08 that failed before browser startup remain preserved and unaltered. Run #52 is the first E4 cycle to execute end-to-end through the Dashboard UI.
+
 ## E4-R2 Windows Playwright runtime requirement
 
 E4 live validation has NOT yet succeeded. This checkpoint documents a runtime/environment requirement and resolves the E4 browser-startup blocker; it is documentation-only (no E4 execution, no Dashboard Run click, no `POST /api/autonomous-cycle/run` call, no database modification, no backend/frontend source-code modification, no Playwright configuration change, no asyncio workaround).
@@ -35,15 +64,18 @@ uvicorn (no --reload)
 
 **E4 status tracking:**
 
-- E4 live validation has NOT yet succeeded.
+- E4 live cycle has since EXECUTED end-to-end in Run #52 (triggered by Dashboard UI, `max_applications=1`, terminal status `COMPLETED`, `lock_held=false`). See the **E4 — Dashboard Live-Run Outcome (Run #52)** section at the top of this document.
+- Runtime/dashboard validation PASSED; the application-submission objective remains UNRESOLVED (zero applications in Run #52). Investigation is deferred to a separate checkpoint.
 - Historical E4 FAILED runs (including the two accidental curl-triggered attempts on 2026-10-08 that failed before browser startup) remain preserved and unaltered.
-- The next checkpoint is E4 final live validation against a non-reload Uvicorn backend.
+- The non-reload Uvicorn runtime requirement documented above was the runtime fix that made Run #52 possible.
 
-**Do not claim E4 PASS.**
+**Do not claim the E4 application objective was achieved.** Describe E4 as runtime/dashboard validation passed, with application submission still unresolved.
 
 ## E4-R autonomous-cycle runtime model
 
-The autonomous-cycle router owns a process-local runtime controller. It atomically holds a single execution lock and maintains separate `active_run` and `last_run` records. `active_state` is only `IDLE` or `RUNNING`; terminal `COMPLETED`/`FAILED` values belong only to `last_run`. A fresh backend process constructs an IDLE runtime, while persisted DiscoveryRun/Application records remain historical evidence. `GET /api/autonomous-cycle/status` snapshots this state without constructing `AutonomousCycle` or scheduling work. Completion, exception, and initialization-failure paths clear `active_run` and release the lock. E4-R did not run a live cycle; the E4 browser-start failure and no-submission evidence remain preserved.
+The autonomous-cycle router owns a process-local runtime controller. It atomically holds a single execution lock and maintains separate `active_run` and `last_run` records. `active_state` is only `IDLE` or `RUNNING`; terminal `COMPLETED`/`FAILED` values belong only to `last_run`. A fresh backend process constructs an IDLE runtime, while persisted DiscoveryRun/Application records remain historical evidence. `GET /api/autonomous-cycle/status` snapshots this state without constructing `AutonomousCycle` or scheduling work. Completion, exception, and initialization-failure paths clear `active_run` and release the lock.
+
+**Run #52 exercised this model:** the cycle started, acquired the lock (`active_state=RUNNING`), completed normally, and returned to `IDLE` with `lock_held=false`. The `COMPLETED` terminal status and zero-application outcome are recorded in `last_run`, distinct from the active state. The two accidental curl-triggered E4 attempts on 2026-10-08 that failed before browser startup remain preserved in history.
 
 ## CHECKPOINT E3: Safe Dashboard Autonomous-Cycle Control
 
