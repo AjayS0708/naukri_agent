@@ -272,14 +272,18 @@ class TestSafetyGate:
         assert allowed is False
         assert "suspicious" in reason.lower()
     
-    def test_ai_needs_attention_blocked(
+    def test_ai_needs_attention_allowed(
         self,
         application_service: ApplicationService,
         eligible_job: Job,
         confirmed_profile: Profile,
         job_preferences: JobPreference
     ):
-        """Test that AI NEEDS_ATTENTION recommendation blocks application."""
+        """An advisory AI NEEDS_ATTENTION recommendation must NOT block a job that
+        matches saved preferences and passes every deterministic hard rule.
+
+        Gemini is advisory; its subjective recommendation is not proof of fraud.
+        """
         job_analysis = JobAnalysis(
             match_score=60,
             role_match=True,
@@ -293,12 +297,91 @@ class TestSafetyGate:
             recommendation=AIRecommendation.NEEDS_ATTENTION,
             short_reason="Requires manual review"
         )
-        
+
         allowed, reason = application_service.run_final_safety_gate(
             eligible_job, confirmed_profile, job_preferences, job_analysis
         )
+        assert allowed is True, reason
+
+    def test_ai_skip_recommendation_allowed(
+        self,
+        application_service: ApplicationService,
+        eligible_job: Job,
+        confirmed_profile: Profile,
+        job_preferences: JobPreference
+    ):
+        """A subjective AI SKIP recommendation (suspicious=False) must not block
+        either; only deterministic rules and the explicit fraud flag block."""
+        job_analysis = JobAnalysis(
+            match_score=55,
+            role_match=True,
+            skill_match=True,
+            experience_match=True,
+            location_match=True,
+            salary_match=True,
+            job_quality=JobQuality.AVERAGE,
+            duplicate_probability=0.1,
+            suspicious=False,
+            recommendation=AIRecommendation.SKIP,
+            short_reason="Model prefers to skip"
+        )
+
+        allowed, reason = application_service.run_final_safety_gate(
+            eligible_job, confirmed_profile, job_preferences, job_analysis
+        )
+        assert allowed is True, reason
+
+    def test_needs_attention_still_requires_deterministic_rules(
+        self,
+        application_service: ApplicationService,
+        db_session: Session,
+        confirmed_profile: Profile,
+        job_preferences: JobPreference
+    ):
+        """Removing the subjective block must not weaken deterministic gates: a
+        job that also fails a hard rule stays blocked even when Gemini returns
+        NEEDS_ATTENTION."""
+        from datetime import UTC, datetime
+
+        below_min_salary_job = Job(
+            platform="naukri",
+            external_job_id="needs_attention_below_salary",
+            url="https://www.naukri.com/job/na-salary",
+            title="Python Developer",
+            company="Test Corp",
+            description="Python developer role",
+            location="Bengaluru",
+            salary="1-2 LPA",
+            salary_min=1.0,
+            salary_max=2.0,
+            experience="0-1 years",
+            employment_type="Full-time",
+            status="DISCOVERED",
+            discovered_at=datetime.now(UTC),
+            last_seen=datetime.now(UTC),
+        )
+        db_session.add(below_min_salary_job)
+        db_session.commit()
+
+        job_analysis = JobAnalysis(
+            match_score=60,
+            role_match=True,
+            skill_match=True,
+            experience_match=True,
+            location_match=True,
+            salary_match=False,
+            job_quality=JobQuality.AVERAGE,
+            duplicate_probability=0.1,
+            suspicious=False,
+            recommendation=AIRecommendation.NEEDS_ATTENTION,
+            short_reason="Requires manual review"
+        )
+
+        allowed, reason = application_service.run_final_safety_gate(
+            below_min_salary_job, confirmed_profile, job_preferences, job_analysis
+        )
         assert allowed is False
-        assert "attention" in reason.lower()
+        assert "salary" in reason.lower()
     
     def test_employment_type_not_allowed_blocked(
         self,

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from backend.services.naukri.adapter import NaukriAdapter, JobPageResult
@@ -57,24 +57,28 @@ class TestParsePostedDate:
         result = adapter._parse_posted_date("Today")
         assert result is not None
         assert isinstance(result, datetime)
+        assert result.tzinfo is not None
         # Should be very recent (within last minute)
-        assert (datetime.now() - result).total_seconds() < 60
+        assert (datetime.now(UTC) - result).total_seconds() < 60
 
     def test_parse_posted_date_just_now(self):
         adapter = NaukriAdapter()
         result = adapter._parse_posted_date("Just now")
         assert result is not None
         assert isinstance(result, datetime)
-        assert (datetime.now() - result).total_seconds() < 60
+        assert result.tzinfo is not None
+        assert (datetime.now(UTC) - result).total_seconds() < 60
 
     def test_parse_posted_date_yesterday(self):
         adapter = NaukriAdapter()
         result = adapter._parse_posted_date("Yesterday")
         assert result is not None
         assert isinstance(result, datetime)
+        assert result.tzinfo is not None
         # Should be approximately 1 day ago
-        assert (datetime.now() - result).total_seconds() > timedelta(hours=23).total_seconds()
-        assert (datetime.now() - result).total_seconds() < timedelta(hours=25).total_seconds()
+        age = (datetime.now(UTC) - result).total_seconds()
+        assert age > timedelta(hours=23).total_seconds()
+        assert age < timedelta(hours=25).total_seconds()
 
     def test_parse_posted_date_case_insensitive(self):
         adapter = NaukriAdapter()
@@ -83,10 +87,74 @@ class TestParsePostedDate:
         assert result1 is not None
         assert result2 is not None
 
-    def test_parse_posted_date_unhandled_format(self):
+    def test_parse_posted_date_days_ago(self):
         adapter = NaukriAdapter()
         result = adapter._parse_posted_date("2 days ago")
-        assert result is None  # Not implemented yet
+        assert result is not None
+        assert result.tzinfo is not None
+        age_days = (datetime.now(UTC) - result).total_seconds() / 86400
+        assert 1.9 < age_days < 2.1
+
+    def test_parse_posted_date_singular_day_ago(self):
+        adapter = NaukriAdapter()
+        result = adapter._parse_posted_date("1 day ago")
+        assert result is not None
+        age_days = (datetime.now(UTC) - result).total_seconds() / 86400
+        assert 0.9 < age_days < 1.1
+
+    def test_parse_posted_date_weeks_ago(self):
+        adapter = NaukriAdapter()
+        result = adapter._parse_posted_date("2 weeks ago")
+        assert result is not None
+        age_days = (datetime.now(UTC) - result).total_seconds() / 86400
+        assert 13.9 < age_days < 14.1
+
+    def test_parse_posted_date_thirty_plus_days_ago(self):
+        adapter = NaukriAdapter()
+        result = adapter._parse_posted_date("30+ days ago")
+        assert result is not None
+        age_days = (datetime.now(UTC) - result).total_seconds() / 86400
+        assert 29.9 < age_days < 30.1
+
+    def test_parse_posted_date_returns_tz_aware_utc(self):
+        adapter = NaukriAdapter()
+        for text in ("Today", "Yesterday", "3 days ago", "1 week ago", "30+ days ago"):
+            result = adapter._parse_posted_date(text)
+            assert result is not None, text
+            assert result.utcoffset() == timedelta(0), text
+
+    def test_parse_posted_date_absolute_format(self):
+        adapter = NaukriAdapter()
+        result = adapter._parse_posted_date("05 Oct 2026")
+        assert result is not None
+        assert result.year == 2026 and result.month == 10 and result.day == 5
+        assert result.tzinfo is not None
+
+    def test_parse_posted_date_unrecognized_returns_none(self):
+        """Unknown text must never be turned into a fabricated date."""
+        adapter = NaukriAdapter()
+        assert adapter._parse_posted_date("Few days ago") is None
+        assert adapter._parse_posted_date("Posted recently") is None
+        assert adapter._parse_posted_date("active") is None
+
+    def test_posted_sort_key_fresh_first_unknown_last(self):
+        adapter = NaukriAdapter()
+        now = datetime.now(UTC)
+        fresh = {"posted_at": now}
+        older = {"posted_at": now - timedelta(days=5)}
+        unknown = {"posted_at": None}
+
+        ordered = sorted([older, unknown, fresh], key=adapter._posted_sort_key)
+
+        assert ordered[0] is fresh
+        assert ordered[1] is older
+        assert ordered[2] is unknown
+
+    def test_posted_sort_key_accepts_naive_datetime(self):
+        adapter = NaukriAdapter()
+        naive = datetime(2026, 10, 1, 12, 0, 0)
+        key = adapter._posted_sort_key({"posted_at": naive})
+        assert key[0] == 0
 
 
 class TestBuildNaukriSearchUrl:
@@ -1412,6 +1480,56 @@ class TestSearchJobsUrlAndSelectors:
 
         # Security check should be called once (after search navigation)
         assert mock_check.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_search_jobs_emits_fresh_first_and_advances_pages(self):
+        """Cards are emitted freshest-first per page, unknown dates last, and
+        pagination advances to the next page."""
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+
+        mock_page = AsyncMock()
+        adapter.browser.new_page.return_value = mock_page
+
+        now = datetime.now(UTC)
+        page1 = [
+            {"title": "Old", "posted_at": now - timedelta(days=10)},
+            {"title": "New", "posted_at": now - timedelta(days=1)},
+        ]
+        page2 = [
+            {"title": "Unknown", "posted_at": None},
+            {"title": "Newest", "posted_at": now},
+        ]
+
+        pages_of_cards = [["c1a", "c1b"], ["c2a", "c2b"], []]
+        calls = {"n": 0}
+
+        def query_selector_all(selector):
+            if selector == ".srp-jobtuple-wrapper":
+                idx = calls["n"]
+                calls["n"] += 1
+                return pages_of_cards[idx] if idx < len(pages_of_cards) else []
+            return []
+
+        mock_page.query_selector_all.side_effect = query_selector_all
+        next_buttons = [AsyncMock(), AsyncMock(), None]
+        mock_page.query_selector.side_effect = next_buttons
+
+        with patch.object(
+            adapter, '_extract_card_data', new_callable=AsyncMock,
+            side_effect=[page1[0], page1[1], page2[0], page2[1]],
+        ):
+            with patch.object(adapter, '_check_security', new_callable=AsyncMock):
+                with patch('asyncio.sleep', new_callable=AsyncMock):
+                    results = [
+                        job async for job in adapter.search_jobs("Developer", ["Mumbai"])
+                    ]
+
+        assert [job["title"] for job in results] == ["New", "Old", "Newest", "Unknown"]
+        assert [job["page_number"] for job in results] == [1, 1, 2, 2]
+        # Pagination advanced twice (page 1 -> 2 -> 3), then stopped.
+        assert next_buttons[0].click.await_count == 1
+        assert next_buttons[1].click.await_count == 1
 
 
 class TestSearchJobsCaptchaLifecycle:

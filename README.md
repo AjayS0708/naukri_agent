@@ -1,5 +1,28 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E5-R3: Freshness-First Discovery & Advisory-Only AI Recommendations
+
+**Status: E5-R3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live cycle run — awaiting human review.**
+
+Two defects silently reduced and misranked eligible candidates. First, the final safety gate rejected jobs that matched the user's saved preferences and passed every deterministic rule solely because Gemini returned a subjective `NEEDS_ATTENTION` recommendation. Second, discovery counted every scanned card against its scan budget while the cycle ordered candidates by raw `discovered_at`, so pages dominated by already-known duplicates could consume the budget and leave fresh eligible jobs unprocessed.
+
+**Implementation:**
+
+- `backend/services/applications/service.py`: `run_final_safety_gate()` no longer blocks on the AI recommendation — Gemini is advisory and the only AI-derived block is the explicit `job_analysis.suspicious` fraud flag. All deterministic gates (confirmed profile, duplicate/`APPLIED` protection, location, fresher/experience, IT-scope, salary minimum, employment type, title/search scope) are unchanged and remain authoritative.
+- `backend/services/naukri/adapter.py`: `_parse_posted_date()` returns a timezone-aware UTC datetime for `today`/`just now`, `yesterday`, `N days/weeks ago`, `30+ days ago`, and common absolute formats; unrecognised text returns `None` (never fabricated). Each page's cards are emitted freshness-first (known dates newest-first, unknown last). No Naukri URL/sort parameter or pagination behavior was changed.
+- `backend/services/discovery/service.py`: the scan budget (`max_cards`) now applies to **new distinct jobs**, so duplicate-heavy pages cannot starve fresh jobs. Re-seen duplicates advance `last_seen` and adopt a newer grounded `posted_at` (unknown never overwrites known).
+- `backend/services/autonomous_cycle/service.py`: freshness-first ordering. `_apply_hard_filters_and_enqueue()` spends the bounded Gemini budget on the newest-posted eligible jobs (unknown date last), then by `discovered_at` and `match_score`; `_run_applications()` processes newest-posted candidates first (nulls last).
+
+**Constraints honored:** no saved-preference changes; no hard-filter, duplicate-protection, safety-check, or limit bypass; no URL/sort-parameter change; unknown dates never invented; no live Naukri cycle, browser, Apply click, or Gemini call; no database writes; no commit/push.
+
+**Test coverage:** 270 focused tests pass across `test_application_safety_gate.py` (20), `test_discovery.py` (15), `test_naukri_adapter.py` (128), and `test_autonomous_cycle.py` (new `TestFreshnessFirstOrdering`). Full backend suite: 875 passed, 2 failed — both failures are pre-existing and unrelated (C2 IT-scope test and a dashboard test-ordering isolation case). Zero regressions.
+
+**Files modified:** `backend/services/applications/service.py`, `backend/services/naukri/adapter.py`, `backend/services/discovery/service.py`, `backend/services/autonomous_cycle/service.py`, and the four corresponding test files.
+
+**Documentation updated:** `README.md`, `docs/MASTER_PRD.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT_STATUS.md`, `docs/DECISIONS.md`
+
+---
+
 ## CHECKPOINT E4-R10: Targeted Role-Matching Improvement
 
 **Status: E4-R10 IMPLEMENTED, TESTED, AND VERIFIED**

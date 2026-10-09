@@ -1,7 +1,7 @@
 import asyncio
 import re
 import urllib.parse
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import AsyncGenerator, Dict, Any, List, Optional
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from dataclasses import dataclass
@@ -22,6 +22,19 @@ def get_browser_user_data_dir() -> str:
     return str(settings.browser_user_data_path)
 
 USER_DATA_DIR = get_browser_user_data_dir()
+
+# Relative posting-age units that Naukri renders on job cards. These are the
+# only units converted to a concrete datetime; unknown units are left as None
+# so the agent never fabricates a posting date.
+_RELATIVE_POSTED_UNIT_DAYS = {
+    "day": 1,
+    "days": 1,
+    "week": 7,
+    "weeks": 7,
+}
+
+# Absolute posting-date formats that Naukri renders on job cards.
+_ABSOLUTE_POSTED_FORMATS = ("%d %b %Y", "%d %B %Y", "%d-%m-%Y", "%Y-%m-%d")
 
 
 @dataclass
@@ -454,11 +467,20 @@ class NaukriAdapter(JobPlatformAdapter):
                     # Fallback to older selector for backward compatibility
                     job_cards = await page.query_selector_all('article.jobTuple')
 
+                # Freshness-first: emit the cards on this page with a known
+                # posting date before cards whose posting date is unknown, and
+                # newest first among the known dates. Dates are only read from
+                # the card; unknown dates are never fabricated and sort last.
+                page_jobs: List[Dict[str, Any]] = []
                 for card in job_cards:
                     data = await self._extract_card_data(card)
                     if data:
                         data["page_number"] = page_num
-                        yield data
+                        page_jobs.append(data)
+
+                page_jobs.sort(key=self._posted_sort_key)
+                for data in page_jobs:
+                    yield data
 
                 # Next page
                 next_btn = await page.query_selector('a.styles_btn-secondary__2BqIV')
@@ -567,25 +589,57 @@ class NaukriAdapter(JobPlatformAdapter):
             logger.debug(f"Error parsing job card: {e}")
             return {}
 
+    def _posted_sort_key(self, job_data: Dict[str, Any]) -> tuple[int, float]:
+        """Sort key that puts the freshest cards first.
+
+        Returns ``(0, -timestamp)`` for cards with a known, grounded posting
+        date (newest first) and ``(1, 0.0)`` for cards whose posting date is
+        unknown, so unknown dates always sort last. No date is invented here.
+        """
+        posted_at = job_data.get("posted_at")
+        if isinstance(posted_at, datetime):
+            if posted_at.tzinfo is None:
+                posted_at = posted_at.replace(tzinfo=UTC)
+            return (0, -posted_at.timestamp())
+        return (1, 0.0)
+
     def _parse_posted_date(self, posted_text: str) -> datetime | None:
-        """Parse Naukri posted date text into datetime if possible."""
+        """Parse Naukri posted date text into a timezone-aware UTC datetime.
+
+        Only formats that are actually present on the card are converted. Any
+        unrecognised text returns ``None`` so callers never receive a
+        fabricated posting date.
+        """
         if not posted_text:
             return None
 
-        posted_text = posted_text.strip().lower()
+        text = posted_text.strip().lower()
+        if not text:
+            return None
 
-        # Handle relative time formats like "2 days ago", "1 week ago", etc.
-        # This is a basic implementation - can be enhanced later
-        try:
-            from datetime import timedelta
-            if "today" in posted_text or "just now" in posted_text:
-                return datetime.now()
-            elif "yesterday" in posted_text:
-                return datetime.now() - timedelta(days=1)
-            # For more complex formats, return None for now
-            # This can be enhanced with dateutil or similar in future
-        except Exception:
-            pass
+        now = datetime.now(UTC)
+
+        if "just now" in text or "today" in text:
+            return now
+        if "yesterday" in text:
+            return now - timedelta(days=1)
+
+        # Naukri's explicit floor format: "30+ days ago" means at least 30 days.
+        if re.search(r"\b30\+\s*days?\b", text):
+            return now - timedelta(days=30)
+
+        relative = re.search(r"\b(\d+)\s*\+?\s*(day|days|week|weeks)\s+ago\b", text)
+        if relative:
+            amount = int(relative.group(1))
+            days = amount * _RELATIVE_POSTED_UNIT_DAYS[relative.group(2)]
+            return now - timedelta(days=days)
+
+        for fmt in _ABSOLUTE_POSTED_FORMATS:
+            try:
+                parsed = datetime.strptime(text.title(), fmt)
+            except ValueError:
+                continue
+            return parsed.replace(tzinfo=UTC)
 
         return None
 

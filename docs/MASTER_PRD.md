@@ -1,5 +1,44 @@
 # Naukri AI Job Application Agent
 
+## E5-R3 — Freshness-First Discovery & Advisory-Only AI Recommendations
+
+**Status:** E5-R3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live cycle run — awaiting human review.
+
+**E5-R3 Summary:**
+
+The final safety gate treated Gemini's subjective `NEEDS_ATTENTION` recommendation as if it were proof of fraud, rejecting jobs that matched the user's saved preferences and passed every deterministic rule. Separately, discovery counted every scanned card against its scan budget and the cycle ordered candidates by raw `discovered_at`, so duplicate-heavy search pages could consume the budget and leave fresh eligible jobs unprocessed. E5-R3 removes the subjective block and makes discovery and candidate selection freshness-first.
+
+**Implementation:**
+
+1. `backend/services/applications/service.py` — `run_final_safety_gate()` no longer blocks on the AI recommendation. Gemini remains advisory; the only AI-derived block is the explicit `job_analysis.suspicious` fraud flag. Every deterministic gate is unchanged and authoritative: confirmed profile, duplicate/`APPLIED` protection, location, fresher/experience, IT-scope, salary minimum, employment type, and title/search scope. Unused `AIRecommendation` import removed.
+2. `backend/services/naukri/adapter.py` — `_parse_posted_date()` returns timezone-aware UTC datetimes for `today`/`just now`, `yesterday`, `N days/weeks ago`, `30+ days ago` (30 days), and absolute formats (`%d %b %Y`, `%d %B %Y`, `%d-%m-%Y`, `%Y-%m-%d`); unrecognised text returns `None` (never fabricated). Per-page results are emitted freshness-first (`_posted_sort_key`: known dates newest-first, unknown last). No Naukri URL/sort parameter or pagination change.
+3. `backend/services/discovery/service.py` — the scan budget (`max_cards`) now counts **new distinct jobs**, not all scanned cards, so duplicates cannot starve fresh jobs. `_refresh_duplicate_job()` advances `last_seen` and adopts only a newer grounded `posted_at`.
+4. `backend/services/autonomous_cycle/service.py` — freshness-first ordering via `posted_freshness_key()` / `job_freshness_key()`. `_apply_hard_filters_and_enqueue()` prioritizes the newest-posted eligible jobs (unknown last), then `discovered_at` and `match_score`, so the bounded Gemini budget targets the freshest candidates. `_run_applications()` processes newest-posted candidates first (nulls last).
+
+**Constraints honored:** no saved-preference changes; no hard-filter, duplicate-protection, safety-check, or configured-limit bypass; unknown posting dates never invented; no live Naukri cycle, browser, Apply click, or Gemini call; no database writes; no commit/push.
+
+**Test Coverage:**
+
+- `backend/tests/test_application_safety_gate.py` — 20 PASS (subjective `NEEDS_ATTENTION`/`SKIP` allowed; suspicious still blocked; deterministic rules still authoritative)
+- `backend/tests/test_naukri_adapter.py` — 128 PASS (expanded date parsing, freshness ordering, page advancement)
+- `backend/tests/test_discovery.py` — 15 PASS (newer `posted_at` refresh, unknown-no-overwrite, duplicate starvation)
+- `backend/tests/test_autonomous_cycle.py` — 104 + new `TestFreshnessFirstOrdering` (3 tests), all PASS
+- Focused run of the four files: **270 passed**. Full backend suite: **875 passed, 2 failed** — both pre-existing and unrelated (`test_checkpoint_c2_policy.py::test_it_scope_is_deterministic` on unmodified `matching/engine.py`; `test_dashboard.py::TestDashboardSummaryEmpty::test_empty_discovery_has_zero_counts`, a test-ordering isolation case that passes alone). Zero regressions.
+
+**Files Modified:**
+- `backend/services/applications/service.py`
+- `backend/services/naukri/adapter.py`
+- `backend/services/discovery/service.py`
+- `backend/services/autonomous_cycle/service.py`
+- `backend/tests/test_application_safety_gate.py`
+- `backend/tests/test_naukri_adapter.py`
+- `backend/tests/test_discovery.py`
+- `backend/tests/test_autonomous_cycle.py`
+
+**Documentation updated:** `README.md`, `docs/MASTER_PRD.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT_STATUS.md`, `docs/DECISIONS.md`
+
+**Remaining limitations:** only the Naukri card date renderings above are parsed (anything else stays `None`); Gemini may still label a good job `NEEDS_ATTENTION` at the analysis stage (advisory only); no live endpoint validation was performed.
+
 ## E4-R10 — Targeted Role-Matching Improvement
 
 **Status:** E4-R10 IMPLEMENTED, TESTED, AND VERIFIED

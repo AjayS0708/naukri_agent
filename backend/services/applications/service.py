@@ -13,7 +13,7 @@ from backend.schemas.application import (
     ApplicationStatus, ApplicationMethod, ApplicationSchema,
     ApplicationCreate, ApplicationUpdate
 )
-from backend.schemas.ai import JobAnalysis, AIRecommendation
+from backend.schemas.ai import JobAnalysis
 from backend.services.matching.normalizer import (
     has_overlapping_location,
     extract_lowest_salary_lpa,
@@ -167,15 +167,17 @@ class ApplicationService:
             if not role_allowed:
                 return False, f"Job title '{job.title}' not in configured search scope: {role_reason}"
         
-        # 9. Gemini suspicious flag (if analysis available)
+        # 9. Gemini suspicious/fraud flag (only if analysis available).
+        #
+        # Gemini is advisory. Its subjective recommendation is never treated as
+        # proof of fraud: a job that matches the user's saved preferences and
+        # passes every deterministic hard rule above must not be rejected solely
+        # because Gemini returned NEEDS_ATTENTION (weak fit / vague description).
+        # Only the explicit `suspicious` fraud flag blocks here, and the
+        # deterministic rules above remain authoritative.
         if job_analysis and job_analysis.suspicious:
             return False, "Job flagged as suspicious by AI analysis"
-        
-        # 10. Gemini recommendation validation (if analysis available)
-        if job_analysis:
-            if job_analysis.recommendation == AIRecommendation.NEEDS_ATTENTION:
-                return False, f"AI recommends attention: {job_analysis.short_reason}"
-        
+
         return True, "All safety checks passed"
     
     def check_duplicate_application(self, job: Job) -> bool:

@@ -1,5 +1,57 @@
 # Development Status
 
+## CHECKPOINT E5-R3: Freshness-First Discovery & Advisory-Only AI Recommendations
+
+**Status: E5-R3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live cycle run — awaiting human review.**
+
+**Objective:**
+
+Two defects silently reduced and misranked eligible candidates: (1) the final safety gate rejected jobs that matched the user's saved preferences and passed every deterministic rule solely because Gemini returned a subjective `NEEDS_ATTENTION` recommendation, and (2) discovery counted every scanned card against its scan budget while the autonomous cycle ordered candidates by raw `discovered_at`, so pages dominated by already-known duplicates could consume the budget and leave fresh eligible jobs unprocessed.
+
+**Implementation:**
+
+1. `backend/services/applications/service.py` — `run_final_safety_gate()` no longer blocks on the AI recommendation. Gemini remains advisory; the only AI-derived block is the explicit `job_analysis.suspicious` fraud flag. All deterministic gates are unchanged and still authoritative: confirmed profile, duplicate/`APPLIED` protection, location, fresher/experience rule, IT-scope, salary minimum, employment type, and title/search scope. Removed the now-unused `AIRecommendation` import.
+2. `backend/services/naukri/adapter.py` — `_parse_posted_date()` now returns a timezone-aware UTC `datetime` for `today`/`just now`, `yesterday`, `N days ago`, `N weeks ago`, `30+ days ago` (exactly 30 days), and absolute formats (`%d %b %Y`, `%d %B %Y`, `%d-%m-%Y`, `%Y-%m-%d`). Unrecognised text returns `None` so a posting date is never fabricated. Cards on each page are emitted freshness-first (`_posted_sort_key`: known dates newest-first, unknown dates last). No Naukri URL/sort parameter was changed; pagination still uses the existing next-button selector and `MAX_PAGES = 3`.
+3. `backend/services/discovery/service.py` — the scan budget (`max_cards`) now applies to **new distinct jobs**, not to every card, so a stream of old duplicates can no longer starve fresh eligible jobs out of the discovery budget. `_refresh_duplicate_job()` advances `last_seen` and adopts a **newer** grounded `posted_at`; an unknown (`None`) date never overwrites a known one.
+4. `backend/services/autonomous_cycle/service.py` — freshness-first ordering via shared `posted_freshness_key()` / `job_freshness_key()`. `_apply_hard_filters_and_enqueue()` sorts eligible candidates by newest grounded `posted_at` (unknown last), then `discovered_at` desc, then `match_score` desc, so the bounded Gemini budget is spent on the freshest eligible jobs. `_run_applications()` orders candidates by `posted_at` desc (nulls last) then `discovered_at` desc.
+
+**Constraints honored:**
+
+- No change to the user's saved job preferences, hard filters, duplicate protection, safety checks, or configured limits
+- No URL/sort parameter change and no pagination-behavior change (no repo evidence of a Naukri sort parameter, so freshness is applied client-side)
+- Unknown/ungrounded posting dates are never invented; they are stored as `None` and always sorted last
+- No live Naukri cycle, no browser launch, no Apply click, no Gemini call; the database was not modified
+- No commit/push; `.agent` not staged; pre-existing untracked artifacts preserved
+
+**Test Coverage:**
+
+- `backend/tests/test_application_safety_gate.py`: 20 PASS — inverted `test_ai_needs_attention_blocked` to `test_ai_needs_attention_allowed`, added `test_ai_skip_recommendation_allowed` and `test_needs_attention_still_requires_deterministic_rules` (a hard-rule failure still blocks even with `NEEDS_ATTENTION`). `test_suspicious_job_blocked` remains.
+- `backend/tests/test_discovery.py`: 15 PASS — added `test_duplicate_refreshes_newer_posted_at_without_creating_new_job`, `test_duplicate_unknown_posted_at_does_not_overwrite_known`, and `test_duplicates_do_not_starve_fresh_jobs` (budget of 2 new jobs reached despite 2 duplicates first).
+- `backend/tests/test_naukri_adapter.py`: 128 PASS — expanded the posted-date matrix (days/weeks/`30+`/absolute/tz-aware/unrecognised→`None`), added `_posted_sort_key` tests, and a `search_jobs` test proving freshness order and page advancement.
+- `backend/tests/test_autonomous_cycle.py`: new `TestFreshnessFirstOrdering` (3 tests) plus the existing suite PASS — `_apply_hard_filters_and_enqueue()` selects the two newest-posted jobs within the Gemini budget and caps older/unknown-date jobs.
+- Focused run of the four files: **270 passed**.
+- Full backend suite: **875 passed, 2 failed**. Both failures are pre-existing and unrelated: `test_checkpoint_c2_policy.py::test_it_scope_is_deterministic` fails against the unmodified `backend/services/matching/engine.py`, and `test_dashboard.py::TestDashboardSummaryEmpty::test_empty_discovery_has_zero_counts` is a test-ordering isolation issue that passes when the file is run alone. Zero regressions from E5-R3.
+- No lint/typecheck tooling is configured in this repository; the test suite is the verification gate.
+
+**Files Modified:**
+- `backend/services/applications/service.py`
+- `backend/services/naukri/adapter.py`
+- `backend/services/discovery/service.py`
+- `backend/services/autonomous_cycle/service.py`
+- `backend/tests/test_application_safety_gate.py`
+- `backend/tests/test_naukri_adapter.py`
+- `backend/tests/test_discovery.py`
+- `backend/tests/test_autonomous_cycle.py`
+
+**Documentation updated:** `README.md`, `docs/MASTER_PRD.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT_STATUS.md`, `docs/DECISIONS.md`
+
+**Remaining limitations:**
+- Posting-date parsing covers the Naukri card renderings listed above; any other format stays `None` (never guessed).
+- Gemini may still label a good job `NEEDS_ATTENTION` at the analysis stage; this is now advisory only and does not block a job that passes the deterministic gate.
+- No live endpoint validation was performed in this checkpoint; E5/E4-R1 live validation remains outstanding and is unaffected by these changes.
+
+---
+
 ## CHECKPOINT E5-R1: Multi-Application Outcome Reporting Reliability
 
 **Status: E5-R1 IMPLEMENTED, TESTED, AND VERIFIED (offline only). Controlled live validation NOT yet run — awaiting human review.**

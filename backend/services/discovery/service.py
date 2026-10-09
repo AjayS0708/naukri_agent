@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 import inspect
 from typing import Any, Optional
 
@@ -154,9 +154,6 @@ class DiscoveryService:
                         term_yielded_any = True
                         self._track_page_processed(db, job_data, seen_pages)
                         self.current_run.jobs_discovered += 1
-                        if self.current_run.jobs_discovered > self.max_cards:
-                            self._stop_requested = True
-                            break
 
                         card_job = Job(
                             title=job_data.get("title") or "",
@@ -174,8 +171,7 @@ class DiscoveryService:
 
                         if existing_job:
                             self.current_run.duplicate_jobs += 1
-                            existing_job.last_seen = utc_now()
-                            db.commit()
+                            self._refresh_duplicate_job(db, existing_job, job_data)
                             # Track existing job ID as part of current run
                             self.current_run_job_ids.add(existing_job.id)
                             continue
@@ -201,6 +197,14 @@ class DiscoveryService:
 
                         # Track new job ID as part of current run
                         self.current_run_job_ids.add(new_job.id)
+
+                        # The scan budget is applied to NEW distinct jobs, not
+                        # to every card. A stream of already-known duplicates
+                        # therefore can never starve fresh eligible jobs out of
+                        # the discovery budget.
+                        if self.current_run.new_jobs >= self.max_cards:
+                            self._stop_requested = True
+                            break
 
                     self._track_implicit_page(db, jobs_before_term, seen_pages)
 
@@ -278,6 +282,33 @@ class DiscoveryService:
             ).scalars().first()
 
         return existing_job
+
+    def _as_aware_utc(self, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+    def _refresh_duplicate_job(
+        self, db: Session, existing_job: Job, job_data: dict[str, Any]
+    ) -> None:
+        """Refresh an already-known job without creating a duplicate.
+
+        ``last_seen`` always advances. ``posted_at`` is only updated when the
+        freshly observed, grounded date is newer than what is stored; unknown
+        dates never overwrite a known one.
+        """
+        existing_job.last_seen = utc_now()
+
+        observed = job_data.get("posted_at")
+        if isinstance(observed, datetime):
+            observed = self._as_aware_utc(observed)
+            current = self._as_aware_utc(existing_job.posted_at)
+            if current is None or observed > current:
+                existing_job.posted_at = observed
+
+        db.commit()
 
     def _normalize_optional_str(self, value: Any) -> str | None:
         if value is None:

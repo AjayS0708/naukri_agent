@@ -3475,3 +3475,115 @@ class TestApplicationOutcomeReporting:
         assert stats["applied"] == 1
         assert cycle.stop_reason is None
         assert cycle._terminal_outcome() == (0, "COMPLETED")
+
+
+class TestFreshnessFirstOrdering:
+    """E5-R3: eligible jobs are prioritized newest-posted-first; unknown dates last."""
+
+    def _make_job(
+        self, db: Session, external_id: str, posted_at, discovered_at
+    ) -> Job:
+        job = Job(
+            platform="naukri",
+            external_job_id=external_id,
+            url=f"https://www.naukri.com/job/{external_id}",
+            title="Software Engineer",
+            company=f"Corp {external_id}",
+            description="Python developer role",
+            location="Bengaluru",
+            salary="5-7 LPA",
+            salary_min=5.0,
+            salary_max=7.0,
+            experience="0-2 years",
+            employment_type="Full-time",
+            status="DISCOVERED",
+            posted_at=posted_at,
+            discovered_at=discovered_at,
+            last_seen=discovered_at,
+            source="Software Engineer",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        return job
+
+    def _make_cycle(self, max_applications: int = 1):
+        from backend.services.autonomous_cycle import AutonomousCycle
+        return AutonomousCycle(max_applications=max_applications, enable_cli_output=False)
+
+    def test_posted_freshness_key_known_newest_first_unknown_last(self):
+        from datetime import timedelta
+        from backend.services.autonomous_cycle.service import posted_freshness_key
+
+        now = datetime.now(UTC)
+        older = now - timedelta(days=30)
+        newer = now - timedelta(days=1)
+
+        ordered = sorted([None, older, newer, now], key=posted_freshness_key)
+
+        assert ordered[0] is now
+        assert ordered[1] is newer
+        assert ordered[2] is older
+        assert ordered[3] is None
+
+    def test_job_freshness_key_posted_then_discovered(self):
+        from datetime import timedelta
+        from backend.services.autonomous_cycle.service import job_freshness_key
+
+        now = datetime.now(UTC)
+        fresh = Job(posted_at=now, discovered_at=now)
+        old = Job(posted_at=now - timedelta(days=5), discovered_at=now)
+        unknown = Job(posted_at=None, discovered_at=now)
+
+        ordered = sorted([unknown, old, fresh], key=job_freshness_key)
+
+        assert ordered[0] is fresh
+        assert ordered[1] is old
+        assert ordered[2] is unknown
+
+    def test_apply_hard_filters_selects_newest_posted_within_budget(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """The Gemini budget must be spent on the freshest posted jobs; older and
+        unknown-date jobs are capped out even though they pass hard filters."""
+        from datetime import timedelta
+        from backend.models.ai_queue import AIQueueItem
+
+        now = datetime.now(UTC)
+        discovered = now - timedelta(days=3)
+
+        fresh = self._make_job(db_session, "fr_fresh", now - timedelta(hours=2), discovered)
+        medium = self._make_job(db_session, "fr_medium", now - timedelta(days=1), discovered)
+        old = self._make_job(db_session, "fr_old", now - timedelta(days=20), discovered)
+        unknown = self._make_job(db_session, "fr_unknown", None, discovered)
+
+        run = DiscoveryRun(
+            status="COMPLETED",
+            jobs_discovered=4,
+            new_jobs=4,
+            duplicate_jobs=0,
+            searches_attempted=1,
+            errors=0,
+        )
+        db_session.add(run)
+        db_session.commit()
+        db_session.refresh(run)
+        run.current_run_job_ids = ",".join(str(j.id) for j in [fresh, medium, old, unknown])
+        db_session.commit()
+
+        cycle = self._make_cycle(max_applications=1)  # gemini_budget = 2
+        cycle.current_discovery_run = run
+
+        stats = asyncio.run(
+            cycle._apply_hard_filters_and_enqueue(db_session, confirmed_profile, job_preferences)
+        )
+
+        queued = db_session.execute(
+            select(AIQueueItem).where(AIQueueItem.queue_source == "AUTONOMOUS_CYCLE")
+        ).scalars().all()
+        queued_job_ids = {item.job_id for item in queued}
+
+        assert stats["queued"] == 2
+        assert queued_job_ids == {fresh.id, medium.id}
+        assert old.id not in queued_job_ids
+        assert unknown.id not in queued_job_ids

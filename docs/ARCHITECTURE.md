@@ -1,5 +1,65 @@
 # Architecture
 
+## E5-R3 — Freshness-First Discovery & Advisory-Only AI Recommendations
+
+**Status:** COMPLETE — subjective AI recommendation no longer blocks; discovery and candidate selection are freshness-first
+
+**E5-R3 Architecture:**
+
+The final safety gate is the single authoritative decision point before submission. Gemini's output remains advisory at that gate: only the explicit `suspicious` fraud flag blocks, while every deterministic rule is unchanged. To keep the bounded Gemini budget aimed at genuinely new listings, discovery now budgets **new distinct jobs** and candidate ordering is freshness-first.
+
+**Safety gate (`backend/services/applications/service.py`):**
+
+```text
+run_final_safety_gate(job, profile, preference, job_analysis)
+  1. Job exists
+  2. Profile confirmed
+  3. Duplicate / already-APPLIED protection
+  4. Location overlap
+  5. Fresher experience rule + strict IT-scope
+  6. Salary minimum (undisclosed allowed; disclosed 0 rejected)
+  7. Employment type
+  8. Title / search scope
+  9. job_analysis.suspicious == True  -> BLOCK   (advisory Gemini; only the fraud flag)
+     AI recommendation (APPLY/SKIP/NEEDS_ATTENTION) -> NOT a block
+```
+
+**Discovery freshness (`backend/services/naukri/adapter.py`, `backend/services/discovery/service.py`):**
+
+```text
+Naukri card -> _parse_posted_date(text): tz-aware UTC or None (never fabricated)
+  today / just now / yesterday / N days|weeks ago / 30+ days ago / absolute formats
+
+adapter.search_jobs(): emit each page's cards via _posted_sort_key
+  known dates newest-first, unknown dates last; pagination unchanged
+
+DiscoveryService.run_discovery():
+  jobs_discovered = all scanned cards (metric)
+  max_cards budget applies to NEW distinct jobs
+  duplicate -> _refresh_duplicate_job: last_seen advances; newer grounded posted_at adopted only
+```
+
+**Candidate ordering (`backend/services/autonomous_cycle/service.py`):**
+
+```text
+posted_freshness_key(posted_at): known -> (0, -timestamp); None -> (1, 0.0)
+job_freshness_key(job): (posted_freshness_key(posted_at), -discovered_at)
+
+_apply_hard_filters_and_enqueue(): eligible sorted by (job_freshness_key, -match_score)
+  -> Gemini budget spent on newest-posted eligible candidates, unknown last
+_run_applications(): candidates ordered posted_at DESC (nulls last), discovered_at DESC
+```
+
+**Preserved boundaries:** hard filters, duplicate protection, IT-scope/role matching, salary/experience/employment-type policy, `max_applications`/Gemini budgets, and all application limits are unchanged. Unknown posting dates are stored as `None` and sorted last; no date is invented. No URL/sort parameter was added to Naukri requests.
+
+**Test coverage:** 270 focused tests pass across `test_application_safety_gate.py`, `test_naukri_adapter.py`, `test_discovery.py`, and `test_autonomous_cycle.py` (new `TestFreshnessFirstOrdering`). Full backend suite: 875 passed, 2 failed — both pre-existing and unrelated (C2 IT-scope test on unmodified `matching/engine.py`; a dashboard test-ordering isolation case). Zero regressions.
+
+**Files modified:** `backend/services/applications/service.py`, `backend/services/naukri/adapter.py`, `backend/services/discovery/service.py`, `backend/services/autonomous_cycle/service.py`, and their four test files.
+
+**Documentation updated:** `README.md`, `docs/MASTER_PRD.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT_STATUS.md`, `docs/DECISIONS.md`
+
+---
+
 ## E4-R10 — Targeted Role-Matching Improvement
 
 **Status:** COMPLETE — Role-matching coverage improved
@@ -359,7 +419,7 @@ deterministic hard filters (profile, duplicate, role, experience, IT, salary, em
   ↓
 eligible deterministic candidates (varies)
   ↓
-bounded candidate selection (top gemini_budget only, newest first)
+bounded candidate selection (top gemini_budget only; E5-R3: newest posted_at first, unknown last, then discovered_at/match_score)
   ↓
 enqueue to AI queue with queue_source="AUTONOMOUS_CYCLE"
   ↓

@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from typing import Optional
 
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import case, select
 
 from backend.database.database import SessionLocal
 from backend.services.agent_state import AgentStateManager
@@ -42,6 +42,31 @@ from backend.core.logging import get_logger
 from backend.models.discovery import DiscoveryRun
 
 logger = get_logger(__name__)
+
+
+def _timestamp(value: datetime | None) -> float:
+    """Timezone-tolerant timestamp; naive datetimes are treated as UTC."""
+    if value is None:
+        return 0.0
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.timestamp()
+
+
+def posted_freshness_key(posted_at: datetime | None) -> tuple[int, float]:
+    """Ascending key placing known posting dates first, newest first.
+
+    Cards whose posting date is unknown return ``(1, 0.0)`` so they always
+    sort after cards with a known, grounded date.
+    """
+    if posted_at is None:
+        return (1, 0.0)
+    return (0, -_timestamp(posted_at))
+
+
+def job_freshness_key(job: Job) -> tuple[tuple[int, float], float]:
+    """Freshness-first ordering: posting date, then discovery recency."""
+    return (posted_freshness_key(job.posted_at), -_timestamp(job.discovered_at))
 
 # Excluded job ID per rules
 EXCLUDED_JOB_ID = "300926927428"
@@ -453,10 +478,13 @@ class AutonomousCycle:
 
         # D6.2: Bounded Gemini Candidate Evaluation
         if eligible_jobs:
+            # Freshness-first: newest grounded posting dates win, then the
+            # most recently discovered jobs, then the highest match score.
+            # Jobs with an unknown posting date never outrank known-fresh jobs.
             eligible_jobs.sort(
                 key=lambda x: (
+                    job_freshness_key(x["job"]),
                     -x["match_score"],
-                    -(x["job"].discovered_at.timestamp() if x["job"].discovered_at else 0)
                 )
             )
 
@@ -553,7 +581,13 @@ class AutonomousCycle:
             self._print("WARNING: No current discovery run or current_run_job_ids, returning no application candidates")
             return stats
 
-        stmt = stmt.order_by(Job.discovered_at.desc())
+        # Freshness-first: process the most recently posted jobs first, and
+        # place jobs with an unknown posting date after all known-fresh jobs.
+        stmt = stmt.order_by(
+            case((Job.posted_at.is_(None), 1), else_=0),
+            Job.posted_at.desc(),
+            Job.discovered_at.desc(),
+        )
 
         if self.max_jobs:
             stmt = stmt.limit(self.max_jobs)

@@ -546,3 +546,158 @@ async def test_discovery_background_task_db_session_handling(
 
     assert service.current_run.status == "COMPLETED"
     assert service.current_run.new_jobs == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_refreshes_newer_posted_at_without_creating_new_job(
+    state_manager, mock_db_session, mock_adapter
+):
+    """A re-seen job keeps one row; a newer grounded posting date is adopted."""
+    older = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    newer = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
+
+    async def mock_search_jobs(*args, **kwargs):
+        yield {
+            "title": "Software Engineer",
+            "company": "Tech Corp",
+            "url": "http://naukri.com/job",
+            "external_job_id": "12345",
+            "posted_at": newer,
+            "page_number": 1,
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs
+
+    service = DiscoveryService(state_manager)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = []
+
+    existing_job = MagicMock(spec=Job)
+    existing_job.posted_at = older
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences,
+        existing_job,
+    ]
+
+    await service.run_discovery(mock_db_session)
+
+    assert service.current_run.duplicate_jobs == 1
+    assert service.current_run.new_jobs == 0
+    assert existing_job.posted_at == newer
+    # No new Job row added (only the DiscoveryRun).
+    assert mock_db_session.add.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_unknown_posted_at_does_not_overwrite_known(
+    state_manager, mock_db_session, mock_adapter
+):
+    """An unknown (None) posting date never erases a known stored date."""
+    known = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+    async def mock_search_jobs(*args, **kwargs):
+        yield {
+            "title": "Software Engineer",
+            "company": "Tech Corp",
+            "url": "http://naukri.com/job",
+            "external_job_id": "12345",
+            "posted_at": None,
+            "page_number": 1,
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs
+
+    service = DiscoveryService(state_manager)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = []
+
+    existing_job = MagicMock(spec=Job)
+    existing_job.posted_at = known
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences,
+        existing_job,
+    ]
+
+    await service.run_discovery(mock_db_session)
+
+    assert service.current_run.duplicate_jobs == 1
+    assert existing_job.posted_at == known
+
+
+@pytest.mark.asyncio
+async def test_duplicates_do_not_starve_fresh_jobs(
+    state_manager, mock_db_session, mock_adapter
+):
+    """The scan budget counts NEW jobs, so old duplicates cannot consume it."""
+    async def mock_search_jobs(*args, **kwargs):
+        yield {
+            "title": "Dup One", "company": "Corp", "url": "http://naukri.com/dup1",
+            "external_job_id": "dup1", "page_number": 1,
+        }
+        yield {
+            "title": "Dup Two", "company": "Corp", "url": "http://naukri.com/dup2",
+            "external_job_id": "dup2", "page_number": 1,
+        }
+        yield {
+            "title": "Fresh One", "company": "Corp", "url": "http://naukri.com/new1",
+            "external_job_id": "new1", "page_number": 2,
+        }
+        yield {
+            "title": "Fresh Two", "company": "Corp", "url": "http://naukri.com/new2",
+            "external_job_id": "new2", "page_number": 2,
+        }
+        yield {
+            "title": "Fresh Three", "company": "Corp", "url": "http://naukri.com/new3",
+            "external_job_id": "new3", "page_number": 3,
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs
+    mock_adapter.fetch_job_details = AsyncMock(return_value={})
+
+    # Budget of 2 NEW jobs; duplicates must not count against it.
+    service = DiscoveryService(state_manager, max_cards=2)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = []
+
+    dup1 = MagicMock(spec=Job)
+    dup1.posted_at = None
+    dup1.id = 9001
+    dup2 = MagicMock(spec=Job)
+    dup2.posted_at = None
+    dup2.id = 9002
+
+    # Preferences, two duplicate lookups (external id), then 3 lookups per new
+    # job (external id / url / title+company).
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences,
+        dup1,
+        dup2,
+        None, None, None,
+        None, None, None,
+    ]
+
+    # Assign integer ids to freshly persisted jobs so the run's tracked id set
+    # stays sortable, mimicking a real autoincrement primary key.
+    id_counter = {"value": 0}
+
+    def refresh_side_effect(obj):
+        if isinstance(obj, Job):
+            id_counter["value"] += 1
+            obj.id = 8000 + id_counter["value"]
+
+    mock_db_session.refresh.side_effect = refresh_side_effect
+
+    await service.run_discovery(mock_db_session)
+
+    assert service.current_run.duplicate_jobs == 2
+    assert service.current_run.new_jobs == 2
+    assert service.current_run.status == "STOPPED"
