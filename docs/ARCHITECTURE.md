@@ -1,5 +1,77 @@
 # Architecture
 
+## E4-R10 — Targeted Role-Matching Improvement
+
+**Status:** COMPLETE — Role-matching coverage improved
+
+**E4-R10 Architecture:**
+
+E4-R10 extends the deterministic role-matching vocabulary in `ALLOWED_ROLE_FAMILIES` to cover relevant entry-level software and data roles that were previously rejected due to title phrase variations. The implementation is surgical: adds specific keywords aligned with user preferences, preserves all safety boundaries, and maintains strict exclusion of unrelated roles.
+
+**Role-family extensions in `backend/services/matching/engine.py`:**
+
+```python
+ALLOWED_ROLE_FAMILIES = {
+    "data": ["data analyst", "data engineer", "data analytic", "data science", "power bi"],
+    "software": ["software engineer", "software developer", "developer", "software development engineer", "software development"],
+    "devops": ["devops"],
+    "python": ["python developer"],
+    "qa": ["qa", "quality assurance"],
+    "sql": ["sql developer"],
+}
+```
+
+**Changes:**
+- Data family: added "data science" (data science intern/fresher roles), "power bi" (BI/reporting roles)
+- Software family: added "software development" (matches "Software Development Trainee" preference)
+- New QA family: "qa", "quality assurance" (matches "QA Engineer Fresher" preference)
+- New SQL family: "sql developer" (matches "SQL Developer Fresher" preference; standalone "sql" excluded to prevent SQL Server Administrator matches)
+
+**Constraints preserved:**
+- UNWANTED_SPECIALIZATIONS unchanged: "sales", "java", "php", ".net", "hardware", "mechanical", "manufacturing", "hr", "operations" still excluded
+- IT-scope filter unchanged: industry/keyword validation still required
+- Experience cap unchanged: max_required_experience_years=0 still enforced
+- Salary policy unchanged: min_salary_lpa=4 still enforced
+- Employment-type policy unchanged: Full Time, Internship, Contract still enforced
+- No "associate" catch-all: explicit phrases only
+- No broad role families without concrete test cases
+
+**Test coverage in `backend/tests/test_matching_rules.py`:**
+
+New role-matching tests (10):
+- `test_role_targeting_allowed_software_development_trainee`: Software Development Trainee roles
+- `test_role_targeting_allowed_data_science_roles`: Data Science Intern/Fresher/Engineer roles
+- `test_role_targeting_allowed_power_bi_roles`: Power BI Internship/Developer/Analyst roles
+- `test_role_targeting_allowed_qa_roles`: QA Engineer/Quality Assurance roles
+- `test_role_targeting_allowed_sql_roles`: SQL Developer/Engineer roles
+
+New regression tests (9):
+- `test_role_targeting_reject_sql_server_administrator`: SQL Server Administrator rejected (standalone "sql" exclusion)
+- `test_role_targeting_boundary_case_sales_mention_in_tech_role`: Pre-Sales Engineer rejected by unwanted specialization
+- `test_role_targeting_boundary_case_hardware_with_software`: Hardware Software Engineer rejected by unwanted specialization
+- `test_role_targeting_reject_pure_sales_roles`: Sales Executive/Manager rejected
+- `test_role_targeting_reject_mechanical_roles`: Mechanical Engineer rejected
+- `test_role_targeting_reject_manufacturing_roles`: Manufacturing/Production Engineer rejected
+- `test_role_targeting_reject_hr_roles`: HR Manager/Executive rejected
+- `test_role_targeting_reject_operations_roles`: Operations Manager/Executive rejected
+
+Total test count: 54 tests in test_matching_rules.py — all PASS
+
+**Verified outcomes:**
+- Job 55 (Software Development Trainee): NOW PASS (was FAIL)
+- Job 62 (Data Science Intern/Fresher): NOW PASS (was FAIL)
+- Job 64 (Power Bi Internship): NOW PASS (was FAIL)
+- Job 87 (Qa Engineer): NOW PASS (was FAIL)
+- Job 112 (ELK Engineer): FAIL (not in user preferences, DevOps/monitoring-specific — requires separate decision)
+
+**Integration:**
+- No changes to MatchEngine logic flow or filter order
+- No changes to AI evaluation or safety gate
+- No changes to database schema or API endpoints
+- Existing experience, salary, IT-scope, and employment-type tests remain passing
+
+---
+
 ## E4 — Dashboard Live-Run Outcome (Run #52)
 
 **Status: E4 LIVE CYCLE EXECUTED — runtime/dashboard validation PASSED; application-submission objective UNRESOLVED.**

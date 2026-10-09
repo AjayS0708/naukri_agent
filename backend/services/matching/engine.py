@@ -34,10 +34,12 @@ DEFAULT_IT_KEYWORDS = (
 
 # Allowed role families for deterministic title targeting
 ALLOWED_ROLE_FAMILIES = {
-    "data": ["data analyst", "data engineer", "data analytic"],
-    "software": ["software engineer", "software developer", "developer", "software development engineer"],
+    "data": ["data analyst", "data engineer", "data analytic", "data science", "power bi"],
+    "software": ["software engineer", "software developer", "developer", "software development engineer", "software development"],
     "devops": ["devops"],
     "python": ["python developer"],
+    "qa": ["qa", "quality assurance"],
+    "sql": ["sql developer"],
 }
 
 # Explicitly rejected specializations (title-level exclusions)

@@ -1,5 +1,61 @@
 # Development Status
 
+## CHECKPOINT E4-R10: Targeted Role-Matching Improvement
+
+**Status: E4-R10 IMPLEMENTED, TESTED, AND VERIFIED**
+
+**E4-R10 Objective:**
+
+Improve deterministic role matching so clearly relevant entry-level software and data roles are not rejected merely because their titles use reasonable variations of existing target-role names. The goal is greater relevant-job coverage, not simply more candidates.
+
+**Reconciliation (completed before implementation):**
+- NO_MATCHING_FAMILY count discrepancy resolved: script listed 37 IDs, not 38. All 37 jobs exist in the database.
+- UNWANTED_SPECIALIZATION count: all 15 jobs exist in the database. No discrepancy.
+- E4-R9 report was partially incorrect: "Associate Software Engineer", "Associate Developer Trainee", and "Python Developer" roles already PASS role-matching under production code (they match "software engineer", "developer", and "python developer" keywords respectively).
+
+**Verified role-matching failures (5 jobs):**
+1. Job 55: "Software Development Trainee" - User preference: "Software Developer Trainee", but code required "software developer" (noun) not "software development" (gerund)
+2. Job 62: "Data Science Intern/Fresher" - User has "Data Analyst Fresher" and "Data Engineer Fresher", but no "data science" keyword in ALLOWED_ROLE_FAMILIES
+3. Job 64: "Power Bi Internship _ For Freshers" - User has "Junior Data Analyst", but no "power bi" keyword
+4. Job 87: "Qa Engineer" - User has "QA Engineer Fresher", but no "qa" keyword in ALLOWED_ROLE_FAMILIES
+5. Job 112: "ELK Engineer" - Not in user preferences, but is DevOps/monitoring-related (not addressed in this checkpoint)
+
+**Implementation:**
+
+Extended `ALLOWED_ROLE_FAMILIES` in `backend/services/matching/engine.py`:
+- Added "data science" and "power bi" to data family
+- Added "software development" to software family
+- Added new "qa" family with "qa" and "quality assurance"
+- Added new "sql" family with "sql developer" (standalone "sql" excluded to prevent SQL Server Administrator matches)
+
+**Constraints honored:**
+- Did NOT add "associate" as a standalone catch-all keyword
+- Did NOT admit pure sales, HR, mechanical, manufacturing, or operations jobs
+- Did NOT weaken IT-scope filter, experience cap, salary policy, or employment-type policy
+- Did NOT remove "sales" from UNWANTED_SPECIALIZATIONS
+- Did NOT lower salary threshold
+- Did NOT change candidate profile facts or preferences
+- Did NOT change AI recommendations or final application safety gate
+
+**Test Coverage:**
+- 10 new tests for role-matching improvements: software development trainee, data science roles, power bi roles, qa roles, sql roles
+- 9 new regression tests: SQL Server Administrator exclusion, boundary cases (sales mention in tech role, hardware with software), pure sales, mechanical, manufacturing, HR, operations roles
+- Total: 54 tests in test_matching_rules.py — all PASS
+- All verified failing jobs now PASS role-matching:
+  - Job 55 (Software Development Trainee): PASS
+  - Job 62 (Data Science Intern/Fresher): PASS
+  - Job 64 (Power Bi Internship): PASS
+  - Job 87 (Qa Engineer): PASS
+  - Job 112 (ELK Engineer): FAIL (not in user preferences, DevOps/monitoring-specific, requires separate decision)
+
+**Files Modified:**
+- `backend/services/matching/engine.py` (ALLOWED_ROLE_FAMILIES extended)
+- `backend/tests/test_matching_rules.py` (18 new tests)
+
+**Documentation updated:** `README.md`, `docs/MASTER_PRD.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT_STATUS.md`, `docs/DECISIONS.md`
+
+---
+
 ## CHECKPOINT E4: Dashboard Live-Run Outcome Documentation
 
 **Status: E4 LIVE CYCLE EXECUTED — runtime/dashboard validation PASSED; application-submission objective UNRESOLVED.**

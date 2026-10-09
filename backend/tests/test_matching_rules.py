@@ -162,6 +162,41 @@ def test_role_targeting_allowed_python_roles():
     assert title_matches_allowed_role("Python Developer Fresher")[0] is True
     assert title_matches_allowed_role("Python Developer")[0] is True
 
+def test_role_targeting_allowed_software_development_trainee():
+    """Software Development Trainee should pass role targeting (E4-R10)."""
+    assert title_matches_allowed_role("Software Development Trainee")[0] is True
+    assert title_matches_allowed_role("Software Development")[0] is True
+
+def test_role_targeting_allowed_data_science_roles():
+    """Data science roles should pass role targeting (E4-R10)."""
+    assert title_matches_allowed_role("Data Science Intern")[0] is True
+    assert title_matches_allowed_role("Data Science Fresher")[0] is True
+    assert title_matches_allowed_role("Data Science Engineer")[0] is True
+
+def test_role_targeting_allowed_power_bi_roles():
+    """Power BI roles should pass role targeting (E4-R10)."""
+    assert title_matches_allowed_role("Power BI Internship")[0] is True
+    assert title_matches_allowed_role("Power BI Developer")[0] is True
+    assert title_matches_allowed_role("Power BI Analyst")[0] is True
+
+def test_role_targeting_allowed_qa_roles():
+    """QA roles should pass role targeting (E4-R10)."""
+    assert title_matches_allowed_role("QA Engineer")[0] is True
+    assert title_matches_allowed_role("QA Engineer Fresher")[0] is True
+    assert title_matches_allowed_role("Quality Assurance Engineer")[0] is True
+    assert title_matches_allowed_role("QA Tester")[0] is True
+
+def test_role_targeting_allowed_sql_roles():
+    """SQL developer roles should pass role targeting (E4-R10)."""
+    assert title_matches_allowed_role("SQL Developer")[0] is True
+    assert title_matches_allowed_role("SQL Developer Fresher")[0] is True
+
+def test_role_targeting_reject_sql_server_administrator():
+    """SQL Server Administrator should not pass solely because it contains SQL (E4-R10.1)."""
+    allowed, reason = title_matches_allowed_role("SQL Server Administrator")
+    assert allowed is False
+    assert "does not match" in reason.lower()
+
 def test_role_targeting_reject_java_specialization():
     """Java roles should be rejected even if they contain 'engineer'."""
     allowed, reason = title_matches_allowed_role("Java Fresher / Trainee")
@@ -229,6 +264,44 @@ def test_role_targeting_case_insensitive():
     assert title_matches_allowed_role("DATA ANALYST FRESHER")[0] is True
     assert title_matches_allowed_role("SOFTWARE ENGINEER FRESHER")[0] is True
     assert title_matches_allowed_role("JAVA DEVELOPER")[0] is False
+
+def test_role_targeting_boundary_case_sales_mention_in_tech_role():
+    """Technical role mentioning sales (e.g., pre-sales) should be rejected by unwanted specialization."""
+    allowed, reason = title_matches_allowed_role("Pre-Sales Engineer")
+    assert allowed is False
+    assert "sales" in reason.lower()
+
+def test_role_targeting_boundary_case_hardware_with_software():
+    """Hardware role mentioning software should be rejected by unwanted specialization."""
+    allowed, reason = title_matches_allowed_role("Hardware Software Engineer")
+    assert allowed is False
+    assert "hardware" in reason.lower()
+
+def test_role_targeting_reject_pure_sales_roles():
+    """Pure sales roles should be rejected (E4-R10 regression)."""
+    assert title_matches_allowed_role("Sales Executive")[0] is False
+    assert title_matches_allowed_role("Sales Manager")[0] is False
+    assert title_matches_allowed_role("Business Development - Sales")[0] is False
+
+def test_role_targeting_reject_mechanical_roles():
+    """Mechanical roles should be rejected (E4-R10 regression)."""
+    assert title_matches_allowed_role("Mechanical Engineer")[0] is False
+    assert title_matches_allowed_role("Mechanical Design Engineer")[0] is False
+
+def test_role_targeting_reject_manufacturing_roles():
+    """Manufacturing roles should be rejected (E4-R10 regression)."""
+    assert title_matches_allowed_role("Manufacturing Engineer")[0] is False
+    assert title_matches_allowed_role("Production Engineer")[0] is False
+
+def test_role_targeting_reject_hr_roles():
+    """HR roles should be rejected (E4-R10 regression)."""
+    assert title_matches_allowed_role("HR Manager")[0] is False
+    assert title_matches_allowed_role("HR Executive")[0] is False
+
+def test_role_targeting_reject_operations_roles():
+    """Operations roles should be rejected (E4-R10 regression)."""
+    assert title_matches_allowed_role("Operations Manager")[0] is False
+    assert title_matches_allowed_role("Operations Executive")[0] is False
 
 
 # ── IT Metadata Tests ───────────────────────────────────────────────────
