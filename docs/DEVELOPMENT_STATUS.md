@@ -30,7 +30,7 @@ Two defects silently reduced and misranked eligible candidates: (1) the final sa
 - `backend/tests/test_naukri_adapter.py`: 128 PASS — expanded the posted-date matrix (days/weeks/`30+`/absolute/tz-aware/unrecognised→`None`), added `_posted_sort_key` tests, and a `search_jobs` test proving freshness order and page advancement.
 - `backend/tests/test_autonomous_cycle.py`: new `TestFreshnessFirstOrdering` (3 tests) plus the existing suite PASS — `_apply_hard_filters_and_enqueue()` selects the two newest-posted jobs within the Gemini budget and caps older/unknown-date jobs.
 - Focused run of the four files: **270 passed**.
-- Full backend suite: **875 passed, 2 failed**. Both failures are pre-existing and unrelated: `test_checkpoint_c2_policy.py::test_it_scope_is_deterministic` fails against the unmodified `backend/services/matching/engine.py`, and `test_dashboard.py::TestDashboardSummaryEmpty::test_empty_discovery_has_zero_counts` is a test-ordering isolation issue that passes when the file is run alone. Zero regressions from E5-R3.
+- Full backend suite: **878 passed, 0 failed** (2026-10-09). The two failures reported at E5-R3 were resolved in E5-R3.1: `test_checkpoint_c2_policy.py::test_it_scope_is_deterministic` held an outdated C2 expectation that predated the intentional D5 IT-scope relaxation (a missing industry field still passes when the title contains an IT role/title keyword), and `test_dashboard.py::TestDashboardSummaryEmpty::test_empty_discovery_has_zero_counts` was a test-ordering isolation leak, now reset before every dashboard test. Zero regressions from E5-R3.
 - No lint/typecheck tooling is configured in this repository; the test suite is the verification gate.
 
 **Files Modified:**
@@ -107,7 +107,7 @@ A completed run must report what actually happened. Recent runs produced zero ap
   - genuine skip -> `SKIPPED`; genuine application -> `APPLIED` (regression guards)
   - `ERROR` stops the cycle after 1 candidate with `failed = 1`, `skipped = 0`, terminal `(3, FAILED)`
   - `SKIPPED` does not stop the cycle (`SKIPPED` + `APPLIED`, terminal `(0, COMPLETED)`)
-- Full suite: `858 passed, 2 failed`. Both failures reproduce on the unmodified baseline (`846 passed, 2 failed`): `test_checkpoint_c2_policy.py::test_it_scope_is_deterministic` (pre-existing, introduced by E4-R10) and `test_dashboard.py::TestDashboardSummaryEmpty::test_empty_discovery_has_zero_counts` (pre-existing test-ordering isolation). Zero regressions from this checkpoint.
+- Full suite: `858 passed, 2 failed`. Both failures reproduce on the unmodified baseline (`846 passed, 2 failed`): `test_checkpoint_c2_policy.py::test_it_scope_is_deterministic` (pre-existing, introduced by E4-R10) and `test_dashboard.py::TestDashboardSummaryEmpty::test_empty_discovery_has_zero_counts` (pre-existing test-ordering isolation). Zero regressions from this checkpoint. Both failures were later resolved in E5-R3.1 on 2026-10-09 (full suite 878 passed, 0 failed).
 - No lint/typecheck tooling is configured in this repository (no ruff/mypy/flake8); the test suite is the verification gate.
 
 **Files Modified:**

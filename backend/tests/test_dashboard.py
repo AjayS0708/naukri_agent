@@ -73,6 +73,17 @@ def _make_discovery_run(db: Session, *, jobs_discovered: int = 50, status: str =
 
 # ── Dashboard summary — empty database ───────────────────────────────────────
 
+@pytest.fixture(autouse=True)
+def _clean_database(db: Session) -> None:
+    """Start every dashboard test from a freshly reset database.
+
+    The session-scoped test database persists across test files, and these
+    read-only endpoints query global state. Tests that assert empty results
+    must not inherit rows committed by earlier modules, so reset via the shared
+    ``db`` fixture (which does drop_all/create_all) regardless of test order.
+    """
+    return None
+
 class TestDashboardSummaryEmpty:
     def test_returns_200(self, client: TestClient) -> None:
         response = client.get("/api/dashboard/summary")

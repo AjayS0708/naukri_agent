@@ -15,7 +15,7 @@ Two defects silently reduced and misranked eligible candidates. First, the final
 
 **Constraints honored:** no saved-preference changes; no hard-filter, duplicate-protection, safety-check, or limit bypass; no URL/sort-parameter change; unknown dates never invented; no live Naukri cycle, browser, Apply click, or Gemini call; no database writes; no commit/push.
 
-**Test coverage:** 270 focused tests pass across `test_application_safety_gate.py` (20), `test_discovery.py` (15), `test_naukri_adapter.py` (128), and `test_autonomous_cycle.py` (new `TestFreshnessFirstOrdering`). Full backend suite: 875 passed, 2 failed — both failures are pre-existing and unrelated (C2 IT-scope test and a dashboard test-ordering isolation case). Zero regressions.
+**Test coverage:** 270 focused tests pass across `test_application_safety_gate.py` (20), `test_discovery.py` (15), `test_naukri_adapter.py` (128), and `test_autonomous_cycle.py` (new `TestFreshnessFirstOrdering`). Full backend suite: 878 passed, 0 failed (2026-10-09); the two failures previously reported here were resolved in E5-R3.1 — an outdated C2 IT-scope test expectation and a dashboard test-ordering isolation case. Zero regressions.
 
 **Files modified:** `backend/services/applications/service.py`, `backend/services/naukri/adapter.py`, `backend/services/discovery/service.py`, `backend/services/autonomous_cycle/service.py`, and the four corresponding test files.
 

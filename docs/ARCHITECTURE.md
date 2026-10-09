@@ -52,7 +52,7 @@ _run_applications(): candidates ordered posted_at DESC (nulls last), discovered_
 
 **Preserved boundaries:** hard filters, duplicate protection, IT-scope/role matching, salary/experience/employment-type policy, `max_applications`/Gemini budgets, and all application limits are unchanged. Unknown posting dates are stored as `None` and sorted last; no date is invented. No URL/sort parameter was added to Naukri requests.
 
-**Test coverage:** 270 focused tests pass across `test_application_safety_gate.py`, `test_naukri_adapter.py`, `test_discovery.py`, and `test_autonomous_cycle.py` (new `TestFreshnessFirstOrdering`). Full backend suite: 875 passed, 2 failed — both pre-existing and unrelated (C2 IT-scope test on unmodified `matching/engine.py`; a dashboard test-ordering isolation case). Zero regressions.
+**Test coverage:** 270 focused tests pass across `test_application_safety_gate.py`, `test_naukri_adapter.py`, `test_discovery.py`, and `test_autonomous_cycle.py` (new `TestFreshnessFirstOrdering`). Full backend suite: 878 passed, 0 failed (2026-10-09); the two failures previously reported here were resolved in E5-R3.1 (an outdated C2 IT-scope test expectation on unmodified `matching/engine.py`; a dashboard test-ordering isolation case). Zero regressions.
 
 **Files modified:** `backend/services/applications/service.py`, `backend/services/naukri/adapter.py`, `backend/services/discovery/service.py`, `backend/services/autonomous_cycle/service.py`, and their four test files.
 
@@ -891,8 +891,12 @@ def _check_schema_compatibility(db: Session) -> dict:
 
 ## Checkpoint C2 policy
 
-The cycle enforces a zero-year experience cap and strict IT metadata/title
-matching in both `MatchEngine` and the final safety gate. Discovery rejects
+The cycle enforces a zero-year experience cap and a strict IT-scope gate in
+both `MatchEngine` and the final safety gate. A job passes IT scope when its
+industry/department/role-category metadata is an allowed IT value; since the D5
+relaxation, a missing industry field also passes when the title contains an IT
+role/title keyword, and unrelated titles are still rejected upstream by
+deterministic role targeting. Discovery rejects
 over-cap cards before opening their pages and bounds scanning with
 `--max-cards` (default 150). External links are recorded without following
 company links, and visible native questions stop the flow for review.

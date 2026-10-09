@@ -5,6 +5,7 @@ from backend.models.matching import JobPreference
 from backend.services.matching.engine import (
     experience_passes_fresher_rule,
     is_strict_it_job,
+    title_matches_allowed_role,
 )
 
 
@@ -37,4 +38,16 @@ def test_missing_experience_requires_entry_level_title(preference):
 def test_it_scope_is_deterministic():
     assert is_strict_it_job(Job(title="Data Analyst", industry="IT Services & Consulting"))
     assert not is_strict_it_job(Job(title="Data Analyst", industry="Hospital & Health Care"))
-    assert not is_strict_it_job(Job(title="Data Analyst"))
+    # D5 deliberately relaxed the C2 metadata requirement: when industry metadata
+    # is absent, an IT title keyword qualifies the job (locked by
+    # TestC2ITGateMissingIndustryFix in test_autonomous_cycle.py). "data" is an IT
+    # keyword, so a missing-industry Data Analyst passes the keyword-based gate.
+    assert is_strict_it_job(Job(title="Data Analyst"))
+
+
+def test_it_scope_keyword_gate_is_not_the_role_filter():
+    # is_strict_it_job only answers "is this an IT job?"; it is not the role
+    # filter. Unrelated titles that merely contain "data" are still rejected by
+    # deterministic role targeting, which runs before the IT gate in MatchEngine.
+    assert title_matches_allowed_role("Data Entry Operator")[0] is False
+    assert title_matches_allowed_role("Data Analyst Fresher")[0] is True
