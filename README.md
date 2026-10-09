@@ -472,6 +472,8 @@ discovery → hard filters → AI queue → Gemini → final safety gate → App
 - Per-job decision table (company, title, native/external, salary/experience/employment filter result, Gemini result, gate result, outcome)
 - Final summary with counts
 - Exit code 0 on normal completion, non-zero on AUTH/SECURITY/critical stop
+- "Normal completion" includes reaching the configured `--max-applications` limit and an exhausted candidate list: these return exit code 0 with terminal status `COMPLETED`. AUTH/SECURITY stops return exit code 2; any other critical stop returns exit code 3. Both are reported as `FAILED`.
+- A candidate the application runner could not inspect (browser session did not start, or the agent state was unusable) is reported as `ERROR`, never as `SKIPPED`, and stops the run. No application row is created for it.
 - Empty candidate list reported as "0 eligible jobs found" (not a failure)
 
 **Examples:**

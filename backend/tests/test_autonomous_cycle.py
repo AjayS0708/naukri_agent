@@ -12,6 +12,8 @@ Tests cover:
 - dry-run creates no application rows and never clicks
 """
 
+import asyncio
+
 import pytest
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -3146,3 +3148,330 @@ class TestD61BoundedGeminiLookAhead:
         ).scalar()
         assert stale_queue is not None, "Stale job should still be in queue"
         # The current run logic should skip this job when checking current_run_job_ids
+
+
+class TestApplicationOutcomeReporting:
+    """
+    E5 checkpoint regression suite - reliable terminal and per-job outcome reporting.
+
+    Two verified defects made completed runs report zero applications:
+
+    1. TERMINAL: AutonomousCycle.run() returned exit_code=3 / status="FAILED" for
+       every stop_reason, including "Reached max-applications limit (N)". The
+       documented contract (README, MASTER_PRD, ARCHITECTURE) is: "Exit code 0 on
+       normal completion, non-zero on AUTH/SECURITY/critical stop." Reaching the
+       configured application limit is normal completion. The dashboard then
+       rendered "Last cycle failed. Check logs for details."
+
+    2. PER-JOB: _process_single_job() fell through to return "SKIPPED" when the
+       ApplicationRunner produced no outcome for the job (browser session startup
+       failure -> all-zero stats; unusable agent state -> {"error": ...}). A
+       candidate that was never inspected was recorded as a blocked/skipped
+       candidate, and the cycle still reported COMPLETED.
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _make_job(self, db: Session, external_id: str, title: str = "Software Engineer") -> Job:
+        job = Job(
+            platform="naukri",
+            external_job_id=external_id,
+            url=f"https://www.naukri.com/job/{external_id}",
+            title=title,
+            company=f"Corp {external_id}",
+            description="Python developer role",
+            location="Bengaluru",
+            salary="5-7 LPA",
+            salary_min=5.0,
+            salary_max=7.0,
+            experience="0-2 years",
+            employment_type="Full-time",
+            status="DISCOVERED",
+            discovered_at=datetime.now(UTC),
+            last_seen=datetime.now(UTC),
+            source=title,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        return job
+
+    def _make_analysis(self, db: Session, job_id: int) -> JobAnalysisModel:
+        from backend.schemas.ai import JobQuality
+        analysis = JobAnalysisModel(
+            job_id=job_id,
+            match_score=80,
+            role_match=True,
+            skill_match=True,
+            experience_match=True,
+            location_match=True,
+            salary_match=True,
+            job_quality=JobQuality.GOOD.value,
+            duplicate_probability=0.05,
+            suspicious=False,
+            recommendation=AIRecommendation.APPLY.value,
+            short_reason="Good match",
+            model="gemini",
+            prompt_version="v1",
+        )
+        db.add(analysis)
+        db.commit()
+        db.refresh(analysis)
+        return analysis
+
+    def _make_discovery_run(self, db: Session, job_ids: list) -> DiscoveryRun:
+        run = DiscoveryRun(
+            status="COMPLETED",
+            jobs_discovered=len(job_ids),
+            new_jobs=len(job_ids),
+            duplicate_jobs=0,
+            searches_attempted=1,
+            errors=0,
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        run.current_run_job_ids = ",".join(str(jid) for jid in job_ids)
+        db.commit()
+        return run
+
+    @staticmethod
+    def _stub_runner(result: dict):
+        """Build a stand-in ApplicationRunner class that always returns `result`."""
+        class _StubRunner:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def run_applications(self, job_ids, dry_run=False):
+                return dict(result)
+
+        return _StubRunner
+
+    def _make_cycle(self, max_applications: int = 1) -> "AutonomousCycle":
+        from backend.services.autonomous_cycle import AutonomousCycle
+        return AutonomousCycle(max_applications=max_applications, enable_cli_output=False)
+
+    # ------------------------------------------------------------------
+    # Terminal outcome: configured limit is normal, abort stops are failures
+    # ------------------------------------------------------------------
+
+    def test_no_stop_reason_is_normal_completion(self):
+        cycle = self._make_cycle()
+        assert cycle._terminal_outcome() == (0, "COMPLETED")
+
+    def test_max_applications_limit_is_normal_completion(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """
+        Reaching the configured max_applications limit must yield exit_code 0 /
+        COMPLETED, because that is the run's own declared completion criterion.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        jobs = [self._make_job(db_session, f"oc_limit_{i}") for i in range(3)]
+        for j in jobs:
+            self._make_analysis(db_session, j.id)
+        run = self._make_discovery_run(db_session, [j.id for j in jobs])
+
+        cycle = self._make_cycle(max_applications=2)
+        cycle.current_discovery_run = run
+
+        with patch.object(cycle, "_process_single_job", new=AsyncMock(side_effect=["APPLIED"] * 3)) as mock_process:
+            stats = asyncio.run(cycle._run_applications(db_session, confirmed_profile, job_preferences))
+
+        assert stats["applied"] == 2, "Exactly max_applications applications must be recorded"
+        assert stats["candidates"] == 3, "All three jobs are candidates"
+        assert mock_process.await_count == 2, "Third job must not be attempted"
+        assert cycle.stop_reason == "Reached max-applications limit (2)"
+        assert cycle._terminal_outcome() == (0, "COMPLETED"), \
+            "Reaching the configured limit is normal completion, not a failure"
+
+    def test_security_stop_is_failure(self):
+        cycle = self._make_cycle()
+        cycle.stop_reason = "Security challenge encountered"
+        assert cycle._terminal_outcome() == (2, "FAILED")
+
+    def test_auth_stop_is_failure(self):
+        cycle = self._make_cycle()
+        cycle.stop_reason = "Authentication required"
+        assert cycle._terminal_outcome() == (2, "FAILED")
+
+    def test_unclassified_stop_is_failure(self):
+        cycle = self._make_cycle()
+        cycle.stop_reason = "Application execution unavailable for remaining candidates"
+        assert cycle._terminal_outcome() == (3, "FAILED")
+
+    # ------------------------------------------------------------------
+    # Per-job outcome: a candidate the runner never inspected is an ERROR
+    # ------------------------------------------------------------------
+
+    def test_runner_invalid_state_reports_error_not_skipped(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """
+        An unusable agent state makes the runner return {"error": ...} with no
+        outcome for the job. This must be reported as ERROR, must create no
+        application row, and must never park the job as SKIPPED.
+        """
+        from unittest.mock import patch
+
+        job = self._make_job(db_session, "oc_invalid_state")
+        self._make_analysis(db_session, job.id)
+        cycle = self._make_cycle()
+
+        stub = self._stub_runner({"error": "Invalid state"})
+        with patch("backend.services.autonomous_cycle.service.ApplicationRunner", stub):
+            result = asyncio.run(
+                cycle._process_single_job(db_session, job, confirmed_profile, job_preferences)
+            )
+
+        assert result == "ERROR", f"Invalid state must be ERROR, got {result}"
+        rows = db_session.execute(select(Application).where(Application.job_id == job.id)).scalars().all()
+        assert rows == [], "No application row may be created when the runner did not inspect the job"
+        assert cycle.tracker.decisions[-1]["outcome"] == "ERROR"
+        assert not cycle.stop_reason, "A single job must not set the cycle stop reason here"
+
+    def test_runner_start_failure_reports_error_not_skipped(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """
+        A browser session startup failure returns all-zero stats (no outcome
+        keys). This must be reported as ERROR, not as a blocked/skipped candidate.
+        """
+        from unittest.mock import patch
+
+        job = self._make_job(db_session, "oc_start_failure")
+        self._make_analysis(db_session, job.id)
+        cycle = self._make_cycle()
+
+        zeroed = {
+            "processed": 1, "applied": 0, "external": 0, "needs_attention": 0,
+            "skipped": 0, "failed": 0, "dry_run": 0, "errors": 0,
+        }
+        stub = self._stub_runner(zeroed)
+        with patch("backend.services.autonomous_cycle.service.ApplicationRunner", stub):
+            result = asyncio.run(
+                cycle._process_single_job(db_session, job, confirmed_profile, job_preferences)
+            )
+
+        assert result == "ERROR", f"A runner with no outcome must be ERROR, got {result}"
+        rows = db_session.execute(select(Application).where(Application.job_id == job.id)).scalars().all()
+        assert rows == [], "No application row may be created when the runner did not inspect the job"
+        assert cycle.tracker.decisions[-1]["outcome"] == "ERROR"
+
+    def test_runner_job_not_found_reports_error_not_skipped(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """The runner's job-not-found path returns only counters+errors."""
+        from unittest.mock import patch
+
+        job = self._make_job(db_session, "oc_not_found")
+        self._make_analysis(db_session, job.id)
+        cycle = self._make_cycle()
+
+        stub = self._stub_runner({"processed": 0, "applied": 0, "external": 0,
+                                  "needs_attention": 0, "skipped": 0, "failed": 0,
+                                  "dry_run": 0, "errors": 1})
+        with patch("backend.services.autonomous_cycle.service.ApplicationRunner", stub):
+            result = asyncio.run(
+                cycle._process_single_job(db_session, job, confirmed_profile, job_preferences)
+            )
+
+        assert result == "ERROR", f"errors-only stats must be ERROR, got {result}"
+
+    def test_runner_genuine_skip_still_reports_skipped(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Regression guard: a real blocked candidate must still be SKIPPED."""
+        from unittest.mock import patch
+
+        job = self._make_job(db_session, "oc_genuine_skip")
+        self._make_analysis(db_session, job.id)
+        cycle = self._make_cycle()
+
+        stub = self._stub_runner({"processed": 1, "applied": 0, "external": 0,
+                                  "needs_attention": 0, "skipped": 1, "failed": 0,
+                                  "dry_run": 0, "errors": 0})
+        with patch("backend.services.autonomous_cycle.service.ApplicationRunner", stub):
+            result = asyncio.run(
+                cycle._process_single_job(db_session, job, confirmed_profile, job_preferences)
+            )
+
+        assert result == "SKIPPED", f"A real skip must stay SKIPPED, got {result}"
+
+    def test_runner_applied_still_reports_applied(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Regression guard: a real application must still be APPLIED."""
+        from unittest.mock import patch
+
+        job = self._make_job(db_session, "oc_applied")
+        self._make_analysis(db_session, job.id)
+        cycle = self._make_cycle()
+
+        stub = self._stub_runner({"processed": 1, "applied": 1, "external": 0,
+                                  "needs_attention": 0, "skipped": 0, "failed": 0,
+                                  "dry_run": 0, "errors": 0})
+        with patch("backend.services.autonomous_cycle.service.ApplicationRunner", stub):
+            result = asyncio.run(
+                cycle._process_single_job(db_session, job, confirmed_profile, job_preferences)
+            )
+
+        assert result == "APPLIED", f"A real application must stay APPLIED, got {result}"
+
+    # ------------------------------------------------------------------
+    # Outer loop: an execution failure stops the cycle and marks it FAILED
+    # ------------------------------------------------------------------
+
+    def test_execution_error_stops_cycle_and_reports_failure(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """
+        When the runner cannot execute, the cycle must stop after the first
+        failed candidate instead of burning the remaining candidates with bogus
+        SKIPPED outcomes, and the terminal outcome must be a failure.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        jobs = [self._make_job(db_session, f"oc_err_{i}") for i in range(3)]
+        for j in jobs:
+            self._make_analysis(db_session, j.id)
+        run = self._make_discovery_run(db_session, [j.id for j in jobs])
+
+        cycle = self._make_cycle(max_applications=3)
+        cycle.current_discovery_run = run
+
+        with patch.object(cycle, "_process_single_job", new=AsyncMock(side_effect=["ERROR"])) as mock_process:
+            stats = asyncio.run(cycle._run_applications(db_session, confirmed_profile, job_preferences))
+
+        assert mock_process.await_count == 1, "Cycle must stop after the first execution error"
+        assert stats["failed"] == 1
+        assert stats["applied"] == 0
+        assert stats["skipped"] == 0, "Remaining candidates must not be recorded as skipped"
+        assert cycle.stop_reason == "Application execution unavailable for remaining candidates"
+        assert cycle._terminal_outcome() == (3, "FAILED")
+
+    def test_genuine_skip_does_not_stop_cycle(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        """Regression guard: a blocked candidate must not stop the run."""
+        from unittest.mock import AsyncMock, patch
+
+        jobs = [self._make_job(db_session, f"oc_cont_{i}") for i in range(2)]
+        for j in jobs:
+            self._make_analysis(db_session, j.id)
+        run = self._make_discovery_run(db_session, [j.id for j in jobs])
+
+        cycle = self._make_cycle(max_applications=2)
+        cycle.current_discovery_run = run
+
+        with patch.object(cycle, "_process_single_job", new=AsyncMock(side_effect=["SKIPPED", "APPLIED"])) as mock_process:
+            stats = asyncio.run(cycle._run_applications(db_session, confirmed_profile, job_preferences))
+
+        assert mock_process.await_count == 2, "A skipped candidate must not stop the run"
+        assert stats["skipped"] == 1
+        assert stats["applied"] == 1
+        assert cycle.stop_reason is None
+        assert cycle._terminal_outcome() == (0, "COMPLETED")

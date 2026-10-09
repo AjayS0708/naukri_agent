@@ -129,12 +129,27 @@ class AutonomousCycle:
         self.tracker = DecisionTracker()
         self.applications_count = 0
         self.stop_reason: Optional[str] = None
+        self.stop_is_normal = False
         self.current_discovery_run: Optional[DiscoveryRun] = None
 
     def _print(self, message: str):
         """Print message to stdout if CLI output is enabled."""
         if self.enable_cli_output:
             print(message)
+
+    def _terminal_outcome(self) -> tuple[int, str]:
+        """Map the recorded stop reason to the documented terminal contract.
+
+        README, MASTER_PRD and ARCHITECTURE all state: "Exit code 0 on normal
+        completion, non-zero on AUTH/SECURITY/critical stop." Reaching a
+        configured application limit is a normal completion, not a failure.
+        """
+        if not self.stop_reason or self.stop_is_normal:
+            return 0, "COMPLETED"
+        reason = self.stop_reason.upper()
+        if "AUTH" in reason or "SECURITY" in reason:
+            return 2, "FAILED"
+        return 3, "FAILED"
 
     async def run(self) -> dict:
         """
@@ -305,12 +320,12 @@ class AutonomousCycle:
 
             if self.stop_reason:
                 self._print(f"\nCycle stopped: {self.stop_reason}")
-                exit_code = 2 if "AUTH" in self.stop_reason or "SECURITY" in self.stop_reason else 3
+                exit_code, terminal_status = self._terminal_outcome()
                 return {
                     "exit_code": exit_code,
                     "run_id": self.current_discovery_run.id,
-                    "status": "FAILED",
-                    "stats": {**enqueue_stats, **ai_stats, **app_stats}
+                    "status": terminal_status,
+                    "stats": {**enqueue_stats, **ai_stats, **app_stats, "stop_reason": self.stop_reason},
                 }
 
             return {
@@ -552,6 +567,7 @@ class AutonomousCycle:
         for job in eligible_jobs:
             if self.applications_count >= self.max_applications:
                 self.stop_reason = f"Reached max-applications limit ({self.max_applications})"
+                self.stop_is_normal = True
                 break
 
             try:
@@ -568,6 +584,14 @@ class AutonomousCycle:
                     stats["needs_attention"] += 1
                 elif result == "FAILED":
                     stats["failed"] += 1
+                elif result == "ERROR":
+                    # The runner never inspected this job (browser session or
+                    # agent state unavailable). Stop instead of attempting the
+                    # remaining candidates, which would only produce bogus
+                    # skip outcomes while the runtime stays unusable.
+                    stats["failed"] += 1
+                    self.stop_reason = "Application execution unavailable for remaining candidates"
+                    return stats
                 elif result == "SECURITY_REQUIRED":
                     self.stop_reason = "Security challenge encountered"
                     return stats
@@ -638,6 +662,20 @@ class AutonomousCycle:
 
         runner = ApplicationRunner(db, self.state_manager, dry_run=self.dry_run)
         app_results = await runner.run_applications([job.id], dry_run=self.dry_run)
+
+        # The runner only reports a real per-job outcome when it actually
+        # inspected this job. A browser-session startup failure returns zeroed
+        # stats and an unusable agent state returns {"error": ...}; neither is a
+        # blocked/skipped candidate and neither may be recorded as one.
+        reported_outcomes = ("applied", "external", "needs_attention", "skipped", "failed", "dry_run")
+        if app_results.get("error") or not any(app_results.get(k, 0) for k in reported_outcomes):
+            reason = app_results.get("error") or "Application runner returned no outcome for this job"
+            logger.warning("Job %s produced no application outcome: %s", job.id, reason)
+            self.tracker.add_decision(
+                job.id, job.company, job.title, "UNKNOWN", False, False, False,
+                analysis_model.recommendation or "N/A", "PASSED", "ERROR"
+            )
+            return "ERROR"
 
         app_type = "UNKNOWN"
         outcome = "UNKNOWN"

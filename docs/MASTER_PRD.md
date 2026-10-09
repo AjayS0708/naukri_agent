@@ -700,11 +700,13 @@ The command calls existing services in sequence:
 - Per-job decision table with: company, title, native/external, filter results, Gemini result, gate result, outcome
 - Final summary with counts
 - Exit code 0 on normal completion, non-zero on AUTH/SECURITY/critical stop
+- Normal completion includes reaching the configured `max_applications` limit: exit 0, status `COMPLETED`. AUTH/SECURITY stops return exit 2, other critical stops return exit 3, both reported as `FAILED`.
+- A candidate the application runner never inspected (browser session failure or unusable agent state) is recorded as `ERROR` and stops the run; it is never recorded as `SKIPPED` and never creates an application row.
 - Empty candidate list reported as "0 eligible jobs found" (not a failure)
 
 **Test Coverage:**
-- 12 focused tests in `backend/tests/test_autonomous_cycle.py`
-- Tests cover: eligible native jobs, external jobs, unpaid jobs, excluded jobs, max-applications limit, dry-run flag
+- `backend/tests/test_autonomous_cycle.py` covers eligible native jobs, external jobs, unpaid jobs, excluded jobs, max-applications limit, dry-run flag, current-run isolation, bounded Gemini look-ahead, and terminal/per-job outcome reporting
+- Outcome-reporting regression tests assert: limit reached -> `(0, COMPLETED)`; AUTH/SECURITY stop -> `(2, FAILED)`; unclassified stop -> `(3, FAILED)`; runner returned no outcome -> `ERROR` with no application row; genuine skip still `SKIPPED`; execution error stops the cycle instead of mislabelling the remaining candidates
 - All tests use isolated temporary SQLite database
 - No live Naukri activity, Gemini calls, or Apply clicks in tests
 

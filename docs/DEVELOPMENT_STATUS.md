@@ -1,5 +1,79 @@
 # Development Status
 
+## CHECKPOINT E5-R1: Multi-Application Outcome Reporting Reliability
+
+**Status: E5-R1 IMPLEMENTED, TESTED, AND VERIFIED (offline only). Controlled live validation NOT yet run — awaiting human review.**
+
+**Next roadmap checkpoint:** E5 — "Multi-Application Dashboard Cycle & Configurable Application Limit" (`docs/FUTURE_IMPLEMENTATION_ROADMAP.md`). E4's application-submission validation is still outstanding and is deliberately satisfied by the same controlled live run as E5, because both need one dashboard-triggered run with `max_applications > 1`.
+
+**Objective:**
+
+A completed run must report what actually happened. Recent runs produced zero applications while the cycle still reported `COMPLETED`, and the remaining stop paths reported `FAILED` even when the run had simply reached its configured limit. Both are outcome-reporting defects, not filter defects.
+
+**Evidence: read-only audit of `data/naukri_agent.db` (no writes):**
+
+- Runs 52 and 55 `COMPLETED` with 102-103 jobs discovered; run 55 had `new_jobs = 0`.
+- Of the 15-16 jobs analysed in runs 52/55, 12-13 are parked as unresolved `EXTERNAL_APPLICATION` (excluded by the candidate query and by the runner's "unresolved prior attempt" check) and only 3 jobs (57, 58, 86) had no application record at all.
+- All 3 remaining candidates were legitimately blocked by `run_final_safety_gate`: job 57 `NEEDS_ATTENTION`, job 58 `suspicious = true`, job 86 `NEEDS_ATTENTION`. Application limits passed (`max_hourly_applications = 4`, `max_daily_applications = 20`, usage 0).
+- Runs 45, 46, 47, 53 and 54 failed at browser startup with "Failed to start browser session. NotImplementedError" — the documented Windows uvicorn `--reload` SelectorEventLoop issue (E4-R2).
+- Correction to the E4-R8 report: the AI `SKIP` recommendation alone does not block a job. Job 58 was blocked on `suspicious = true`, not on its `SKIP` recommendation.
+
+**Verified defects (both are outcome-reporting only):**
+
+1. **Terminal status.** `AutonomousCycle.run()` returned `exit_code = 3, status = "FAILED"` whenever `stop_reason` was set, including `"Reached max-applications limit (N)"`. README, MASTER_PRD and ARCHITECTURE all document: *"Exit code 0 on normal completion, non-zero on AUTH/SECURITY/critical stop."* The dashboard therefore rendered `Last cycle failed. Check logs for details.` for a run that had done exactly what it was configured to do. The AUTH/SECURITY branch was also unreachable in practice: it tested `"AUTH"`/`"SECURITY"` in mixed case against `"Authentication required"` and `"Security challenge encountered"`, so exit code 2 was never produced.
+2. **Per-job outcome.** `_process_single_job()` fell through to `return "SKIPPED"` when `ApplicationRunner.run_applications()` produced no outcome for the job. Browser-start failure returns all-zero stats (state left at `CRITICAL_ERROR`), and an unusable agent state returns `{"error": "Invalid state"}` for every subsequent job. A candidate that was never inspected was recorded as a blocked/skipped candidate while the cycle still reported `COMPLETED`. Such a failure also created no application row, so the candidate could not be retried honestly either.
+
+**Implementation (`backend/services/autonomous_cycle/service.py` only):**
+
+- Added `self.stop_is_normal` and `AutonomousCycle._terminal_outcome() -> (exit_code, status)`:
+  - no stop reason, or a configured-limit stop -> `(0, "COMPLETED")`
+  - stop reason containing `AUTH` or `SECURITY` (case-insensitive) -> `(2, "FAILED")`
+  - any other stop reason -> `(3, "FAILED")`
+- `run()` now returns `_terminal_outcome()` for the mid-run stop path and includes `stop_reason` in `stats` so the reason for stopping is retained in `last_run`. Pre-execution early returns (`profile`/`preferences`/`limits`/discovery guards) are unchanged.
+- `Reached max-applications limit (N)` now sets `stop_is_normal = True`. `Application limits reached: ...` and `Application execution unavailable for remaining candidates` do not.
+- `_process_single_job()` now detects a non-executed run: if the runner returns an `error` key, or none of `applied`/`external`/`needs_attention`/`skipped`/`failed`/`dry_run` is greater than zero, it logs, records decision outcome `ERROR`, and returns `"ERROR"`. It creates no application row.
+- `_run_applications()` handles `"ERROR"` by incrementing `failed`, setting a stop reason, and returning immediately, so one execution failure does not cascade into bogus `SKIPPED` outcomes for the remaining candidates.
+
+**Constraints honored:**
+
+- No change to discovery, hard filters, role matching, IT-scope gate, experience/salary/employment-type policy, Gemini budget, duplicate protection, or the final application safety gate
+- No change to application limits (hourly/daily) or to `max_applications` enforcement
+- No application row is created when the runner did not inspect the job — a `NEEDS_ATTENTION`/`SKIPPED` row would permanently park the candidate
+- Genuine blocks still return `SKIPPED` and do not stop the run
+- No schema, API, or frontend change; `stats` is already a `dict` so `stop_reason` needs no Pydantic change. The frontend reads `stats` keys by name only.
+- No live Naukri access, no browser launch, no Apply click, no Gemini call in this checkpoint; the real database was only read
+
+**Test Coverage:**
+
+- `backend/tests/test_autonomous_cycle.py`: 92 -> 104 tests, all PASS
+- New `TestApplicationOutcomeReporting` (12 tests) exercises the real `_terminal_outcome()`, `_process_single_job()` and `_run_applications()`:
+  - no stop -> `(0, COMPLETED)`; `max_applications` reached -> `(0, COMPLETED)` after exactly 2 of 3 candidates
+  - security stop -> `(2, FAILED)`; auth stop -> `(2, FAILED)`; unclassified stop -> `(3, FAILED)`
+  - runner `{"error": "Invalid state"}` -> `ERROR`, no application row, decision outcome `ERROR`
+  - runner all-zero stats (browser start failure) -> `ERROR`, no application row
+  - runner errors-only stats (job not found) -> `ERROR`
+  - genuine skip -> `SKIPPED`; genuine application -> `APPLIED` (regression guards)
+  - `ERROR` stops the cycle after 1 candidate with `failed = 1`, `skipped = 0`, terminal `(3, FAILED)`
+  - `SKIPPED` does not stop the cycle (`SKIPPED` + `APPLIED`, terminal `(0, COMPLETED)`)
+- Full suite: `858 passed, 2 failed`. Both failures reproduce on the unmodified baseline (`846 passed, 2 failed`): `test_checkpoint_c2_policy.py::test_it_scope_is_deterministic` (pre-existing, introduced by E4-R10) and `test_dashboard.py::TestDashboardSummaryEmpty::test_empty_discovery_has_zero_counts` (pre-existing test-ordering isolation). Zero regressions from this checkpoint.
+- No lint/typecheck tooling is configured in this repository (no ruff/mypy/flake8); the test suite is the verification gate.
+
+**Files Modified:**
+- `backend/services/autonomous_cycle/service.py`
+- `backend/tests/test_autonomous_cycle.py`
+
+**Documentation updated:** `README.md`, `docs/MASTER_PRD.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT_STATUS.md`, `docs/DECISIONS.md`
+
+**Controlled live validation plan (NOT executed — requires explicit human approval):**
+
+1. Preconditions: `python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000` with **no `--reload`** (E4-R2); confirmed profile; job preferences; `data/naukri_agent.db` backed up; application limits unused; dashboard reachable.
+2. Trigger: Dashboard UI "Run Autonomous Cycle" with `max_applications >= 2` (E5 requires more than one submission in a single run).
+3. Success criteria: `last_run.status == COMPLETED`; `stats.applied >= 2` with `stats.applied <= max_applications`; `stats.stop_reason == "Reached max-applications limit (N)"` when the limit is reached; `POST /api/autonomous-cycle/run` returns HTTP 200; runtime returns to `IDLE` with `lock_held = false`; dashboard shows "Last cycle completed successfully." with stats, not "Last cycle failed"; one application row per submitted job, each with `applied_at`, method and `confirmation_evidence`; no external submission, no CAPTCHA/security bypass, S&P job `300926927428` untouched, duplicate protection intact.
+4. Failure criteria: any `NEEDS_ATTENTION`/`SECURITY_REQUIRED`/`AUTH_REQUIRED` stop (expected as `FAILED`), any application row without post-click evidence, any second Apply click on a job already recorded as applied.
+5. Outcome is recorded as a follow-up checkpoint entry in this file regardless of result. E4's outstanding application-submission validation closes on the same run.
+
+---
+
 ## CHECKPOINT E4-R10: Targeted Role-Matching Improvement
 
 **Status: E4-R10 IMPLEMENTED, TESTED, AND VERIFIED**
