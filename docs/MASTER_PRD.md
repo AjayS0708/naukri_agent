@@ -1,5 +1,24 @@
 # Naukri AI Job Application Agent
 
+## E5-R5.3 - Signature-Scoped Reconciliation of False External Classifications
+
+**Status:** E5-R5.3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - the endpoint has NOT been invoked against the live database; no cycle, no browser, no Apply click, no backend restart.
+
+**Proven blocker:** dashboard run 61 (2026-10-10, `max_applications=1`) completed with 19 pre-analyzed jobs, 1 candidate, 0 applications: 16 of the 19 carry `EXTERNAL_APPLICATION` rows all holding the identical `https://www.ambitionbox.com/interviews?utm_source=naukri&utm_medium=desktop&utm_campaign=gnb` URL - the page-chrome false positive the E5-R4.1 detector fix established was never a job-specific external application target (external-classified jobs are never clicked or submitted, so no application was opened for them). The candidacy query (`backend/services/autonomous_cycle/service.py`) excludes any job whose application status is not SKIPPED, and the runner's unresolved-prior-attempt guard (`backend/services/applications/runner.py`) skips EXTERNAL/NEEDS_ATTENTION with "manual reset required" - but no reset mechanism existed anywhere in the product, so those 16 jobs (10 with APPLY-recommended analyses, scores 65-85) were permanently starved out of the candidate pool.
+
+**Contract:**
+
+1. **Signature-scoped reconciliation.** `ApplicationService.reconcile_stale_externals()` selects only `EXTERNAL_APPLICATION` rows whose `external_url` exactly equals the constant `STALE_EXTERNAL_PAGE_CHROME_URL`; reclassifies matching rows to `SKIPPED`; records `STALE_EXTERNAL_RECONCILE_SKIP_REASON` (prior classification came from the known page-chrome URL, no external application was opened/submitted/confirmed, job released to the normal pipeline); clears `needs_attention`; preserves the record, `external_url`, and `application_method` for audit. Returns `affected_count`, `application_ids`, `job_ids`, `signature`. Idempotent.
+2. **Human-triggered API only.** `POST /api/applications/reconcile-stale-externals` (no parameters) returns `ReconcileStaleExternalsResponse {affected_count, application_ids, job_ids, signature}`. Not scheduled, no scheduler hook, no frontend trigger, no generic arbitrary-status reset endpoint.
+
+**Unchanged:** `APPLIED`, `SUBMITTED` (the persisted `SUBMITTED_UNCONFIRMED` status), `NEEDS_ATTENTION`, `FAILED`, and already-`SKIPPED` rows are never modified even when carrying the signature URL; no records are deleted; the autonomous cycle never reconciles automatically; released jobs re-run through every deterministic filter, duplicate rule, safety gate, and limit. Jobs 87/120 (`NEEDS_ATTENTION`) remain locked pending human resolution of their uncertain remote status.
+
+**Tests:** 7 new in `backend/tests/test_reconcile_stale_externals.py` (isolated test database; service-level and endpoint-level). Focused 7 passed; full backend suite **921 passed, 0 failed**.
+
+**Live-only uncertainties and next steps:** the 16 proven-false rows remain `EXTERNAL_APPLICATION` in the live database (endpoint not invoked); the running backend (PID 25760, started 10:48:32) predates E5-R5.2 and this checkpoint and was not restarted. Requires explicit approval to restart, invoke the endpoint, and run a cycle with `max_applications >= 2`; whether released jobs then survive the deterministic filters live cannot be known offline.
+
+---
+
 ## E5-R5.2 - Truthful Application Outcomes and Bounded Error Recovery
 
 **Status:** E5-R5.2 IMPLEMENTED, TESTED, AND VERIFIED (offline only; all tests mocked). No live validation.

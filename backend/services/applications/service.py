@@ -27,6 +27,25 @@ from backend.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+# E5-R5.3: exact page-chrome URL proven by the E5-R4.1 detector fix to have
+# caused false EXTERNAL_APPLICATION classifications before that fix shipped.
+# Only rows whose external_url equals this signature byte-for-byte are
+# eligible for reconciliation; similar or derived URLs never match.
+STALE_EXTERNAL_PAGE_CHROME_URL = (
+    "https://www.ambitionbox.com/interviews"
+    "?utm_source=naukri&utm_medium=desktop&utm_campaign=gnb"
+)
+
+STALE_EXTERNAL_RECONCILE_SKIP_REASON = (
+    "Reconciled by E5-R5.3 stale-external reconciliation: prior "
+    "EXTERNAL_APPLICATION classification came from the known Naukri "
+    "page-chrome URL "
+    f"({STALE_EXTERNAL_PAGE_CHROME_URL}), not a job-specific external "
+    "application target. No external application was opened, submitted, or "
+    "confirmed; job released back to the normal candidate pipeline."
+)
+
+
 class SafetyGateError(Exception):
     """Raised when the safety gate blocks an application."""
     pass
@@ -251,7 +270,50 @@ class ApplicationService:
         self.session.commit()
         self.session.refresh(application)
         return self._to_schema(application)
-    
+
+    def reconcile_stale_externals(self) -> dict:
+        """
+        Release jobs locked by the proven-false page-chrome external URL (E5-R5.3).
+
+        Reclassifies only EXTERNAL_APPLICATION rows whose external_url exactly
+        equals STALE_EXTERNAL_PAGE_CHROME_URL to SKIPPED, recording
+        STALE_EXTERNAL_RECONCILE_SKIP_REASON as the audit trail and clearing
+        needs_attention. Returns the affected application IDs, job IDs, count,
+        and the signature used. Idempotent: a second call matches nothing.
+        Never modifies APPLIED, SUBMITTED, NEEDS_ATTENTION, FAILED, or
+        already-SKIPPED rows, never deletes records, and is never invoked
+        automatically by the autonomous cycle.
+        """
+        stmt = select(Application).where(
+            Application.status == ApplicationStatus.EXTERNAL_APPLICATION.value,
+            Application.external_url == STALE_EXTERNAL_PAGE_CHROME_URL,
+        )
+        applications = list(self.session.execute(stmt).scalars().all())
+        application_ids: list[int] = []
+        job_ids: list[int] = []
+        for application in applications:
+            application.status = ApplicationStatus.SKIPPED.value
+            application.skip_reason = STALE_EXTERNAL_RECONCILE_SKIP_REASON
+            application.needs_attention = False
+            application_ids.append(application.id)
+            job_ids.append(application.job_id)
+        if applications:
+            self.session.commit()
+            logger.info(
+                "reconciled_stale_externals",
+                extra={
+                    "affected_count": len(applications),
+                    "application_ids": application_ids,
+                    "job_ids": job_ids,
+                },
+            )
+        return {
+            "affected_count": len(application_ids),
+            "application_ids": application_ids,
+            "job_ids": job_ids,
+            "signature": STALE_EXTERNAL_PAGE_CHROME_URL,
+        }
+
     def get_application_history(self, limit: int = 100) -> list[ApplicationSchema]:
         """Get application history."""
         stmt = select(Application).order_by(Application.created_at.desc()).limit(limit)

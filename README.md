@@ -1,5 +1,23 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E5-R5.3: Signature-Scoped Reconciliation of False External Classifications
+
+**Status: E5-R5.3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - the endpoint has NOT been invoked against the live database, no autonomous cycle, no browser, no Apply click, no backend restart.**
+
+**Blocker (proven from run-61 evidence):** after profile re-confirmation, the dashboard cycle completed with 19 pre-analyzed jobs but only 1 candidate and 0 applications: 16 of the 19 carry `EXTERNAL_APPLICATION` rows all holding the identical `https://www.ambitionbox.com/interviews?utm_source=naukri&utm_medium=desktop&utm_campaign=gnb` URL - the page-chrome false positive fixed by E5-R4.1 (external-classified jobs are never clicked or submitted, so no application was ever opened for them). Two layers permanently lock those jobs out: the candidacy query excludes any job whose application status is not SKIPPED, and the runner's unresolved-prior-attempt guard skips EXTERNAL/NEEDS_ATTENTION with "manual reset required" - yet no reset mechanism existed anywhere in the product. 10 of the 16 locked jobs have APPLY-recommended analyses (scores 65-85).
+
+**Fix (human-triggered, signature-scoped only):** `ApplicationService.reconcile_stale_externals()` (backend/services/applications/service.py) selects only `EXTERNAL_APPLICATION` rows whose `external_url` exactly equals the named constant `STALE_EXTERNAL_PAGE_CHROME_URL`, reclassifies them to `SKIPPED`, records the audit reason `STALE_EXTERNAL_RECONCILE_SKIP_REASON` (stating the prior classification came from the known page-chrome URL, that no external application was opened/submitted/confirmed, and that the job returns to the normal candidate pipeline), clears `needs_attention`, and preserves the record and its URL/method history. It returns the affected count, application IDs, job IDs, and signature, and is idempotent (a second call matches nothing). Exposed as `POST /api/applications/reconcile-stale-externals` (no parameters), which returns `{affected_count, application_ids, job_ids, signature}`. The endpoint is not scheduled, has no scheduler hook, no frontend trigger, and no generic arbitrary-status reset.
+
+**Safety exclusions:** `APPLIED`, `SUBMITTED` (the persisted status of `SUBMITTED_UNCONFIRMED`), `NEEDS_ATTENTION`, `FAILED`, and already-`SKIPPED` rows are never modified even when carrying the signature URL; nothing is deleted; the autonomous cycle never reconciles automatically; released jobs re-enter through the normal deterministic filters (no filter, duplicate rule, safety gate, or limit is bypassed). Jobs 87/120 (`NEEDS_ATTENTION`) remain locked - their real application status is uncertain and must be resolved by a human.
+
+**Live status:** the endpoint has NOT been invoked against the live database; the 16 proven-false rows remain `EXTERNAL_APPLICATION`; the running backend (PID 25760) predates E5-R5.2 and this checkpoint and was not restarted. To use it: approve a backend restart, invoke the endpoint, then trigger a cycle with `max_applications >= 2`.
+
+**Tests (7 new, isolated test databases):** exact-signature rows become `SKIPPED` with history preserved; audit reason recorded (references the URL and "page-chrome"); different external URLs unchanged; `NEEDS_ATTENTION`/`APPLIED`/`SUBMITTED`/`FAILED`/already-`SKIPPED` rows with the signature URL unchanged; second call is a no-op; endpoint reports count/IDs/job IDs/signature accurately; endpoint performs no unrelated status changes. Focused: **7 passed**; full backend suite: **921 passed, 0 failed** (421.12s; baseline 914 + 7).
+
+**Files:** `backend/services/applications/service.py`, `backend/api/routes/application.py`, `backend/schemas/application.py`, `backend/tests/test_reconcile_stale_externals.py` (new).
+
+---
+
 ## CHECKPOINT E5-R5.2: Truthful Application Outcomes and Bounded Error Recovery
 
 **Status: E5-R5.2 IMPLEMENTED, TESTED, AND VERIFIED (offline only; all tests mocked). No live validation - no browser, no Apply click, no autonomous-cycle run.**

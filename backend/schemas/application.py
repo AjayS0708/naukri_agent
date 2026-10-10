@@ -132,3 +132,11 @@ class LimitCheckResponse(BaseModel):
     daily_used: int
     hourly_remaining: int
     daily_remaining: int
+
+
+class ReconcileStaleExternalsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    affected_count: int
+    application_ids: list[int]
+    job_ids: list[int]
+    signature: str

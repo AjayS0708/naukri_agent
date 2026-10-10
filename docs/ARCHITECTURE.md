@@ -1029,6 +1029,40 @@ popup, server-side instant-apply persistence behind the D5 reload decision,
 real click/redirect timing, live security challenges, DOM drift versus the
 2026-10-02 snapshot, and auth/session-gated rendering.
 
+**Stale-external reconciliation (E5-R5.3):** jobs locked by the pre-E5-R4.1
+false external classification are released by a human-triggered,
+signature-scoped reconciliation - never automatically:
+
+```text
+ApplicationService.reconcile_stale_externals()   (service.py; POST
+/api/applications/reconcile-stale-externals; no parameters)
+  selects  ONLY  status == EXTERNAL_APPLICATION
+           AND  external_url == STALE_EXTERNAL_PAGE_CHROME_URL
+                (exact byte-for-byte match; the proven AmbitionBox
+                 page-chrome URL, never a job-specific external CTA)
+  reclassifies matching rows -> SKIPPED
+  records  STALE_EXTERNAL_RECONCILE_SKIP_REASON  (prior classification
+           came from the known page-chrome URL; no external application
+           was opened, submitted, or confirmed; job released to the
+           normal candidate pipeline)
+  clears   needs_attention
+  preserves the record, external_url, and application_method (audit)
+  returns  {affected_count, application_ids, job_ids, signature}
+  idempotent: a second call matches nothing
+```
+
+Never modified, even when carrying the signature URL: `APPLIED`,
+`SUBMITTED` (the persisted `SUBMITTED_UNCONFIRMED` status),
+`NEEDS_ATTENTION` (jobs 87/120 stay locked - remote status uncertain,
+human resolution required), `FAILED`, already-`SKIPPED`. Nothing is
+deleted; the autonomous cycle never calls this path; released jobs
+re-enter through the normal candidacy query, runner guard, duplicate
+protection, safety gate, and limits - no filter is bypassed. The
+reconciled `SKIPPED` status satisfies both lock layers (the candidacy
+query's `status == SKIPPED` branch and the runner's EXTERNAL/
+NEEDS_ATTENTION guard), so the job becomes a candidate again only if
+every deterministic rule passes on its own merits.
+
 **Truthful outcomes and bounded error recovery (E5-R5.2):** the runner/cycle
 outcome path separates a clicked-but-unconfirmed submission from a confirmed
 application, and isolates runner errors:

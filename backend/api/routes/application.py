@@ -5,7 +5,8 @@ from backend.database.database import get_session
 from backend.schemas.application import (
     ApplicationSchema, ApplicationCreate, ApplicationUpdate,
     ApplicationStartRequest, ApplicationStartResponse, ApplicationHistoryResponse,
-    ApplicationLimitsUpdate, ApplicationLimitsResponse, LimitCheckResponse
+    ApplicationLimitsUpdate, ApplicationLimitsResponse, LimitCheckResponse,
+    ReconcileStaleExternalsResponse
 )
 from backend.services.applications import ApplicationService, ApplicationRunner
 from backend.services.applications.limits import ApplicationLimitService
@@ -76,6 +77,21 @@ async def get_application_by_job(job_id: int, db: Session = Depends(get_session)
     if not application:
         raise HTTPException(status_code=404, detail="No application found for this job")
     return application
+
+
+@router.post("/reconcile-stale-externals", response_model=ReconcileStaleExternalsResponse)
+async def reconcile_stale_externals(db: Session = Depends(get_session)):
+    """
+    Human-triggered reconciliation of proven-false external classifications (E5-R5.3).
+
+    Reclassifies only EXTERNAL_APPLICATION rows whose external_url exactly
+    matches the known Naukri page-chrome signature captured before the
+    E5-R4.1 detector fix. Idempotent, never touches other statuses, not
+    scheduled, and never invoked automatically by the autonomous cycle.
+    """
+    service = ApplicationService(db)
+    result = service.reconcile_stale_externals()
+    return ReconcileStaleExternalsResponse(**result)
 
 
 @router.get("/{application_id}", response_model=ApplicationSchema)

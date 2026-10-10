@@ -1,5 +1,28 @@
 # Development Status
 
+## CHECKPOINT E5-R5.3: Signature-Scoped Reconciliation of False External Classifications
+
+**Status: E5-R5.3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - the endpoint has NOT been invoked against the live database, no autonomous cycle, no browser, no Apply click, no backend restart, no DB/queue/preference writes outside isolated test databases.**
+
+**Implementation:**
+
+1. `backend/services/applications/service.py`
+   - Module constants `STALE_EXTERNAL_PAGE_CHROME_URL` (the exact proven-false AmbitionBox page-chrome URL from the E5-R4.1 evidence) and `STALE_EXTERNAL_RECONCILE_SKIP_REASON` (audit text stating the prior classification came from that page-chrome URL, that no external application was opened/submitted/confirmed, and that the job returns to the normal candidate pipeline).
+   - `ApplicationService.reconcile_stale_externals()`: selects only `EXTERNAL_APPLICATION` rows whose `external_url` exactly equals the signature constant; reclassifies them to `SKIPPED`; records the audit reason; clears `needs_attention`; preserves the record and its `external_url`/`application_method` history; returns `{affected_count, application_ids, job_ids, signature}`; idempotent (second call matches nothing); never touches `APPLIED`, `SUBMITTED` (the persisted `SUBMITTED_UNCONFIRMED` status), `NEEDS_ATTENTION`, `FAILED`, or already-`SKIPPED` rows; never deletes; never invoked automatically by the autonomous cycle.
+2. `backend/api/routes/application.py`
+   - `POST /api/applications/reconcile-stale-externals` (no parameters, registered before the `/{application_id}` dynamic routes) invokes only the signature-scoped service method and returns `ReconcileStaleExternalsResponse`. No scheduler hook, no background task, no frontend trigger, no generic arbitrary-status reset.
+3. `backend/schemas/application.py`
+   - `ReconcileStaleExternalsResponse {affected_count, application_ids, job_ids, signature}` (`extra="forbid"`).
+
+**Tests:**
+
+- New `backend/tests/test_reconcile_stale_externals.py` (7, isolated disposable test database from `conftest.py`): exact-signature rows become `SKIPPED` with `needs_attention` cleared and history preserved; audit reason recorded (contains the URL and "page-chrome"); different external URLs remain `EXTERNAL_APPLICATION` with `needs_attention` intact; `NEEDS_ATTENTION`/`APPLIED`/`SUBMITTED` (SUBMITTED_UNCONFIRMED persistence)/`FAILED`/already-`SKIPPED` rows carrying the signature URL remain unchanged; second service call is a no-op; endpoint reports count/application IDs/job IDs/signature accurately; endpoint performs no unrelated status changes.
+- Focused: **7 passed**. Full backend suite: **921 passed, 0 failed** (421.12s; baseline 914 + 7).
+
+**Live state (unchanged by this checkpoint):** the 16 proven-false `EXTERNAL_APPLICATION` rows remain in `data/naukri_agent.db` (the endpoint has NOT been invoked); jobs 87/120 remain `NEEDS_ATTENTION` (correctly locked, remote status uncertain); the running backend (PID 25760, started 2026-10-10 10:48:32, no `--reload`) predates E5-R5.2 and this checkpoint and was not restarted. Next steps require explicit approval: restart the backend, invoke the endpoint, then run a cycle with `max_applications >= 2`.
+
+---
+
 ## CHECKPOINT E5-R5.2: Truthful Application Outcomes and Bounded Error Recovery
 
 **Status: E5-R5.2 IMPLEMENTED, TESTED, AND VERIFIED (offline only; all tests mocked). No live validation - no browser, no Apply click, no autonomous-cycle run, no DB/queue/preference writes outside in-memory test databases.**
