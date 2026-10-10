@@ -1,5 +1,19 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E5-R5.4: Native Apply Button Precedes External Body-Text Scan
+
+**Status: E5-R5.4 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - no autonomous cycle, no browser, no Apply click, no backend restart.**
+
+**Root cause (proven from Git + code + offline evidence):** `_observe_application_type()` scanned the entire visible body for external-apply phrases (`apply on company site`, `external application`, `redirecting to`, ...) and returned `EXTERNAL` *before* checking for a visible native Apply button. A native Naukri job page whose job-description prose coincidentally contained one of those phrases was misclassified `EXTERNAL` and never clicked. The ordering was already present at D7 (`e9bf7ac`) and unchanged through `1850cd8` (verified by `git diff`), and an existing test (`test_visible_external_evidence_wins_over_visible_native`) codified it. It is the mechanism that, combined with the pre-E5-R4.1 fabricated-URL defect, locked the 16 jobs: they were classified `EXTERNAL` via this body-scan, and the old `get_external_redirect_url` recorded the identical AmbitionBox page-chrome URL for all of them because no genuine external CTA link existed - i.e., the phrase was incidental prose with a native Apply button present but overridden. The saved real-page snapshot contains none of the phrases (grep), so the defect is a latent false positive that fires only on pages whose prose carries a phrase.
+
+**Fix (`backend/services/naukri/adapter.py`):** `_observe_application_type()` now checks `_find_scoped_apply_button()` first; a visible native Apply control returns `NAUKRI_NATIVE` immediately. The external body-scan runs only when no native control is visible, so genuine external CTAs (which never render a native Apply button) are still detected. This is the smallest evidence-backed change and restores the native-first ordering the D7 success relied on.
+
+**Safety preserved:** `APPLIED` still requires positive confirmation; external applications are still never clicked or submitted; the E5-R4.3 historical-snapshot test (real page -> `NAUKRI_NATIVE`, no false-EXTERNAL log) and CTA URL-grounding still pass; jobs 87/120 (`NEEDS_ATTENTION`) untouched; no scheduler launched; no live cycle.
+
+**Tests (3 new, offline):** `backend/tests/test_naukri_adapter.py` +2 unit (native button wins over unrelated prose phrase; no-button + phrase still `EXTERNAL`), with the old external-wins test updated to the new contract; `backend/tests/test_naukri_adapter_offline_dom.py` +1 Playwright (native button + prose phrase -> `NAUKRI_NATIVE`, no false-EXTERNAL log). Focused: adapter classification 23 passed, offline DOM 10 passed; full backend suite **924 passed, 0 failed** (baseline 921 + 3).
+
+---
+
 ## CHECKPOINT E5-R5.3: Signature-Scoped Reconciliation of False External Classifications
 
 **Status: E5-R5.3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - the endpoint has NOT been invoked against the live database, no autonomous cycle, no browser, no Apply click, no backend restart.**

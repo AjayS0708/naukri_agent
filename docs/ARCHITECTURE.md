@@ -976,10 +976,16 @@ click `03:12:49.075`, reload decision `03:13:02.379` = 13.3s for an 8s bound),
 leaving the container check effectively unobserved. The terminal
 `NEEDS_ATTENTION` warning records `page.url`.
 
-**External application evidence:** `_observe_application_type()` classifies from
-the visible `external_text_indicators` vocabulary and logs which indicator
-matched, so an `EXTERNAL` decision is attributable in the run log. The URL
-persisted for an `EXTERNAL_APPLICATION` row comes from
+**External application evidence (E5-R5.4 native-first ordering):**
+`_observe_application_type()` first checks for a visible native Apply control
+(`_find_scoped_apply_button`); when one exists the page is `NAUKRI_NATIVE` and
+the external scan never runs - a visible native button is authoritative, so an
+external-apply phrase appearing only in job-description prose cannot reclassify
+a native page as `EXTERNAL`. Only when no native control is visible does the
+external body-scan run over the `external_text_indicators` vocabulary, logging
+which indicator matched so an `EXTERNAL` decision is attributable. Genuine
+external CTAs never render a native Apply button, so they still classify
+`EXTERNAL`. The URL persisted for an `EXTERNAL_APPLICATION` row comes from
 `get_external_redirect_url()`, which returns only a non-Naukri link whose own
 visible text matches that same vocabulary; when no such link exists it returns
 `None` and the runner records `job.url`. Page-chrome links (promos, footers,

@@ -1,5 +1,21 @@
 # Naukri AI Job Application Agent
 
+## E5-R5.4 - Native Apply Button Precedes External Body-Text Scan
+
+**Status:** E5-R5.4 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - no cycle, no browser, no Apply click, no backend restart.
+
+**Root cause:** `_observe_application_type()` scanned the entire visible body for external-apply phrases and returned `EXTERNAL` before checking for a visible native Apply button. A native page whose job-description prose coincidentally contained a phrase (`external application`, `redirecting to`, ...) was misclassified `EXTERNAL` and never clicked. Verified by `git diff e9bf7ac HEAD` that the ordering is identical at D7 and now (a latent defect, not a post-D7 code change), and by grep that the saved real-page snapshot contains none of the phrases. The mechanism, combined with the pre-E5-R4.1 fabricated-URL defect, locked the 16 jobs: classified `EXTERNAL` via the body-scan, with the old `get_external_redirect_url` recording the identical AmbitionBox page-chrome URL because no genuine external CTA link existed - the phrase was prose and a native button was overridden.
+
+**Contract change:** a visible native Apply control is authoritative. `_observe_application_type()` checks `_find_scoped_apply_button()` first and returns `NAUKRI_NATIVE` when a visible control exists; the external body-scan runs only when no native control is visible, so genuine external CTAs (which never render a native button) remain detected. The prior `external-wins-over-native` contract (`test_visible_external_evidence_wins_over_visible_native`) is retired to the native-first contract.
+
+**Unchanged:** `APPLIED` requires positive confirmation; external applications never clicked/submitted; safety gates, duplicate protection, limits, and preferences untouched; E5-R4.3 snapshot and CTA-grounding tests still pass; jobs 87/120 untouched.
+
+**Tests:** 3 new offline (2 unit in `test_naukri_adapter.py`, 1 Playwright in `test_naukri_adapter_offline_dom.py`); focused 23 + 10 passed; full backend suite **924 passed, 0 failed**.
+
+**Live-only uncertainty:** whether the affected live job pages' prose actually carries an external phrase cannot be proven offline without those page snapshots; the fix removes the false-positive mechanism regardless. A controlled live cycle requires separate explicit approval.
+
+---
+
 ## E5-R5.3 - Signature-Scoped Reconciliation of False External Classifications
 
 **Status:** E5-R5.3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - the endpoint has NOT been invoked against the live database; no cycle, no browser, no Apply click, no backend restart.

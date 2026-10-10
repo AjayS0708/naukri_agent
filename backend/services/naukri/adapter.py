@@ -729,7 +729,20 @@ class NaukriAdapter(JobPlatformAdapter):
             return "AMBIGUOUS"
 
     async def _observe_application_type(self, page: Page) -> str:
-        """Classify one visible page state without waiting or navigation."""
+        """Classify one visible page state without waiting or navigation.
+
+        A visible native Apply control is authoritative: Naukri renders it
+        only when an in-page application is available, so an external-apply
+        phrase appearing elsewhere in the body (job-description prose,
+        promos) must not reclassify a native page as EXTERNAL. The external
+        body-scan runs only when no native control is visible, preserving
+        genuine external-CTA detection (which never renders a native Apply
+        button).
+        """
+        apply_button, _ = await self._find_scoped_apply_button(page)
+        if apply_button is not None:
+            return "NAUKRI_NATIVE"
+
         content_lower = (await page.inner_text("body")).lower()
         for indicator in self.external_text_indicators:
             if indicator in content_lower:
@@ -742,10 +755,6 @@ class NaukriAdapter(JobPlatformAdapter):
                     page.url,
                 )
                 return "EXTERNAL"
-
-        apply_button, _ = await self._find_scoped_apply_button(page)
-        if apply_button is not None:
-            return "NAUKRI_NATIVE"
 
         return "AMBIGUOUS"
 

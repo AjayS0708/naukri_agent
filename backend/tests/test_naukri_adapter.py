@@ -508,13 +508,39 @@ class TestApplicationTypeDetection:
         assert await adapter.detect_application_type(page) == "AMBIGUOUS"
 
     @pytest.mark.asyncio
-    async def test_visible_external_evidence_wins_over_visible_native(self):
+    async def test_native_button_wins_over_incidental_body_phrase(self):
+        # E5-R5.4: a visible native Apply control is authoritative. An
+        # external-apply phrase appearing only as body text (job-description
+        # prose) must not reclassify a native page as EXTERNAL.
         adapter = NaukriAdapter()
         page = self._make_page("Apply on company site")
         page.query_selector_all.return_value = [self._visible_control()]
 
-        assert await adapter.detect_application_type(page) == "EXTERNAL"
+        assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
 
+    @pytest.mark.asyncio
+    async def test_native_button_wins_over_unrelated_prose_phrase(self):
+        # E5-R5.4 regression: unrelated prose mentioning external application
+        # ("redirecting to an external application portal") while a native
+        # Apply button is visible must classify as NAUKRI_NATIVE.
+        adapter = NaukriAdapter()
+        page = self._make_page(
+            "Data Analyst job description. You will be redirecting to an "
+            "external application portal for onboarding."
+        )
+        page.query_selector_all.return_value = [self._visible_control()]
+
+        assert await adapter.detect_application_type(page) == "NAUKRI_NATIVE"
+
+    @pytest.mark.asyncio
+    async def test_no_native_button_with_phrase_still_external(self):
+        # A genuine external page has no native Apply button; the body-scan
+        # still classifies it EXTERNAL so external CTAs keep working.
+        adapter = NaukriAdapter()
+        page = self._make_page("Apply on company site")
+        page.query_selector_all.return_value = []
+
+        assert await adapter.detect_application_type(page) == "EXTERNAL"
     @pytest.mark.asyncio
     async def test_start_application_supports_current_native_apply_button(self):
         adapter = NaukriAdapter()

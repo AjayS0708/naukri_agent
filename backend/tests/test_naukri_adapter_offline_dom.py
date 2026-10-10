@@ -51,6 +51,24 @@ SYNTHETIC_HTML = """<!doctype html>
 </body></html>
 """
 
+# E5-R5.4: a native Naukri Apply button is visible while unrelated
+# job-description prose contains an external-apply phrase. The visible native
+# control must win; the prose must not reclassify the page as EXTERNAL.
+NATIVE_WITH_PROSE_HTML = """<!doctype html>
+<html><body>
+  <div id="job_header">
+    <button id="apply-button">Apply</button>
+  </div>
+  <section class="job-description">
+    <p>
+      In this role you may be redirecting to an external application portal
+      for onboarding, and we handle external application paperwork on your
+      behalf.
+    </p>
+  </section>
+</body></html>
+"""
+
 
 async def _abort_all_requests(route):
     await route.abort()
@@ -190,6 +208,24 @@ class TestSyntheticControlledPage:
         )
         assert any(
             "External apply CTA link evidence" in message
+            for message in caplog.messages
+        ), caplog.messages
+
+    @pytest.mark.asyncio
+    async def test_native_button_beats_unrelated_prose_external_phrase(
+        self, offline_browser, caplog
+    ):
+        # E5-R5.4 offline regression: a native Apply button is visible while
+        # unrelated job-description prose contains an external-apply phrase.
+        # The page must classify NAUKRI_NATIVE, not EXTERNAL.
+        caplog.set_level(logging.INFO)
+        context, adapter = offline_browser
+        page = await context.new_page()
+        await page.set_content(NATIVE_WITH_PROSE_HTML)
+
+        assert await adapter._observe_application_type(page) == "NAUKRI_NATIVE"
+        assert not any(
+            "External apply indicator matched" in message
             for message in caplog.messages
         ), caplog.messages
 

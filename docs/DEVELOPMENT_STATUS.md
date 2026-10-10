@@ -1,5 +1,27 @@
 # Development Status
 
+## CHECKPOINT E5-R5.4: Native Apply Button Precedes External Body-Text Scan
+
+**Status: E5-R5.4 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - no autonomous cycle, no browser, no Apply click, no backend restart.**
+
+**Implementation:**
+
+1. `backend/services/naukri/adapter.py`
+   - `_observe_application_type()` reordered: it now calls `_find_scoped_apply_button()` first and returns `NAUKRI_NATIVE` when a visible native Apply control exists. The external body-scan (`external_text_indicators` over `page.inner_text("body")`) runs only when no native control is visible. A visible native button is authoritative; incidental external-apply prose no longer reclassifies a native page as `EXTERNAL`. Genuine external CTAs (no native button) still classify `EXTERNAL`. Docstring documents the native-first rationale.
+
+2. `backend/tests/test_naukri_adapter.py`
+   - Replaced `test_visible_external_evidence_wins_over_visible_native` (old external-wins contract) with `test_native_button_wins_over_incidental_body_phrase` (asserts `NAUKRI_NATIVE`).
+   - Added `test_native_button_wins_over_unrelated_prose_phrase` (prose "redirecting to an external application portal" + native button -> `NAUKRI_NATIVE`) and `test_no_native_button_with_phrase_still_external` (no button + phrase -> `EXTERNAL`).
+
+3. `backend/tests/test_naukri_adapter_offline_dom.py`
+   - Added `NATIVE_WITH_PROSE_HTML` and `test_native_button_beats_unrelated_prose_external_phrase` (real Chromium: native button + prose phrase -> `NAUKRI_NATIVE`, no false-EXTERNAL log).
+
+**Tests:** focused adapter classification 23 passed; offline DOM 10 passed; full backend suite **924 passed, 0 failed** (baseline 921 + 3). `compileall` and `git diff --check` clean.
+
+**Live state:** no cycle run, no browser, no Apply click, no backend restart. Jobs 85/59 (`APPLIED`) and 87/120 (`NEEDS_ATTENTION`) untouched. The 16 stale `EXTERNAL_APPLICATION` rows remain (addressed separately by the E5-R5.3 reconcile endpoint, not invoked). Live validation requires explicit approval.
+
+---
+
 ## CHECKPOINT E5-R5.3: Signature-Scoped Reconciliation of False External Classifications
 
 **Status: E5-R5.3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - the endpoint has NOT been invoked against the live database, no autonomous cycle, no browser, no Apply click, no backend restart, no DB/queue/preference writes outside isolated test databases.**
