@@ -59,6 +59,23 @@ class NaukriAdapter(JobPlatformAdapter):
     application_type_settle_seconds = 0.5
     _header_apply_selector = "#job_header button#apply-button"
     _fallback_apply_selector = "button#apply-button"
+    # Single vocabulary for external-apply evidence: classification
+    # (``_observe_application_type``) and the recorded external URL
+    # (``get_external_redirect_url``) must agree on what counts as external.
+    external_text_indicators = [
+        "apply on company site",
+        "apply on company website",
+        "external application",
+        "redirecting to",
+        "you will be redirected",
+        "apply externally",
+    ]
+    # E5-R4.2: read-only validation evidence. Terminal-state PNGs are written
+    # under the existing data/ artifacts directory (covered by data/*.png).
+    evidence_dir = "data"
+    # How long the Apply click is observed for a popup/new tab after the
+    # bounded window and reload settle have both elapsed.
+    new_tab_observation_grace_seconds = 5
 
     def __init__(self, browser_type: str = "chrome"):
         """
@@ -714,16 +731,17 @@ class NaukriAdapter(JobPlatformAdapter):
     async def _observe_application_type(self, page: Page) -> str:
         """Classify one visible page state without waiting or navigation."""
         content_lower = (await page.inner_text("body")).lower()
-        external_indicators = [
-            "apply on company site",
-            "apply on company website",
-            "external application",
-            "redirecting to",
-            "you will be redirected",
-            "apply externally",
-        ]
-        if any(indicator in content_lower for indicator in external_indicators):
-            return "EXTERNAL"
+        for indicator in self.external_text_indicators:
+            if indicator in content_lower:
+                # Evidence must be attributable: record which phrase matched
+                # and on which page, so an EXTERNAL decision can be reviewed.
+                logger.info(
+                    "External apply indicator matched in visible page text: %r"
+                    " (page: %s)",
+                    indicator,
+                    page.url,
+                )
+                return "EXTERNAL"
 
         apply_button, _ = await self._find_scoped_apply_button(page)
         if apply_button is not None:
@@ -779,68 +797,190 @@ class NaukriAdapter(JobPlatformAdapter):
         try:
             button, source = await self._find_scoped_apply_button(page)
             if button is None:
-                logger.warning("No scoped visible Apply button found; needs attention")
+                screenshot = await self._capture_evidence_screenshot(
+                    page, "no_apply_button"
+                )
+                logger.warning(
+                    "No scoped visible Apply button found; needs attention"
+                    " | terminal_state=NEEDS_ATTENTION page=%s screenshot=%s",
+                    page.url,
+                    screenshot or "unavailable",
+                )
                 return ApplicationStartResult.NEEDS_ATTENTION
 
             logger.info(f"Clicking Apply button selected from {source}")
-            await button.click()
-            await self._check_security(page)
+            logger.info("Apply click: page url before click: %s", page.url)
 
-            # Phase 10 / D5: Bounded in-page polling for explicit post-click evidence.
-            deadline = (
-                asyncio.get_running_loop().time()
-                + self.post_apply_timeout_seconds
-            )
-            while asyncio.get_running_loop().time() < deadline:
-                # Check for explicit Applied state (visible evidence only)
-                applied, evidence = await self.detect_applied_state(page)
-                if applied:
-                    logger.info(f"Applied state detected (in-page) with evidence: {evidence}")
-                    return ApplicationStartResult.APPLIED
-
-                # Check for visible application container (questionnaire/form)
-                if await self._has_visible_application_container(page):
-                    logger.info("Application container detected after click")
-                    return ApplicationStartResult.FORM_OPENED
-
-                await asyncio.sleep(0.25)
-
-            # D5: In-page timeout expired without evidence.  Naukri instant-apply
-            # may update the job page state only after the server-side redirect
-            # completes.  Reload once and check the persistent page state.
-            # This is NOT a retry of the Apply click — it is a read-only confirmation
-            # of whether Naukri persisted the application server-side.
-            logger.info(
-                "No in-page post-click evidence after %ss; performing one reload check",
-                self.post_apply_timeout_seconds,
+            # E5-R4.2: observe - never interact with - a tab or popup the click
+            # may open. The observation spans the bounded window plus the reload
+            # settle, and is always resolved in the finally block below.
+            new_tab_task = asyncio.create_task(
+                page.context.wait_for_event(
+                    "page",
+                    timeout=int(
+                        (
+                            self.post_apply_timeout_seconds
+                            + self.post_apply_reload_settle_seconds
+                            + self.new_tab_observation_grace_seconds
+                        )
+                        * 1000
+                    ),
+                )
             )
             try:
-                await page.reload(wait_until="domcontentloaded", timeout=20000)
-                await asyncio.sleep(self.post_apply_reload_settle_seconds)
+                await button.click()
+                logger.info("Apply click: page url after click: %s", page.url)
                 await self._check_security(page)
 
+                # Phase 10 / D5: Bounded in-page polling for explicit post-click evidence.
+                window_start = asyncio.get_running_loop().time()
+                deadline = window_start + self.post_apply_timeout_seconds
+                check_index = 0
+                while asyncio.get_running_loop().time() < deadline:
+                    check_index += 1
+                    elapsed = asyncio.get_running_loop().time() - window_start
+                    # Check for explicit Applied state (visible evidence only).
+                    # The page-wide scan is deferred: it walks every element on the
+                    # page and would consume the whole bounded window in one pass,
+                    # starving the container check below.
+                    applied, evidence = await self.detect_applied_state(
+                        page, scan_whole_page=False
+                    )
+                    if applied:
+                        logger.info(
+                            "post-click check #%d at +%.2fs: applied=True evidence=%r",
+                            check_index,
+                            elapsed,
+                            evidence,
+                        )
+                        return ApplicationStartResult.APPLIED
+
+                    # Check for visible application container (questionnaire/form)
+                    container = await self._has_visible_application_container(page)
+                    logger.info(
+                        "post-click check #%d at +%.2fs: applied=False container=%s",
+                        check_index,
+                        elapsed,
+                        container,
+                    )
+                    if container:
+                        logger.info("Application container detected after click")
+                        return ApplicationStartResult.FORM_OPENED
+
+                    await asyncio.sleep(0.25)
+
+                logger.info(
+                    "post-click window closed: elapsed=%.2fs checks=%d",
+                    asyncio.get_running_loop().time() - window_start,
+                    check_index,
+                )
+
+                # One page-wide confirmation inside the page, after the bounded
+                # window expires and before the (destructive) reload decision.
                 applied, evidence = await self.detect_applied_state(page)
                 if applied:
                     logger.info(
-                        "Applied state confirmed after reload with evidence: %s", evidence
+                        "Applied state detected in-page after bounded window with evidence: %s",
+                        evidence,
                     )
                     return ApplicationStartResult.APPLIED
 
-                # Container visible after reload means a form was left open
-                if await self._has_visible_application_container(page):
-                    logger.info("Application container visible after reload")
-                    return ApplicationStartResult.FORM_OPENED
+                # D5: In-page timeout expired without evidence.  Naukri instant-apply
+                # may update the job page state only after the server-side redirect
+                # completes.  Reload once and check the persistent page state.
+                # This is NOT a retry of the Apply click — it is a read-only confirmation
+                # of whether Naukri persisted the application server-side.
+                logger.info(
+                    "No in-page post-click evidence after %ss; performing one reload check",
+                    self.post_apply_timeout_seconds,
+                )
+                try:
+                    await page.reload(wait_until="domcontentloaded", timeout=20000)
+                    await asyncio.sleep(self.post_apply_reload_settle_seconds)
+                    await self._check_security(page)
 
-            except Exception as reload_exc:
-                logger.warning("Post-click reload check failed: %s", reload_exc)
+                    applied, evidence = await self.detect_applied_state(page)
+                    if applied:
+                        logger.info(
+                            "Applied state confirmed after reload with evidence: %s", evidence
+                        )
+                        return ApplicationStartResult.APPLIED
 
-            logger.warning(
-                "No post-click Applied evidence after in-page wait and reload check"
-            )
-            return ApplicationStartResult.NEEDS_ATTENTION
+                    # Container visible after reload means a form was left open
+                    if await self._has_visible_application_container(page):
+                        logger.info("Application container visible after reload")
+                        return ApplicationStartResult.FORM_OPENED
+
+                except Exception as reload_exc:
+                    logger.warning("Post-click reload check failed: %s", reload_exc)
+
+                screenshot = await self._capture_evidence_screenshot(
+                    page, "needs_attention"
+                )
+                logger.warning(
+                    "No post-click Applied evidence after in-page wait and reload check"
+                    " (page: %s) | terminal_state=NEEDS_ATTENTION checks=%d"
+                    " screenshot=%s",
+                    page.url,
+                    check_index,
+                    screenshot or "unavailable",
+                )
+                return ApplicationStartResult.NEEDS_ATTENTION
+            finally:
+                await self._record_new_tab(page, new_tab_task)
         except Exception as e:
             logger.error(f"Error starting application: {e}")
             raise e
+
+    async def _capture_evidence_screenshot(self, page: Page, label: str) -> Optional[str]:
+        """Capture a read-only PNG of a terminal post-click state.
+
+        E5-R4.2 validation evidence only: no click, no form fill, no navigation,
+        no application/retry/preference write. Returns the written path or None.
+        """
+        try:
+            os.makedirs(self.evidence_dir, exist_ok=True)
+            stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+            path = os.path.join(
+                self.evidence_dir, f"apply_terminal_{label}_{stamp}.png"
+            )
+            await page.screenshot(path=path, full_page=False)
+            logger.info("Evidence screenshot: label=%s path=%s", label, path)
+            return path
+        except Exception as exc:
+            logger.warning("Evidence screenshot failed (%s): %s", label, exc)
+            return None
+
+    async def _record_new_tab(self, page: Page, task: "asyncio.Task") -> None:
+        """Record whether the Apply click opened a new tab or popup.
+
+        Read-only observation: the observed page is never clicked, filled,
+        navigated, or closed here, and no security check is skipped.
+        """
+        try:
+            if not task.done():
+                task.cancel()
+            try:
+                new_page = await task
+            except asyncio.CancelledError:
+                logger.info(
+                    "new_tab_detected=no (observation window closed before a new page)"
+                )
+                return
+            except Exception as exc:
+                logger.info(
+                    "new_tab_detected=no (page event: %s)", type(exc).__name__
+                )
+                return
+            pages = getattr(page.context, "pages", None)
+            page_count = len(pages) if isinstance(pages, (list, tuple)) else None
+            logger.info(
+                "new_tab_detected=yes url=%s context_pages=%s",
+                getattr(new_page, "url", "unknown"),
+                page_count,
+            )
+        except Exception as exc:
+            logger.warning("New-tab observation failed: %s", exc)
 
     async def detect_application_questions(self, page: Page) -> List[Dict[str, Any]]:
         """
@@ -918,8 +1058,16 @@ class NaukriAdapter(JobPlatformAdapter):
             logger.warning(f"Error detecting questions: {e}")
             return []
 
-    async def detect_applied_state(self, page: Page) -> tuple[bool, str]:
-        """Return explicit post-Apply evidence without inferring from navigation."""
+    async def detect_applied_state(
+        self, page: Page, scan_whole_page: bool = True
+    ) -> tuple[bool, str]:
+        """Return explicit post-Apply evidence without inferring from navigation.
+
+        ``scan_whole_page`` controls the last-resort page-wide element scan.
+        It is the expensive step (one visibility/text round trip per element on
+        the page), so bounded polling passes ``scan_whole_page=False`` and runs
+        the page-wide scan once after the window instead.
+        """
         try:
             # The header is authoritative when it renders an applied state.
             for selector in [
@@ -943,6 +1091,8 @@ class NaukriAdapter(JobPlatformAdapter):
                 for element in await page.query_selector_all(selector):
                     if await element.is_visible():
                         return True, (await element.inner_text()).strip()
+            if not scan_whole_page:
+                return False, ""
             for element in await page.query_selector_all("*"):
                 if not await element.is_visible():
                     continue
@@ -1064,15 +1214,34 @@ class NaukriAdapter(JobPlatformAdapter):
         """
         Get the external redirect URL if the application redirects externally.
         Returns the URL or None.
+
+        Only a link whose own visible text is external-apply evidence is
+        returned. Page-chrome links (footers, promos, social links) are not
+        redirect targets and must not be recorded as such.
         """
         try:
             # Look for external links
             external_links = await page.query_selector_all('a[href^="http"]')
             for link in external_links:
                 href = await link.get_attribute('href')
-                if href and 'naukri.com' not in href:
+                if not href or 'naukri.com' in href:
+                    continue
+                link_text = (await link.inner_text()).strip().lower()
+                if any(
+                    indicator in link_text
+                    for indicator in self.external_text_indicators
+                ):
+                    logger.info(
+                        "External apply CTA link evidence: text=%r href=%s",
+                        link_text,
+                        href,
+                    )
                     return href
 
+            logger.info(
+                "No external-apply CTA link on page; external URL falls back"
+                " to the job URL"
+            )
             return None
         except Exception as e:
             logger.warning(f"Error getting external URL: {e}")

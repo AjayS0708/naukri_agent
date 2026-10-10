@@ -979,6 +979,389 @@ class TestD5PostClickEvidenceDetection:
 
 
 
+class TestPostClickBoundedWindow:
+    """Run #59 (2026-10-10): the bounded post-click window must actually observe
+    the page.
+
+    `detect_applied_state` walks every element on the page (one visibility/text
+    round trip per element). When that ran first in every polling iteration it
+    consumed the whole window in a single pass, so the application-container
+    check completed only once, after the configured 8s deadline. The page-wide
+    scan is therefore deferred until the window has expired.
+    """
+
+    def _make_page(self, visible_text: str = "Software Engineer Apply") -> AsyncMock:
+        mock_page = AsyncMock()
+        mock_page.inner_text.return_value = visible_text
+        mock_page.content.return_value = "<html></html>"
+        mock_page.url = "https://www.naukri.com/job-listings-test"
+        return mock_page
+
+    def _visible_el(self, text: str = "Applied") -> AsyncMock:
+        el = AsyncMock()
+        el.is_visible.return_value = True
+        el.inner_text.return_value = text
+        return el
+
+    def _tracked_page(self, applied_elements=None, container_elements=None):
+        """Page mock that records every selector and what each selector returns."""
+        page = self._make_page()
+        apply_button = self._visible_el("Apply")
+        applied_elements = list(applied_elements or [])
+        container_elements = dict(container_elements or {})
+        seen: list[str] = []
+
+        def qsa(sel: str):
+            seen.append(sel)
+            if sel == "#job_header button#apply-button":
+                return [apply_button]
+            if sel == "*":
+                return list(applied_elements)
+            return list(container_elements.get(sel, []))
+
+        page.query_selector_all.side_effect = qsa
+        page.seen_selectors = seen
+        return page
+
+    @pytest.mark.asyncio
+    async def test_page_wide_scan_deferred_behind_container_check(self):
+        """The page-wide scan runs once after the window and once after reload."""
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0.4
+        adapter.post_apply_reload_settle_seconds = 0
+        page = self._tracked_page()
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.start_application(page)
+
+        assert result == ApplicationStartResult.NEEDS_ATTENTION
+        # Never inside the polling loop: only the post-window confirm and the
+        # post-reload confirm may touch every element on the page.
+        assert page.seen_selectors.count("*") == 2
+        # The container is polled during the window, before any page-wide scan.
+        assert page.seen_selectors.index('[role="dialog"]') < page.seen_selectors.index("*")
+
+    @pytest.mark.asyncio
+    async def test_container_detected_in_window_without_page_wide_scan(self):
+        """A form visible in the window must be detected without scanning the page."""
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0.4
+        adapter.post_apply_reload_settle_seconds = 0
+        page = self._tracked_page(
+            container_elements={'[role="dialog"]': [self._visible_el("")]}
+        )
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.start_application(page)
+
+        assert result == ApplicationStartResult.FORM_OPENED
+        page.reload.assert_not_awaited()
+        assert page.seen_selectors.count("*") == 0
+
+    @pytest.mark.asyncio
+    async def test_page_wide_evidence_after_window_still_returns_applied(self):
+        """Evidence found only by the deferred page-wide scan still wins in-page."""
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0.4
+        adapter.post_apply_reload_settle_seconds = 0
+        page = self._tracked_page(
+            applied_elements=[self._visible_el('Applied to "QA Engineer"')]
+        )
+
+        with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+            result = await adapter.start_application(page)
+
+        assert result == ApplicationStartResult.APPLIED
+        page.reload.assert_not_awaited()
+        assert page.seen_selectors.count("*") == 1
+
+    @pytest.mark.asyncio
+    async def test_detect_applied_state_can_skip_page_wide_scan(self):
+        """`scan_whole_page=False` must never touch the page-wide selector."""
+        adapter = NaukriAdapter()
+        page = self._make_page()
+        page.query_selector_all.side_effect = lambda sel: (
+            [] if sel != "*" else pytest.fail("page-wide scan must be skipped")
+        )
+
+        assert await adapter.detect_applied_state(page, scan_whole_page=False) == (False, "")
+
+
+class TestExternalRedirectEvidence:
+    """Run #59 recorded one identical non-Naukri promo URL for every EXTERNAL
+    row, because the recorded URL was simply the first non-Naukri link on the
+    page. Only a link that is itself external-apply evidence may be recorded."""
+
+    def _link(self, text: str, href: str) -> AsyncMock:
+        link = AsyncMock()
+        link.get_attribute.side_effect = lambda name: href if name == "href" else None
+        link.inner_text.return_value = text
+        return link
+
+    def _page(self, *links) -> AsyncMock:
+        page = AsyncMock()
+        page.query_selector_all.side_effect = lambda sel: (
+            list(links) if sel == 'a[href^="http"]' else []
+        )
+        return page
+
+    @pytest.mark.asyncio
+    async def test_page_chrome_link_is_not_recorded_as_external_url(self):
+        adapter = NaukriAdapter()
+        page = self._page(
+            self._link(
+                "Interview experiences",
+                "https://www.ambitionbox.com/interviews"
+                "?utm_source=naukri&utm_medium=desktop&utm_campaign=gnb",
+            ),
+            self._link("Naukri on Facebook", "https://www.facebook.com/Naukri"),
+        )
+
+        assert await adapter.get_external_redirect_url(page) is None
+
+    @pytest.mark.asyncio
+    async def test_external_apply_cta_link_is_returned(self):
+        adapter = NaukriAdapter()
+        page = self._page(
+            self._link("Interview experiences", "https://www.ambitionbox.com/interviews"),
+            self._link(
+                "Apply on company site", "https://boards.greenhouse.io/acme/jobs/1"
+            ),
+        )
+
+        assert await adapter.get_external_redirect_url(page) == (
+            "https://boards.greenhouse.io/acme/jobs/1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_naukri_hosted_cta_is_not_recorded_as_external(self):
+        adapter = NaukriAdapter()
+        page = self._page(
+            self._link(
+                "Apply on company site",
+                "https://www.naukri.com/job-listings-external-role-123",
+            )
+        )
+
+        assert await adapter.get_external_redirect_url(page) is None
+
+    @pytest.mark.asyncio
+    async def test_no_links_returns_none(self):
+        adapter = NaukriAdapter()
+
+        assert await adapter.get_external_redirect_url(self._page()) is None
+
+    @pytest.mark.asyncio
+    async def test_matched_external_indicator_is_logged(self, caplog):
+        """Classification evidence must be attributable in the run log."""
+        adapter = NaukriAdapter()
+        page = AsyncMock()
+        page.inner_text.return_value = "Data Analyst Apply on company site"
+        page.query_selector_all.return_value = []
+
+        with caplog.at_level("INFO"):
+            assert await adapter.detect_application_type(page) == "EXTERNAL"
+
+        assert any(
+            "apply on company site" in message for message in caplog.messages
+        ), caplog.messages
+
+
+class TestValidationInstrumentation:
+    """E5-R4.2: read-only runtime instrumentation for the controlled live validation.
+
+    Records the external indicator and CTA link evidence, the page URL before
+    and after the Apply click, new-tab/popup presence, timestamped bounded-window
+    container checks, and the terminal state plus screenshot path. The
+    instrumentation never clicks an extra control, fills or submits a form,
+    skips a security check, or writes application/retry/preference records.
+    """
+
+    def _make_page(self, visible_text: str = "Software Engineer Apply") -> AsyncMock:
+        mock_page = AsyncMock()
+        mock_page.inner_text.return_value = visible_text
+        mock_page.content.return_value = "<html></html>"
+        mock_page.url = "https://www.naukri.com/job-listings-test"
+        mock_page.context.pages = []
+        return mock_page
+
+    def _visible_el(self, text: str = "Applied") -> AsyncMock:
+        el = AsyncMock()
+        el.is_visible.return_value = True
+        el.inner_text.return_value = text
+        return el
+
+    def _page_with_apply_button(self) -> AsyncMock:
+        page = self._make_page()
+        button = self._visible_el("Apply")
+
+        def qsa(sel: str):
+            return [button] if sel == "#job_header button#apply-button" else []
+
+        page.query_selector_all.side_effect = qsa
+        return page
+
+    @pytest.mark.asyncio
+    async def test_page_url_logged_before_and_after_click(self, caplog, tmp_path):
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0.4
+        adapter.post_apply_reload_settle_seconds = 0
+        adapter.evidence_dir = str(tmp_path)
+        page = self._page_with_apply_button()
+
+        with caplog.at_level("INFO"):
+            with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+                result = await adapter.start_application(page)
+
+        assert result == ApplicationStartResult.NEEDS_ATTENTION
+        assert any(
+            "Apply click: page url before click: "
+            "https://www.naukri.com/job-listings-test" in message
+            for message in caplog.messages
+        ), caplog.messages
+        assert any(
+            "Apply click: page url after click: "
+            "https://www.naukri.com/job-listings-test" in message
+            for message in caplog.messages
+        ), caplog.messages
+
+    @pytest.mark.asyncio
+    async def test_window_container_checks_are_timestamped(self, caplog, tmp_path):
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0.4
+        adapter.post_apply_reload_settle_seconds = 0
+        adapter.evidence_dir = str(tmp_path)
+        page = self._page_with_apply_button()
+
+        with caplog.at_level("INFO"):
+            with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+                result = await adapter.start_application(page)
+
+        assert result == ApplicationStartResult.NEEDS_ATTENTION
+        checks = [m for m in caplog.messages if m.startswith("post-click check #")]
+        assert checks, caplog.messages
+        assert any(
+            "at +0.00s: applied=False container=False" in message for message in checks
+        ), checks
+        assert any(
+            message.startswith("post-click window closed: elapsed=")
+            for message in caplog.messages
+        ), caplog.messages
+
+    @pytest.mark.asyncio
+    async def test_needs_attention_logs_terminal_state_and_screenshot(
+        self, caplog, tmp_path
+    ):
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0
+        adapter.post_apply_reload_settle_seconds = 0
+        adapter.evidence_dir = str(tmp_path)
+        page = self._page_with_apply_button()
+
+        with caplog.at_level("INFO"):
+            with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+                result = await adapter.start_application(page)
+
+        assert result == ApplicationStartResult.NEEDS_ATTENTION
+        assert page.screenshot.await_count == 1
+        screenshot_path = page.screenshot.await_args.kwargs["path"]
+        assert screenshot_path.startswith(str(tmp_path))
+        assert screenshot_path.endswith(".png")
+        assert "apply_terminal_needs_attention_" in screenshot_path
+        assert any(
+            "terminal_state=NEEDS_ATTENTION" in message
+            and "screenshot=" in message
+            and screenshot_path in message
+            for message in caplog.messages
+        ), caplog.messages
+
+    @pytest.mark.asyncio
+    async def test_new_tab_presence_is_recorded(self, caplog, tmp_path):
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0
+        adapter.post_apply_reload_settle_seconds = 0
+        adapter.evidence_dir = str(tmp_path)
+        page = self._page_with_apply_button()
+        popup = AsyncMock()
+        popup.url = "https://boards.greenhouse.io/acme/jobs/1"
+        page.context.wait_for_event = AsyncMock(return_value=popup)
+
+        with caplog.at_level("INFO"):
+            with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+                await adapter.start_application(page)
+
+        assert any(
+            message.startswith("new_tab_detected=yes")
+            and "https://boards.greenhouse.io/acme/jobs/1" in message
+            for message in caplog.messages
+        ), caplog.messages
+
+    @pytest.mark.asyncio
+    async def test_new_tab_absence_is_recorded_on_timeout(self, caplog, tmp_path):
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+        adapter = NaukriAdapter()
+        adapter.post_apply_timeout_seconds = 0
+        adapter.post_apply_reload_settle_seconds = 0
+        adapter.evidence_dir = str(tmp_path)
+        page = self._page_with_apply_button()
+
+        async def _timeout(*args, **kwargs):
+            raise PlaywrightTimeoutError("Timeout 5000ms exceeded.")
+
+        page.context.wait_for_event = _timeout
+
+        with caplog.at_level("INFO"):
+            with patch.object(adapter, "_check_security", new_callable=AsyncMock):
+                result = await adapter.start_application(page)
+
+        assert result == ApplicationStartResult.NEEDS_ATTENTION
+        assert any(
+            message.startswith("new_tab_detected=no") for message in caplog.messages
+        ), caplog.messages
+
+    @pytest.mark.asyncio
+    async def test_external_indicator_and_cta_link_evidence_are_logged(self, caplog):
+        adapter = NaukriAdapter()
+
+        page = AsyncMock()
+        page.inner_text.return_value = "Data Analyst Apply on company site"
+        page.query_selector_all.return_value = []
+
+        with caplog.at_level("INFO"):
+            assert await adapter.detect_application_type(page) == "EXTERNAL"
+
+        assert any(
+            "External apply indicator matched in visible page text: "
+            "'apply on company site'" in message
+            for message in caplog.messages
+        ), caplog.messages
+
+        link = AsyncMock()
+        link.get_attribute.side_effect = (
+            lambda name: "https://boards.greenhouse.io/acme/jobs/1"
+            if name == "href"
+            else None
+        )
+        link.inner_text.return_value = "Apply on company site"
+        link_page = AsyncMock()
+        link_page.query_selector_all.side_effect = lambda sel: (
+            [link] if sel == 'a[href^="http"]' else []
+        )
+
+        with caplog.at_level("INFO"):
+            assert (
+                await adapter.get_external_redirect_url(link_page)
+                == "https://boards.greenhouse.io/acme/jobs/1"
+            )
+
+        assert any(
+            "External apply CTA link evidence" in message
+            and "boards.greenhouse.io" in message
+            for message in caplog.messages
+        ), caplog.messages
+
+
 class TestStartSession:
     @pytest.mark.asyncio
     async def test_start_session_chrome(self):

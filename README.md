@@ -1,5 +1,84 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E5-R4.3: Offline Chromium DOM Regression Tests (optional)
+
+**Status: E5-R4.3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - no autonomous cycle, no browser against Naukri, no Apply click, no submit, no DB/retry/preference writes.**
+
+**Scope:** optional offline DOM regression tests in `backend/tests/test_naukri_adapter_offline_dom.py` (9 tests) that exercise the real `NaukriAdapter` read-only detection methods against real Chromium DOM semantics using `page.set_content()` only - the saved historical snapshot `data/job_page_snapshot.html` (gitignored local artifact; tests skip with a clear reason when absent) plus a controlled synthetic page.
+
+**Offline guarantees:** headless Chromium, no persistent/login profile, `context.route("**/*")` aborts every request (zero network egress), no live Naukri URL loaded, and no Apply control is clicked - the popup-observer probe clicks a neutral local button that opens `about:blank`.
+
+**Coverage:** indicator scan reports `NAUKRI_NATIVE` on the real page with no false-EXTERNAL log; the header Apply selector beats the duplicate `#apply-button` (2 present on that page); no applied evidence with both scan modes and no application container; `get_external_redirect_url` returns `None` despite facebook.com and naukri.com page-chrome links (the E5-R4.1 regression case on real DOM); security gate passes a normal page. Synthetic: `EXTERNAL` classification with indicator attribution; CTA grounding returns the example link and rejects the facebook footer; applied-state evidence `'Applied to "Synthetic Role"'`; visible form container; evidence screenshot under pytest `tmp_path`; popup observer records `new_tab_detected=yes` (real context event) and `new_tab_detected=no` (timeout).
+
+**Optional by design:** module-level `pytest.importorskip("playwright")` and a fixture that skips with `Chromium unavailable for E5-R4.3 offline tests: ...` when browser binaries are missing - the normal backend suite does not depend on Chromium. Prerequisite for running them: `playwright install chromium`.
+
+**Deliberate-violation verification:** a throwaway out-of-repo pytest run injected three regressions (broken header selector, empty external-indicator vocabulary, CTA grounding without indicator match); the corresponding correct-behavior assertions all failed (3 failed, exit code 1), so the tests detect real regressions. No existing test or production code was altered.
+
+**Test results:** focused file **9 passed** (19.51s); full backend suite **904 passed, 0 failed** (400.36s; baseline 895 + 9).
+
+**Remains unverified live:** whether Naukri's real Apply click opens a popup; server-side instant-apply persistence behind the D5 reload decision; real click/redirect timing; live security challenges; DOM drift vs the 2026-10-02 snapshot; auth/session-gated rendering.
+
+**Files added:** `backend/tests/test_naukri_adapter_offline_dom.py` (only new tracked file). Existing modifications preserved; nothing committed or pushed.
+
+---
+
+## CHECKPOINT E5-R4.2: Run #59 Validation Instrumentation (prepared; backend restarted on approval)
+
+**Status: E5-R4.2 IMPLEMENTED, TESTED, AND SERVED. Backend restarted on 2026-10-10 10:48:32 with explicit approval; no live validation executed (no cycle, no browser, no Apply click).**
+
+**Purpose:** make the next controlled live run observable without changing application behavior. The instrumentation is read-only: it never clicks an additional control, fills or submits a form, skips a security check, or writes an application, retry-queue, preference, or limit record.
+
+**What is recorded** (`backend/services/naukri/adapter.py`, plus one log line in `backend/services/applications/runner.py`):
+
+1. **External evidence** - the matched `external_text_indicators` phrase with the page URL; the external CTA link's visible text and href when one exists, otherwise the explicit fallback to the job URL; and `Job <id> requires external application (external_url=...)`.
+2. **Page URL around the Apply click** - `Apply click: page url before click: ...` and `Apply click: page url after click: ...`.
+3. **Popup / new tab** - a bounded `page.context.wait_for_event("page", ...)` observer spanning the post-click window + reload settle + 5s grace, logging `new_tab_detected=yes url=...` or `new_tab_detected=no`. The observed page is only read: never clicked, filled, navigated, or closed.
+4. **Timestamped bounded-window container checks** - `post-click check #N at +X.XXs: applied=... container=...` for every iteration, then `post-click window closed: elapsed=... checks=...`.
+5. **Terminal state** - both `NEEDS_ATTENTION` exits log `terminal_state=NEEDS_ATTENTION ... screenshot=<path>`, with a PNG written to `data/apply_terminal_<label>_<stamp>.png` (covered by the existing `data/*.png` ignore rule).
+
+**Evidence discipline unchanged:** `APPLIED` still requires positive visible evidence; external applications are still never clicked or submitted; the security check still runs after the click and after the reload.
+
+**Runtime state (verified 2026-10-10):** the pre-restart backend (PID 18732 / child 22596, started 08:39:13) predates the adapter edits (09:26:54) and was stopped on approval. Port 8000 was confirmed free, then a new backend was started at **10:48:32** as PID **25760** (parent 17088) via `python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000` (no `--reload`, E4-R2 requirement). Verified after start: `GET /api/health` → `status=ok, agent_state=IDLE`; `GET /api/readiness` → all components healthy (database, schema, configuration, storage, ai_provider, runtime_environment); `GET /api/autonomous-cycle/status` → `IDLE`, no active run; `GET /api/agent/status` → scheduler `is_running=false`, `last_run_at=null` (startup does not auto-start the scheduler, `backend/main.py:81`); startup recovery completed with no errors; log shows only dashboard status polling - no apply, discovery, or click activity. Because the adapter module is imported at process start from the working tree, the running process serves the E5-R4.1/E5-R4.2 adapter code.
+
+**Restart executed (approved - "Restart backend only"):**
+
+```powershell
+Stop-Process -Id 22596, 18732                 # executed 10:48; port 8000 then confirmed free
+& "C:\Users\ajays\Desktop\Naukri Agent\.venv\Scripts\python.exe" -m uvicorn backend.main:app --host 127.0.0.1 --port 8000   # executed; new PID 25760
+```
+
+**Test coverage:** 6 new tests in `TestValidationInstrumentation`; `test_naukri_adapter.py` 143 passed; full backend suite **895 passed, 0 failed**.
+
+**Not performed:** dashboard cycle, browser session, Apply click, application attempt, commit/push.
+
+---
+
+## CHECKPOINT E5-R4.1: Run #59 Post-Click Window & External Evidence Grounding
+
+**Status: E5-R4.1 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live cycle run - awaiting human review.**
+
+**Run #59 (dashboard-triggered, `max_applications = 2`, 2026-10-10):** 79 discovered, 62 hard-filtered, 17 pre-analyzed, 5 candidates, **0 genuine Naukri-native applications** - 3 `EXTERNAL_APPLICATION` (jobs 55/57/86), 1 `NEEDS_ATTENTION` (job 87), 1 skipped.
+
+**Root causes (demonstrated offline):**
+
+1. The bounded post-click window was not honored. `start_application()` ran `detect_applied_state()` first in every polling iteration; that method walks every element of the page (a visibility + text round trip each; 1,009 elements in `data/job_page_snapshot.html`) before the application-container check. The whole 8s window elapsed in a single pass: Apply click `03:12:49.075` to reload decision `03:13:02.379` = 13.3s, so the container was observed at most once, at or after the deadline.
+2. The recorded external URL was fabricated. `get_external_redirect_url()` returned the first non-Naukri anchor, which is page chrome. Of the 20 `EXTERNAL_APPLICATION` rows, 19 (including run #59's three) and their notifications carry the identical AmbitionBox promo URL - which occurs 30 times on the captured Naukri page - and the remaining row carries Naukri's Facebook URL. Neither is a redirect target.
+
+**Fix:**
+
+- `detect_applied_state(page, scan_whole_page: bool = True)` - the bounded loop passes `scan_whole_page=False` (header/banner evidence only) and the page-wide scan runs exactly once after the window, before the reload decision. Container checks now repeat inside the window. The terminal `NEEDS_ATTENTION` warning logs `page.url`.
+- `get_external_redirect_url()` returns only a non-Naukri link whose own visible text matches the shared `external_text_indicators`; otherwise `None`, so the runner records `job.url`. `_observe_application_type()` logs the matched indicator so an `EXTERNAL` decision is attributable.
+
+**Unchanged:** classification precedence and external-first ordering; external jobs are never clicked or submitted; `APPLIED` still requires confirmation evidence; safety gates, duplicate protection, `max_applications`, hourly/daily limits, preferences. No application row, retry queue, preference, limit, or database record was modified.
+
+**Test coverage:** 9 new focused tests (`TestPostClickBoundedWindow`, `TestExternalRedirectEvidence`); `test_naukri_adapter.py` 137 passed; runner/flow/safety/cycle/AI files 187 passed; full backend suite **889 passed, 0 failed**.
+
+**Files modified:** `backend/services/naukri/adapter.py`, `backend/tests/test_naukri_adapter.py`
+
+**Open item (not resolvable offline):** job 87's apply surface never appeared in the main page - no Applied badge even after the reload, no visible container matching `[role="dialog"] / .apply-drawer / .apply-modal / form`, and the post-click security check found no login/CAPTCHA text. Offline evidence cannot distinguish a no-op click, a surface opened in a new tab, or markup unmatched by the existing container selectors, and no selector was guessed.
+
+---
+
 ## CHECKPOINT E5-R3: Freshness-First Discovery & Advisory-Only AI Recommendations
 
 **Status: E5-R3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live cycle run — awaiting human review.**

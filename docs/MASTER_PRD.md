@@ -1,5 +1,61 @@
 # Naukri AI Job Application Agent
 
+## E5-R4.3 - Offline Chromium DOM Regression Tests (optional)
+
+**Status:** E5-R4.3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - no autonomous cycle, no browser against Naukri, no Apply click, no submit, no DB/retry/preference writes.
+
+**Contract:** the apply-flow detection logic must be verifiable without touching Naukri. `backend/tests/test_naukri_adapter_offline_dom.py` (9 tests) runs the real adapter's read-only methods against real Chromium DOM semantics using `page.set_content()` of (a) the saved job-page snapshot `data/job_page_snapshot.html` and (b) a controlled synthetic page. Headless Chromium only, no persistent/login profile, all requests aborted at the context level (zero network egress), no live URL loaded, and no Apply control clicked (the popup-observer probe uses a neutral local button opening `about:blank`).
+
+**Verified offline:** indicator scanning (native on the real page with no false-EXTERNAL log; external with attribution on the synthetic page), header Apply-button selection over the duplicate-ID ambiguity, external URL grounding (None on real page-chrome links; example CTA returned and facebook footer rejected), applied-state and container detection in both scan modes, evidence screenshot capture under `tmp_path`, security gate on a normal page, and both popup-observer outcomes (`new_tab_detected=yes|no`). A deliberate-violation run (3 injected regressions, out-of-repo throwaway file) confirmed the assertions fail when the behavior is broken (3 failed, exit 1).
+
+**Optional by design:** skipped via `pytest.importorskip("playwright")` and a Chromium-launch skip with a clear reason; the normal backend suite does not depend on Chromium. Prerequisite: `playwright install chromium`.
+
+**Results:** focused file 9 passed (19.51s); full backend suite **904 passed, 0 failed** (400.36s; baseline 895 + 9).
+
+**Not verified offline (live-only):** whether Naukri's real Apply click opens a popup; server-side instant-apply persistence behind the D5 reload decision; real click/redirect timing; live security challenges; DOM drift vs the 2026-10-02 snapshot; auth/session-gated rendering. A live cycle requires separate explicit approval.
+
+---
+
+## E5-R4.2 - Run #59 Validation Instrumentation (prepared; backend restarted on approval)
+
+**Status:** E5-R4.2 IMPLEMENTED, TESTED, AND SERVED. Backend restarted on 2026-10-10 10:48:32 with explicit approval; no live validation executed (no cycle, no browser, no Apply click).
+
+**Observability contract for the next controlled run (read-only; no application behavior change):**
+
+1. An `EXTERNAL` classification logs the matched `external_text_indicators` phrase and the page URL; the persisted `external_url` decision logs the CTA link's visible text and href when one matches, or the explicit fallback to `job.url` when none does; the runner logs `job_id` with the recorded URL.
+2. Around the native Apply click the adapter logs the page URL before and after the click.
+3. A popup/new tab opened by the click is observed with a bounded `wait_for_event("page", ...)` covering the post-click window, reload settle, and 5s grace, and reported as `new_tab_detected=yes|no`. Observation is read-only: no click, fill, navigation, or close on the observed page.
+4. Every bounded-window iteration logs `post-click check #N at +X.XXs: applied=... container=...`, and the window logs its elapsed time and check count on close, so the 8-second bound is auditable per run.
+5. Terminal `NEEDS_ATTENTION` exits log `terminal_state=NEEDS_ATTENTION` with a screenshot path; the PNG is written under `data/` (`data/apply_terminal_<label>_<stamp>.png`, already covered by the `data/*.png` ignore rule).
+
+**Unchanged:** `APPLIED` still requires positive visible evidence; external applications are never clicked or submitted; security checks still run after the click and after the reload; safety gates, duplicate protection, `max_applications`, hourly/daily limits, preferences, and all application/retry-queue records are untouched.
+
+**Runtime state:** the pre-restart backend (PID 18732 / child 22596, started 08:39:13 without `--reload`) predates the adapter edits (09:26:54) and did not serve E5-R4.1/E5-R4.2 code. On explicit approval it was stopped, port 8000 was confirmed free, and a new backend was started at 10:48:32 as PID 25760 with the same no-`--reload` command. Post-restart read-only verification: `/api/health` → `ok` / `IDLE`; `/api/readiness` → all components healthy; `/api/autonomous-cycle/status` → `IDLE` with no active run; scheduler not running (`backend/main.py:81` does not auto-start it); startup recovery completed with no errors; the log shows only dashboard status polling - no apply, discovery, or click activity.
+
+**Test coverage:** 6 new instrumentation tests; adapter suite 143 passed; full backend suite **895 passed, 0 failed**.
+
+---
+
+## E5-R4.1 - Run #59 Post-Click Window & External Evidence Grounding
+
+
+**Status:** E5-R4.1 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live cycle run - awaiting human review.
+
+**Contract changes:**
+
+1. **Bounded post-click window is observable.** After a native Apply click, `start_application()` polls header/banner Applied evidence and the visible application-container check inside the configured 8-second window (`post_apply_timeout_seconds`), and runs the page-wide element scan exactly once after the window, before the single bounded reload. The window overran in Run #59 because that page-wide scan ran first in every iteration (Apply click `03:12:49.075` to reload decision `03:13:02.379` = 13.3s for an 8s bound), starving the container check. `detect_applied_state(page, scan_whole_page=...)` exposes the split; the terminal `NEEDS_ATTENTION` log records `page.url`.
+2. **External URLs are evidence, not page chrome.** An `EXTERNAL_APPLICATION` row's `external_url` is populated only from a non-Naukri link whose visible text matches the shared `external_text_indicators` vocabulary; otherwise `job.url` is recorded. Run #59's three external rows and 16 of the 19 older external rows carry one identical AmbitionBox promo URL and the last one a Naukri Facebook URL, because the old implementation returned the first non-Naukri anchor on the page. Classification now logs the matched indicator so an `EXTERNAL` outcome is attributable in the run log.
+
+**Unchanged:** native/external classification precedence and external-first ordering; external jobs are never clicked or submitted; `APPLIED` is never recorded without confirmation evidence; final safety gates, duplicate protection, `max_applications`, hourly/daily application limits, and saved preferences; the `external_url`/`confirmation_evidence` exposure rules in dashboard schemas.
+
+**Run #59 outcome (2026-10-10, `max_applications = 2`):** 79 discovered, 62 hard-filtered, 17 pre-analyzed, 5 candidates, 0 genuine native applications - 3 `EXTERNAL_APPLICATION` (jobs 55/57/86), 1 `NEEDS_ATTENTION` (job 87), 1 skipped. No application row, retry queue, preference, limit, or database record was modified by this checkpoint.
+
+**Test coverage:** 9 new focused tests; adapter suite 137 passed; runner/flow/safety/cycle/AI 187 passed; full backend suite **889 passed, 0 failed**.
+
+**Open item:** job 87's apply surface did not appear in the main page (no Applied badge after the reload, no visible container matching the existing selectors, no login/CAPTCHA text). No selector was guessed; the failure remains to be attributed by the next controlled run.
+
+---
+
 ## E5-R3 — Freshness-First Discovery & Advisory-Only AI Recommendations
 
 **Status:** E5-R3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live cycle run — awaiting human review.

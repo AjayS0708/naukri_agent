@@ -290,7 +290,11 @@ class ApplicationRunner:
                         job.title, external_url or job.url
                     )
                 )
-                logger.info(f"Job {job_id} requires external application")
+                logger.info(
+                    "Job %s requires external application (external_url=%s)",
+                    job_id,
+                    external_url or job.url,
+                )
                 return "EXTERNAL"
 
             if app_type == "AMBIGUOUS":

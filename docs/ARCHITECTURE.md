@@ -672,7 +672,7 @@ Naukri instant-apply replaces the Apply button with `<span id="already-applied" 
 ```text
 Apply click
     ↓
-8-second in-page polling (unchanged Phase 10 behavior)
+8-second in-page polling (Phase 10 behavior; page-wide Applied scan deferred past the window)
     ↓ timeout without evidence
 One bounded page reload (20s, domcontentloaded)
     ↓
@@ -964,6 +964,70 @@ Visible application container detected?
 Neither detected within timeout?
     └─ → Return ApplicationStartResult.NEEDS_ATTENTION (no retry without manual reset)
 ```
+
+**Post-click window mechanics (Run #59 fix):** each polling iteration runs the
+header/banner applied checks and then the application-container check. The
+page-wide element scan inside `detect_applied_state()` (two round trips per
+element across ~1,000 elements on a captured Naukri job page) is deferred: it
+runs exactly once after the window expires, before the reload decision, via
+`detect_applied_state(page, scan_whole_page=False)` inside the loop. Run #59
+measured the previous ordering consuming the entire window in one pass (Apply
+click `03:12:49.075`, reload decision `03:13:02.379` = 13.3s for an 8s bound),
+leaving the container check effectively unobserved. The terminal
+`NEEDS_ATTENTION` warning records `page.url`.
+
+**External application evidence:** `_observe_application_type()` classifies from
+the visible `external_text_indicators` vocabulary and logs which indicator
+matched, so an `EXTERNAL` decision is attributable in the run log. The URL
+persisted for an `EXTERNAL_APPLICATION` row comes from
+`get_external_redirect_url()`, which returns only a non-Naukri link whose own
+visible text matches that same vocabulary; when no such link exists it returns
+`None` and the runner records `job.url`. Page-chrome links (promos, footers,
+social) are never recorded as redirect targets - 19 of the 20 historical
+`EXTERNAL_APPLICATION` rows carried the identical AmbitionBox promo URL and the
+remaining one a Naukri Facebook URL, because the old code returned the first
+non-Naukri anchor on the page.
+
+**Validation instrumentation (E5-R4.2, read-only):** the apply flow emits an
+attributable trail without changing any application behavior:
+
+```text
+External classification      -> matched indicator + page URL
+External URL resolution      -> CTA link text + href  (or explicit job-url fallback)
+Apply click                  -> page url before click, page url after click
+New tab / popup              -> bounded wait_for_event("page") over
+                                window + reload settle + 5s grace
+                                -> new_tab_detected=yes|no  (read-only observer)
+Each bounded-window check    -> post-click check #N at +X.XXs: applied=... container=...
+Window close                 -> post-click window closed: elapsed=... checks=...
+Terminal NEEDS_ATTENTION     -> terminal_state=NEEDS_ATTENTION checks=N screenshot=<path>
+                                (data/apply_terminal_<label>_<stamp>.png)
+```
+
+The observer never clicks, fills, navigates, or closes the page it watches;
+no form is submitted, no application/retry-queue/preference record is written,
+security checks still run after the click and after the reload, and `APPLIED`
+still requires positive visible evidence.
+
+**Offline DOM harness (E5-R4.3, optional):** the detection layer above is
+covered without touching Naukri by `backend/tests/test_naukri_adapter_offline_dom.py`
+(9 tests). Each test starts headless Chromium with no persistent profile,
+aborts every request at the context level (`context.route("**/*")`, zero
+network egress), and feeds the real adapter's read-only methods a
+`page.set_content()` document: the saved snapshot `data/job_page_snapshot.html`
+(gitignored local artifact; skipped when absent) for native classification,
+duplicate-ID header selection, absent applied/container evidence, page-chrome
+external links (`get_external_redirect_url` -> `None`), and the security gate;
+and a controlled synthetic page for external attribution, CTA grounding,
+applied-state evidence, form-container detection, screenshot capture under
+`tmp_path`, and both popup-observer outcomes. The popup probe clicks a neutral
+local button that opens `about:blank` - no Apply control exists on the page.
+The module is skipped with a clear reason when `playwright` or its Chromium
+binaries are unavailable, so the normal backend suite does not depend on
+Chromium. What remains live-only: whether Naukri's real Apply click opens a
+popup, server-side instant-apply persistence behind the D5 reload decision,
+real click/redirect timing, live security challenges, DOM drift versus the
+2026-10-02 snapshot, and auth/session-gated rendering.
 
 ### Question Detection Scoping (Phase 10)
 

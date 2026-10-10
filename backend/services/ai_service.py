@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.core.config import get_settings
@@ -21,10 +21,17 @@ class AIService:
             )
 
         # Count usage
-        total_requests = self.session.scalar(select(AIUsage).count()) or 0
-        error_requests = self.session.scalar(
-            select(AIUsage).where(AIUsage.status != "SUCCESS").count()
-        ) or 0
+        total_requests = (
+            self.session.scalar(select(func.count()).select_from(AIUsage)) or 0
+        )
+        error_requests = (
+            self.session.scalar(
+                select(func.count())
+                .select_from(AIUsage)
+                .where(AIUsage.status != "SUCCESS")
+            )
+            or 0
+        )
         
         # Determine status (simplified check for QUOTA exhausted could look up recent errors)
         status = AIProviderStatus.AVAILABLE
