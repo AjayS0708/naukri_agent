@@ -1,5 +1,33 @@
 # Development Status
 
+## CHECKPOINT E5-R5.2: Truthful Application Outcomes and Bounded Error Recovery
+
+**Status: E5-R5.2 IMPLEMENTED, TESTED, AND VERIFIED (offline only; all tests mocked). No live validation - no browser, no Apply click, no autonomous-cycle run, no DB/queue/preference writes outside in-memory test databases.**
+
+**Implementation:**
+
+1. `backend/services/applications/runner.py`
+   - `stats` gains `"submitted_unconfirmed": 0`; the outcome loop maps `SUBMITTED_UNCONFIRMED` to it.
+   - The post-submit path: clicked-but-unconfirmed submissions now persist the unchanged truthful `SUBMITTED` status (`applied_at` set, no retry, no resubmission) and return `"SUBMITTED_UNCONFIRMED"` instead of `"APPLIED"`. `_process_single_job` docstring documents the new outcome.
+2. `backend/services/autonomous_cycle/service.py`
+   - `_run_applications` stats gain `"submitted_unconfirmed": 0`; a `consecutive_errors` counter implements bounded tolerance: first `ERROR` recorded and loop continues; second consecutive `ERROR` sets `stop_reason = "Two consecutive runner errors; aborting remaining candidates"` and returns (non-normal, exit code 3); valid non-ERROR outcomes reset the counter; per-candidate exceptions neither increment nor reset it; `SECURITY_REQUIRED`/`AUTH_REQUIRED` still abort immediately; budget, duplicates, gates, limits unchanged.
+   - `_process_single_job`: `reported_outcomes` includes `submitted_unconfirmed`; the stats mapping returns `SUBMITTED_UNCONFIRMED` (tracker app_type `NATIVE`) and never `APPLIED` for unconfirmed submissions.
+   - Step-4 printout and SUMMARY print `Submitted (unconfirmed): N` alongside (never inside) `Applied`.
+   - API: `AutonomousCycleRunResponse.stats` remains a free-form dict - additive key, no schema change.
+
+**Tests:**
+
+- New `backend/tests/test_autonomous_cycle_outcomes.py` (8): unconfirmed submission not counted in budget; EXTERNAL/NEEDS_ATTENTION/FAILED do not consume budget; confirmed APPLIED consumes budget and stops at the limit; one ERROR permits the next candidate; two consecutive ERRORs stop; valid outcome resets the counter; SECURITY/AUTH abort immediately.
+- `backend/tests/test_application_runner.py` (+2): unconfirmed submission returns `SUBMITTED_UNCONFIRMED` with DB status `SUBMITTED`; confirmed submission still returns `APPLIED`.
+- `backend/tests/test_autonomous_cycle.py`: `test_execution_error_stops_cycle_and_reports_failure` updated from the old stop-on-first-ERROR contract to the approved two-consecutive-error contract.
+- Focused (3 files): **130 passed**; full backend suite: **914 passed, 0 failed** (446.67s; baseline 904 + 10); `compileall` clean.
+
+**Live-only uncertainties:** whether a real unconfirmed submission actually succeeded remotely (SUBMITTED rows remain flagged for manual review); whether an isolated session-start ERROR occurs live and whether the following candidate can recover the runtime (CRITICAL_ERROR still aborts).
+
+**Files changed:** `backend/services/applications/runner.py`, `backend/services/autonomous_cycle/service.py`, `backend/tests/test_application_runner.py`, `backend/tests/test_autonomous_cycle.py`, `backend/tests/test_autonomous_cycle_outcomes.py` (new). Documentation updated in all five project documents. No commit/push.
+
+---
+
 ## CHECKPOINT E5-R4.3: Offline Chromium DOM Regression Tests (optional)
 
 **Status: E5-R4.3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - no autonomous cycle, no browser against Naukri, no Apply click, no submit, no DB/retry/preference writes.**

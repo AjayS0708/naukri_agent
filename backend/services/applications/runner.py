@@ -85,6 +85,7 @@ class ApplicationRunner:
             "total": len(job_ids),
             "processed": 0,
             "applied": 0,
+            "submitted_unconfirmed": 0,
             "skipped": 0,
             "needs_attention": 0,
             "external": 0,
@@ -132,6 +133,8 @@ class ApplicationRunner:
 
                     if result == "APPLIED":
                         stats["applied"] += 1
+                    elif result == "SUBMITTED_UNCONFIRMED":
+                        stats["submitted_unconfirmed"] += 1
                     elif result == "SKIPPED":
                         stats["skipped"] += 1
                     elif result == "NEEDS_ATTENTION":
@@ -181,7 +184,7 @@ class ApplicationRunner:
     ) -> str:
         """
         Process a single job through the complete application flow.
-        Returns: "APPLIED", "SKIPPED", "NEEDS_ATTENTION", "EXTERNAL", "FAILED", "ERROR"
+        Returns: "APPLIED", "SUBMITTED_UNCONFIRMED", "SKIPPED", "NEEDS_ATTENTION", "EXTERNAL", "FAILED", "ERROR"
         """
         job = self.session.get(Job, job_id)
         if not job:
@@ -475,7 +478,11 @@ class ApplicationRunner:
                 logger.info(f"Job {job_id} applied successfully")
                 return "APPLIED"
             else:
-                # Submission may have succeeded even without confirmation
+                # Submission may have succeeded even without confirmation.
+                # E5-R5.2: this is NOT a confirmed application. Persist the
+                # truthful SUBMITTED status (no retry, no resubmission) and
+                # report a distinct outcome so callers never count it as
+                # APPLIED or consume the successful-application budget.
                 self.application_service.update_application(
                     application.id,
                     ApplicationUpdate(
@@ -483,8 +490,11 @@ class ApplicationRunner:
                         applied_at=datetime.now(UTC)
                     )
                 )
-                logger.info(f"Job {job_id} submitted (confirmation unclear)")
-                return "APPLIED"
+                logger.info(
+                    f"Job {job_id} submitted without confirmation "
+                    f"(confirmation_unclear)"
+                )
+                return "SUBMITTED_UNCONFIRMED"
 
         except Exception as e:
             error_msg = str(e).lower()

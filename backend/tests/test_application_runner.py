@@ -178,6 +178,78 @@ class TestApplicationRunner:
             assert stats["applied"] == 1
 
     @pytest.mark.asyncio
+    async def test_unconfirmed_submission_is_not_reported_as_applied(
+        self,
+        application_runner: ApplicationRunner,
+        eligible_job: Job,
+        confirmed_profile: Profile,
+        job_preferences: JobPreference
+    ):
+        """E5-R5.2: a clicked submit without confirmation is SUBMITTED_UNCONFIRMED.
+
+        The database row keeps the truthful SUBMITTED status and the runner
+        must not report APPLIED or count it toward applied statistics.
+        """
+        with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
+             patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
+             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=ApplicationStartResult.FORM_OPENED), \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=[]), \
+             patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.confirm_submission', new_callable=AsyncMock, return_value=False):
+
+            mock_page = MagicMock()
+            mock_page.close = AsyncMock()
+            mock_open_page.return_value = JobPageResult(page=mock_page, security_required=False)
+
+            stats = await application_runner.run_applications([eligible_job.id])
+
+            assert stats["processed"] == 1
+            assert stats["applied"] == 0
+            assert stats["submitted_unconfirmed"] == 1
+
+            row = application_runner.session.execute(
+                select(Application).where(Application.job_id == eligible_job.id)
+            ).scalars().first()
+            assert row is not None
+            assert row.status == ApplicationStatus.SUBMITTED.value
+            assert row.applied_at is not None
+
+    @pytest.mark.asyncio
+    async def test_confirmed_submission_still_reports_applied(
+        self,
+        application_runner: ApplicationRunner,
+        eligible_job: Job,
+        confirmed_profile: Profile,
+        job_preferences: JobPreference
+    ):
+        """E5-R5.2: positive confirmation still produces APPLIED."""
+        with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
+             patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
+             patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=ApplicationStartResult.FORM_OPENED), \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=[]), \
+             patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.confirm_submission', new_callable=AsyncMock, return_value=True):
+
+            mock_page = MagicMock()
+            mock_page.close = AsyncMock()
+            mock_open_page.return_value = JobPageResult(page=mock_page, security_required=False)
+
+            stats = await application_runner.run_applications([eligible_job.id])
+
+            assert stats["applied"] == 1
+            assert stats["submitted_unconfirmed"] == 0
+
+            row = application_runner.session.execute(
+                select(Application).where(Application.job_id == eligible_job.id)
+            ).scalars().first()
+            assert row is not None
+            assert row.status == ApplicationStatus.APPLIED.value
+
+    @pytest.mark.asyncio
     async def test_runner_continues_after_safe_single_job_failure(
         self,
         application_runner: ApplicationRunner,

@@ -3422,16 +3422,18 @@ class TestApplicationOutcomeReporting:
         assert result == "APPLIED", f"A real application must stay APPLIED, got {result}"
 
     # ------------------------------------------------------------------
-    # Outer loop: an execution failure stops the cycle and marks it FAILED
+    # Outer loop: bounded tolerance for isolated execution errors (E5-R5.2)
     # ------------------------------------------------------------------
 
     def test_execution_error_stops_cycle_and_reports_failure(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
     ):
         """
-        When the runner cannot execute, the cycle must stop after the first
-        failed candidate instead of burning the remaining candidates with bogus
-        SKIPPED outcomes, and the terminal outcome must be a failure.
+        E5-R5.2: the first isolated runner ERROR is recorded and the loop
+        continues; a SECOND consecutive ERROR aborts the remaining candidates
+        (no bogus SKIPPED outcomes) and the terminal outcome is a failure.
+        The first-error-continues case is covered in
+        test_autonomous_cycle_outcomes.py.
         """
         from unittest.mock import AsyncMock, patch
 
@@ -3443,14 +3445,20 @@ class TestApplicationOutcomeReporting:
         cycle = self._make_cycle(max_applications=3)
         cycle.current_discovery_run = run
 
-        with patch.object(cycle, "_process_single_job", new=AsyncMock(side_effect=["ERROR"])) as mock_process:
+        with patch.object(
+            cycle,
+            "_process_single_job",
+            new=AsyncMock(side_effect=["ERROR", "ERROR", "APPLIED"]),
+        ) as mock_process:
             stats = asyncio.run(cycle._run_applications(db_session, confirmed_profile, job_preferences))
 
-        assert mock_process.await_count == 1, "Cycle must stop after the first execution error"
-        assert stats["failed"] == 1
+        assert mock_process.await_count == 2, "Cycle must abort after the second consecutive error"
+        assert stats["failed"] == 2
         assert stats["applied"] == 0
         assert stats["skipped"] == 0, "Remaining candidates must not be recorded as skipped"
-        assert cycle.stop_reason == "Application execution unavailable for remaining candidates"
+        assert cycle.stop_reason == (
+            "Two consecutive runner errors; aborting remaining candidates"
+        )
         assert cycle._terminal_outcome() == (3, "FAILED")
 
     def test_genuine_skip_does_not_stop_cycle(

@@ -1,5 +1,19 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E5-R5.2: Truthful Application Outcomes and Bounded Error Recovery
+
+**Status: E5-R5.2 IMPLEMENTED, TESTED, AND VERIFIED (offline only; all tests mocked). No live validation - no browser, no Apply click, no autonomous-cycle run.**
+
+**A. Truthful unconfirmed submissions:** when the submit button was clicked but `confirm_submission()` found no positive success evidence, `ApplicationRunner` previously returned `APPLIED` (runner.py, "submission may have succeeded even without confirmation"), so the cycle's budget and summary counted an unconfirmed click as a success. Now: the database keeps the existing truthful `SUBMITTED` status and its `applied_at`/history semantics (no retry, no resubmission), and the runner returns a distinct outcome `SUBMITTED_UNCONFIRMED`. Runner and cycle result structures gain a dedicated `submitted_unconfirmed` count; the outcome never increments `applications_count` and never appears under "Applied" in the step-4 printout or SUMMARY (both print `Submitted (unconfirmed): N` instead). The cycle maps `submitted_unconfirmed > 0` to outcome `SUBMITTED_UNCONFIRMED` (tracker app_type `NATIVE`) and includes the key in `reported_outcomes` so an unconfirmed-only result can never be misread as `ERROR`. API compatibility: `AutonomousCycleRunResponse.stats` is a free-form dict, so the new key serializes additively - no schema change, no breaking change.
+
+**B. Bounded error recovery:** `_run_applications` no longer aborts on the first runner `ERROR`. The first isolated `ERROR` is recorded (`failed += 1`) and the loop continues to the next candidate; a **second consecutive** `ERROR` aborts with `stop_reason = "Two consecutive runner errors; aborting remaining candidates"` (non-normal stop, exit code 3 / FAILED). Any valid non-ERROR outcome (`APPLIED`, `SUBMITTED_UNCONFIRMED`, `SKIPPED`, `EXTERNAL`, `NEEDS_ATTENTION`, `FAILED`) resets the consecutive-error counter; a per-candidate exception neither increments nor resets it. `SECURITY_REQUIRED` and `AUTH_REQUIRED` still abort immediately; the max-applications budget, duplicate safeguards, safety gates, and hourly/daily limits remain authoritative. No retry or restart loops were introduced.
+
+**Tests (10 new, all mocked):** `backend/tests/test_autonomous_cycle_outcomes.py` (8: unconfirmed not counted in budget; EXTERNAL/NEEDS_ATTENTION/FAILED free; confirmed APPLIED consumes budget and stops at the limit; one ERROR continues; two consecutive ERRORs stop; a valid outcome resets the counter; SECURITY/AUTH abort immediately) plus 2 runner-level tests in `backend/tests/test_application_runner.py` (unconfirmed submission → `SUBMITTED_UNCONFIRMED` with DB status `SUBMITTED`; confirmed submission still → `APPLIED`). `test_execution_error_stops_cycle_and_reports_failure` in `backend/tests/test_autonomous_cycle.py` was updated to the new two-consecutive-error contract. Focused run: **130 passed**; full backend suite: **914 passed, 0 failed** (446.67s; baseline 904 + 10).
+
+**Live-only uncertainties:** whether a real unconfirmed submission actually succeeded remotely (SUBMITTED rows stay flagged for manual review); whether an isolated session-start ERROR occurs live and whether the next candidate can recover the runtime (a CRITICAL_ERROR state still aborts via the runner).
+
+---
+
 ## CHECKPOINT E5-R4.3: Offline Chromium DOM Regression Tests (optional)
 
 **Status: E5-R4.3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - no autonomous cycle, no browser against Naukri, no Apply click, no submit, no DB/retry/preference writes.**

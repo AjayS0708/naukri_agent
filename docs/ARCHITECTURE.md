@@ -1029,6 +1029,37 @@ popup, server-side instant-apply persistence behind the D5 reload decision,
 real click/redirect timing, live security challenges, DOM drift versus the
 2026-10-02 snapshot, and auth/session-gated rendering.
 
+**Truthful outcomes and bounded error recovery (E5-R5.2):** the runner/cycle
+outcome path separates a clicked-but-unconfirmed submission from a confirmed
+application, and isolates runner errors:
+
+```text
+submit clicked + confirm_submission() positive   -> APPLIED
+                                                   (status=APPLIED, evidence stored,
+                                                    applications_count += 1)
+submit clicked + confirmation absent             -> SUBMITTED_UNCONFIRMED
+                                                   (status stays SUBMITTED, applied_at
+                                                    set, no retry/resubmission,
+                                                    submitted_unconfirmed += 1,
+                                                    budget NOT consumed, never
+                                                    reported under "Applied")
+runner ERROR (no outcome reported)               -> 1st: recorded, loop continues
+                                                   2nd consecutive: abort with
+                                                   "Two consecutive runner errors;
+                                                   aborting remaining candidates"
+                                                   (non-normal stop, exit code 3)
+valid non-ERROR outcome                          -> resets the consecutive-error counter
+per-candidate exception                          -> neither increments nor resets it
+SECURITY_REQUIRED / AUTH_REQUIRED                -> immediate abort (unchanged)
+```
+
+`ApplicationRunner.stats` and the cycle's `_run_applications` stats both carry
+`submitted_unconfirmed`; `_process_single_job` includes it in
+`reported_outcomes` so an unconfirmed-only result can never be misread as
+`ERROR`. `AutonomousCycleRunResponse.stats` is a free-form dict, so the key
+serializes additively with no schema change. Budget, duplicate safeguards,
+safety gates, and hourly/daily limits are unchanged and remain authoritative.
+
 ### Question Detection Scoping (Phase 10)
 
 Questions are detected only within visible application containers. Each field must satisfy:

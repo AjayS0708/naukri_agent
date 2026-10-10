@@ -1,5 +1,22 @@
 # Naukri AI Job Application Agent
 
+## E5-R5.2 - Truthful Application Outcomes and Bounded Error Recovery
+
+**Status:** E5-R5.2 IMPLEMENTED, TESTED, AND VERIFIED (offline only; all tests mocked). No live validation.
+
+**Contract changes:**
+
+1. **`SUBMITTED_UNCONFIRMED` is a first-class outcome.** A submit click without positive `confirm_submission()` evidence persists the existing truthful `SUBMITTED` database status (history and `applied_at` semantics unchanged; no retry or resubmission) and reports `SUBMITTED_UNCONFIRMED` - never `APPLIED`. Runner and cycle results carry a dedicated `submitted_unconfirmed` count; the cycle budget (`applications_count`) and the "Applied" summary line count only confirmed `APPLIED`. `AutonomousCycleRunResponse.stats` is a free-form dict, so the new key is additive with no schema or breaking API change.
+2. **Bounded runner-error tolerance.** The first isolated runner `ERROR` is recorded and the candidate loop continues; a second consecutive `ERROR` aborts with `stop_reason = "Two consecutive runner errors; aborting remaining candidates"` (exit code 3 / FAILED). Any valid non-ERROR outcome resets the counter; per-candidate exceptions neither increment nor reset it. `SECURITY_REQUIRED`, `AUTH_REQUIRED`, CRITICAL_ERROR state handling, `max_applications`, duplicate safeguards, safety gates, and hourly/daily limits remain authoritative. No infinite retries or restart loops.
+
+**Unchanged:** confirmed `APPLIED` still requires positive visible evidence end to end (adapter evidence scan -> runner re-check with stored `confirmation_evidence` -> budget increment).
+
+**Tests:** 10 new mocked tests (`test_autonomous_cycle_outcomes.py` x8, `test_application_runner.py` +2); `test_execution_error_stops_cycle_and_reports_failure` updated to the two-consecutive-error contract. Focused 130 passed; full backend suite **914 passed, 0 failed**.
+
+**Live-only uncertainties:** remote success of an unconfirmed submission (SUBMITTED rows remain for manual review); live occurrence of an isolated session-start ERROR and runtime recovery for the next candidate.
+
+---
+
 ## E5-R4.3 - Offline Chromium DOM Regression Tests (optional)
 
 **Status:** E5-R4.3 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - no autonomous cycle, no browser against Naukri, no Apply click, no submit, no DB/retry/preference writes.

@@ -313,6 +313,7 @@ class AutonomousCycle:
             app_stats = await self._run_applications(db, profile, preferences)
             self._print(f"  Candidates: {app_stats['candidates']}")
             self._print(f"  Applied: {app_stats['applied']}")
+            self._print(f"  Submitted (unconfirmed): {app_stats.get('submitted_unconfirmed', 0)}")
             self._print(f"  Skipped: {app_stats['skipped']}")
             self._print(f"  External: {app_stats['external']}")
             self._print(f"  Needs attention: {app_stats['needs_attention']}")
@@ -337,6 +338,7 @@ class AutonomousCycle:
             self._print(f"AI completed: {ai_stats['completed']}")
             self._print(f"Application candidates: {app_stats['candidates']}")
             self._print(f"Applied: {app_stats['applied']}")
+            self._print(f"Submitted (unconfirmed): {app_stats.get('submitted_unconfirmed', 0)}")
             self._print(f"Skipped: {app_stats['skipped']}")
             self._print(f"External: {app_stats['external']}")
             self._print(f"Needs attention: {app_stats['needs_attention']}")
@@ -560,7 +562,16 @@ class AutonomousCycle:
         self, db: Session, profile: Profile, preferences: JobPreference
     ) -> dict:
         """Run applications for eligible jobs with max-applications limit."""
-        stats = {"candidates": 0, "applied": 0, "skipped": 0, "external": 0, "needs_attention": 0, "failed": 0, "errors": []}
+        stats = {
+            "candidates": 0,
+            "applied": 0,
+            "submitted_unconfirmed": 0,
+            "skipped": 0,
+            "external": 0,
+            "needs_attention": 0,
+            "failed": 0,
+            "errors": [],
+        }
 
         stmt = select(Job).where(
             Job.id.in_(select(JobAnalysisModel.job_id))
@@ -598,6 +609,12 @@ class AutonomousCycle:
         if not eligible_jobs:
             return stats
 
+        # E5-R5.2: bounded tolerance for isolated runner errors. One ordinary
+        # ERROR is recorded and skipped; the second consecutive ERROR aborts
+        # the remaining candidates. Any valid non-ERROR outcome resets the
+        # counter. SECURITY/AUTH stops remain immediate and authoritative.
+        consecutive_errors = 0
+
         for job in eligible_jobs:
             if self.applications_count >= self.max_applications:
                 self.stop_reason = f"Reached max-applications limit ({self.max_applications})"
@@ -610,22 +627,39 @@ class AutonomousCycle:
                 if result == "APPLIED":
                     stats["applied"] += 1
                     self.applications_count += 1
+                    consecutive_errors = 0
+                elif result == "SUBMITTED_UNCONFIRMED":
+                    # Clicked submit without positive confirmation: truthful
+                    # outcome, never counted toward the successful budget.
+                    stats["submitted_unconfirmed"] += 1
+                    consecutive_errors = 0
                 elif result == "SKIPPED":
                     stats["skipped"] += 1
+                    consecutive_errors = 0
                 elif result == "EXTERNAL":
                     stats["external"] += 1
+                    consecutive_errors = 0
                 elif result == "NEEDS_ATTENTION":
                     stats["needs_attention"] += 1
+                    consecutive_errors = 0
                 elif result == "FAILED":
                     stats["failed"] += 1
+                    consecutive_errors = 0
                 elif result == "ERROR":
                     # The runner never inspected this job (browser session or
-                    # agent state unavailable). Stop instead of attempting the
-                    # remaining candidates, which would only produce bogus
-                    # skip outcomes while the runtime stays unusable.
+                    # agent state unavailable). E5-R5.2: the first isolated
+                    # ERROR is recorded and the loop continues so later
+                    # candidates can still be considered; a second consecutive
+                    # ERROR means the runtime is unusable and aborts instead
+                    # of producing a run of bogus outcomes.
                     stats["failed"] += 1
-                    self.stop_reason = "Application execution unavailable for remaining candidates"
-                    return stats
+                    consecutive_errors += 1
+                    if consecutive_errors >= 2:
+                        self.stop_reason = (
+                            "Two consecutive runner errors; "
+                            "aborting remaining candidates"
+                        )
+                        return stats
                 elif result == "SECURITY_REQUIRED":
                     self.stop_reason = "Security challenge encountered"
                     return stats
@@ -637,6 +671,8 @@ class AutonomousCycle:
                 logger.error(f"Error processing job {job.id}: {e}", exc_info=True)
                 stats["errors"].append(str(e))
                 stats["failed"] += 1
+                # An exception is not a valid outcome: it neither resets nor
+                # increments the consecutive runner-ERROR counter.
 
         return stats
 
@@ -701,7 +737,15 @@ class AutonomousCycle:
         # inspected this job. A browser-session startup failure returns zeroed
         # stats and an unusable agent state returns {"error": ...}; neither is a
         # blocked/skipped candidate and neither may be recorded as one.
-        reported_outcomes = ("applied", "external", "needs_attention", "skipped", "failed", "dry_run")
+        reported_outcomes = (
+            "applied",
+            "submitted_unconfirmed",
+            "external",
+            "needs_attention",
+            "skipped",
+            "failed",
+            "dry_run",
+        )
         if app_results.get("error") or not any(app_results.get(k, 0) for k in reported_outcomes):
             reason = app_results.get("error") or "Application runner returned no outcome for this job"
             logger.warning("Job %s produced no application outcome: %s", job.id, reason)
@@ -717,6 +761,11 @@ class AutonomousCycle:
         if app_results.get("applied", 0) > 0:
             app_type = "NATIVE"
             outcome = "APPLIED"
+        elif app_results.get("submitted_unconfirmed", 0) > 0:
+            # E5-R5.2: a native submit click without positive confirmation.
+            # Recorded truthfully as its own outcome; never "APPLIED".
+            app_type = "NATIVE"
+            outcome = "SUBMITTED_UNCONFIRMED"
         elif app_results.get("external", 0) > 0:
             app_type = "EXTERNAL"
             outcome = "EXTERNAL"
@@ -734,6 +783,8 @@ class AutonomousCycle:
 
         if app_results.get("applied", 0) > 0:
             return "APPLIED"
+        elif app_results.get("submitted_unconfirmed", 0) > 0:
+            return "SUBMITTED_UNCONFIRMED"
         elif app_results.get("external", 0) > 0:
             return "EXTERNAL"
         elif app_results.get("needs_attention", 0) > 0:
