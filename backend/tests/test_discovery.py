@@ -327,6 +327,41 @@ async def test_discovery_empty_locations_still_searches_india_fallback(
     assert service.current_run.searches_attempted == 1
 
 
+def test_build_job_persists_application_mode_and_rejects_unknown():
+    """E5-R9: only classifier-known application_mode values are stored."""
+    service = DiscoveryService(AgentStateManager(initial_state=AgentState.IDLE))
+    service.adapter = MagicMock(platform_name="naukri")
+
+    base = {
+        "title": "Engineer",
+        "company": "Corp",
+        "url": "http://naukri.com/job",
+        "external_job_id": "1",
+    }
+
+    native = service._build_job({**base, "application_mode": "NAUKRI_NATIVE"}, "t")
+    assert native is not None
+    assert native.application_mode == "NAUKRI_NATIVE"
+
+    external = service._build_job(
+        {**base, "external_job_id": "2", "application_mode": "EXTERNAL"}, "t"
+    )
+    assert external.application_mode == "EXTERNAL"
+
+    ambiguous = service._build_job(
+        {**base, "external_job_id": "3", "application_mode": "AMBIGUOUS"}, "t"
+    )
+    assert ambiguous.application_mode == "AMBIGUOUS"
+
+    # Unknown / garbage values are never stored as native.
+    for bad in (None, "", "NATIVE", "TRUE", "yes", "apply_on_company_site"):
+        job = service._build_job(
+            {**base, "external_job_id": f"bad-{bad}", "application_mode": bad}, "t"
+        )
+        assert job is not None
+        assert job.application_mode is None
+
+
 @pytest.mark.asyncio
 async def test_discovery_halts_on_auth_required_exception(
     state_manager, mock_db_session, mock_adapter

@@ -39,6 +39,11 @@ class Job(Base):
     department: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     role_category: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    # E5-R9: classified during discovery enrichment (same open page as
+    # description fetch). Values: NAUKRI_NATIVE, EXTERNAL, AMBIGUOUS, or
+    # NULL when never classified. Ranking treats unknown as ambiguous.
+    application_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
     posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

@@ -68,6 +68,25 @@ def job_freshness_key(job: Job) -> tuple[tuple[int, float], float]:
     """Freshness-first ordering: posting date, then discovery recency."""
     return (posted_freshness_key(job.posted_at), -_timestamp(job.discovered_at))
 
+
+def application_mode_rank(job: Job) -> int:
+    """Ascending rank for native-first candidate prioritization (E5-R9).
+
+    0 = NAUKRI_NATIVE (eligible in-page Apply)
+    1 = AMBIGUOUS or unknown (NULL / unclassified) — never promoted to native
+    2 = EXTERNAL (apply on company site)
+
+    External-only listings stay eligible; they simply rank after native when
+    both pass the same hard filters. Ambiguous is never labeled native just
+    to fill the budget.
+    """
+    mode = (getattr(job, "application_mode", None) or "").strip().upper()
+    if mode == "NAUKRI_NATIVE":
+        return 0
+    if mode == "EXTERNAL":
+        return 2
+    return 1
+
 # Excluded job ID per rules
 EXCLUDED_JOB_ID = "300926927428"
 
@@ -488,11 +507,14 @@ class AutonomousCycle:
 
         # D6.2: Bounded Gemini Candidate Evaluation
         if eligible_jobs:
-            # Freshness-first: newest grounded posting dates win, then the
-            # most recently discovered jobs, then the highest match score.
-            # Jobs with an unknown posting date never outrank known-fresh jobs.
+            # E5-R9: native-first, then freshness-first (newest grounded
+            # posting dates, then most recently discovered), then match score.
+            # Unknown/ambiguous application_mode is never treated as native.
+            # Jobs with an unknown posting date never outrank known-fresh jobs
+            # within the same application-mode tier.
             eligible_jobs.sort(
                 key=lambda x: (
+                    application_mode_rank(x["job"]),
                     job_freshness_key(x["job"]),
                     -x["match_score"],
                 )

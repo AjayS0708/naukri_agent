@@ -378,6 +378,14 @@ class NaukriAdapter(JobPlatformAdapter):
                                     result[key] = value
                                     break
 
+            # E5-R9: classify application mode on the page already open for
+            # enrichment so ranking can prefer native candidates without a
+            # second visit. Failures leave the mode unset (treated as unknown).
+            try:
+                result["application_mode"] = await self.detect_application_type(page)
+            except Exception as e:
+                logger.debug(f"application_mode classification failed for {url}: {e}")
+
             return result
         except Exception as e:
             logger.warning(f"Failed to fetch job details for {url}: {e}")

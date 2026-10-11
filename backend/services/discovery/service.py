@@ -378,6 +378,12 @@ class DiscoveryService:
         salary_text = self._normalize_optional_str(job_data.get("salary"))
         salary_min, salary_max = parse_salary_to_range(salary_text) if salary_text else (None, None)
 
+        # E5-R9: persist only classifier-known values; anything else stays NULL
+        # so ranking treats it as unknown/ambiguous rather than inventing native.
+        application_mode = (self._normalize_optional_str(job_data.get("application_mode")) or "").upper()
+        if application_mode not in ("NAUKRI_NATIVE", "EXTERNAL", "AMBIGUOUS"):
+            application_mode = None
+
         return Job(
             platform=self.adapter.platform_name,
             external_job_id=external_job_id,
@@ -394,6 +400,7 @@ class DiscoveryService:
             industry=self._normalize_optional_str(job_data.get("industry")),
             department=self._normalize_optional_str(job_data.get("department")),
             role_category=self._normalize_optional_str(job_data.get("role_category")),
+            application_mode=application_mode,
             posted_at=posted_at,
             discovered_at=now,
             last_seen=now,
