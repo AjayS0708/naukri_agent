@@ -183,6 +183,25 @@ class DiscoveryService:
 
                             if existing_job:
                                 self.current_run.duplicate_jobs += 1
+                                # E5-R9: backfill application_mode on rediscovery
+                                # when still unknown, reusing the same page visit
+                                # path as new-job enrichment. Known modes are left
+                                # alone so we never invent a new classification.
+                                if (
+                                    not getattr(existing_job, "application_mode", None)
+                                    and job_data.get("url")
+                                ):
+                                    try:
+                                        details_result = await self.adapter.fetch_job_details(
+                                            job_data["url"]
+                                        )
+                                    except Exception as e:
+                                        logger.debug(
+                                            f"application_mode backfill failed for {job_data['url']}: {e}"
+                                        )
+                                        details_result = None
+                                    if details_result:
+                                        job_data.update(details_result)
                                 self._refresh_duplicate_job(db, existing_job, job_data)
                                 # Track existing job ID as part of current run
                                 self.current_run_job_ids.add(existing_job.id)
@@ -336,7 +355,8 @@ class DiscoveryService:
 
         ``last_seen`` always advances. ``posted_at`` is only updated when the
         freshly observed, grounded date is newer than what is stored; unknown
-        dates never overwrite a known one.
+        dates never overwrite a known one. ``application_mode`` is backfilled
+        only when still NULL and the observed value is classifier-known.
         """
         existing_job.last_seen = utc_now()
 
@@ -346,6 +366,13 @@ class DiscoveryService:
             current = self._as_aware_utc(existing_job.posted_at)
             if current is None or observed > current:
                 existing_job.posted_at = observed
+
+        if not getattr(existing_job, "application_mode", None):
+            observed_mode = (
+                self._normalize_optional_str(job_data.get("application_mode")) or ""
+            ).upper()
+            if observed_mode in ("NAUKRI_NATIVE", "EXTERNAL", "AMBIGUOUS"):
+                existing_job.application_mode = observed_mode
 
         db.commit()
 

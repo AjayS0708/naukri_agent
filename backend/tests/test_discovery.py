@@ -893,3 +893,56 @@ async def test_duplicates_do_not_starve_fresh_jobs(
     assert service.current_run.duplicate_jobs == 2
     assert service.current_run.new_jobs == 2
     assert service.current_run.status == "STOPPED"
+
+
+@pytest.mark.asyncio
+async def test_rediscovery_backfills_null_application_mode_only(
+    state_manager, mock_db_session, mock_adapter
+):
+    """E5-R9: rediscovery classifies NULL-mode jobs; known modes are preserved."""
+    async def mock_search_jobs(*args, **kwargs):
+        yield {
+            "title": "Unclassified Job",
+            "company": "Corp A",
+            "url": "http://naukri.com/unc",
+            "external_job_id": "unc-1",
+        }
+        yield {
+            "title": "Already Native",
+            "company": "Corp B",
+            "url": "http://naukri.com/nat",
+            "external_job_id": "nat-1",
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs
+    mock_adapter.fetch_job_details = AsyncMock(return_value={"application_mode": "NAUKRI_NATIVE"})
+
+    service = DiscoveryService(state_manager)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = []
+
+    unclassified = MagicMock(spec=Job)
+    unclassified.posted_at = None
+    unclassified.application_mode = None
+    unclassified.id = 9101
+    already_native = MagicMock(spec=Job)
+    already_native.posted_at = None
+    already_native.application_mode = "NAUKRI_NATIVE"
+    already_native.id = 9102
+
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences,
+        unclassified,
+        already_native,
+    ]
+
+    await service.run_discovery(mock_db_session)
+
+    assert service.current_run.duplicate_jobs == 2
+    assert unclassified.application_mode == "NAUKRI_NATIVE"
+    assert already_native.application_mode == "NAUKRI_NATIVE"
+    # Only the NULL-mode job should trigger a details visit.
+    assert mock_adapter.fetch_job_details.await_count == 1
