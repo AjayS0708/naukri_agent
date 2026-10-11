@@ -128,107 +128,123 @@ class DiscoveryService:
                 self._abort_before_search(db, "No job titles configured.")
                 return
 
+            # E5-R8: search every configured location, not only locations[0].
+            # Empty/blank names are dropped; an empty list still becomes a
+            # single unfiltered (India-wide) search via the adapter fallback.
+            search_locations = self._normalize_search_locations(locations)
+
             self.state_manager.transition_to(AgentState.SEARCHING)
 
             for term in search_terms:
                 if self._stop_requested:
                     break
 
-                self.current_search = term
-                self.current_run.searches_attempted += 1
-                db.commit()
-
                 if not filtering_entered:
                     self.state_manager.transition_to(AgentState.FILTERING)
                     filtering_entered = True
 
-                jobs_before_term = self.current_run.jobs_discovered
-                seen_pages: set[int] = set()
-                term_yielded_any = False
+                for location in search_locations:
+                    if self._stop_requested:
+                        break
 
-                try:
-                    async for job_data in self.adapter.search_jobs(term, locations):
-                        if self._stop_requested:
-                            break
+                    self.current_search = (
+                        term if location is None else f"{term} in {location}"
+                    )
+                    self.current_run.searches_attempted += 1
+                    db.commit()
 
-                        term_yielded_any = True
-                        self._track_page_processed(db, job_data, seen_pages)
-                        self.current_run.jobs_discovered += 1
+                    jobs_before_term = self.current_run.jobs_discovered
+                    seen_pages: set[int] = set()
+                    term_yielded_any = False
 
-                        card_job = Job(
-                            title=job_data.get("title") or "",
-                            experience=job_data.get("experience"),
-                        )
-                        experience_text = job_data.get("experience")
-                        experience_ok, _ = experience_passes_fresher_rule(card_job, preferences)
-                        # Only reject before opening when the card explicitly shows
-                        # an over-cap minimum. Missing text requires page enrichment.
-                        if experience_text and not experience_ok:
-                            self.current_run.jobs_discovered -= 1
-                            continue
+                    try:
+                        location_locations: list[str] = [] if location is None else [location]
+                        async for job_data in self.adapter.search_jobs(term, location_locations):
+                            if self._stop_requested:
+                                break
 
-                        existing_job = self._find_existing_job(db, job_data)
+                            term_yielded_any = True
+                            self._track_page_processed(db, job_data, seen_pages)
+                            self.current_run.jobs_discovered += 1
 
-                        if existing_job:
-                            self.current_run.duplicate_jobs += 1
-                            self._refresh_duplicate_job(db, existing_job, job_data)
-                            # Track existing job ID as part of current run
-                            self.current_run_job_ids.add(existing_job.id)
-                            continue
+                            card_job = Job(
+                                title=job_data.get("title") or "",
+                                experience=job_data.get("experience"),
+                            )
+                            experience_text = job_data.get("experience")
+                            experience_ok, _ = experience_passes_fresher_rule(card_job, preferences)
+                            # Only reject before opening when the card explicitly shows
+                            # an over-cap minimum. Missing text requires page enrichment.
+                            if experience_text and not experience_ok:
+                                self.current_run.jobs_discovered -= 1
+                                continue
 
-                        self.current_run.new_jobs += 1
+                            existing_job = self._find_existing_job(db, job_data)
 
-                        # Always fetch job details to enrich IT metadata (industry/department/role_category)
-                        # even if description is already present from the card
-                        if job_data.get("url"):
-                            details_result = await self.adapter.fetch_job_details(job_data["url"])
-                            if details_result:
-                                job_data.update(details_result)
+                            if existing_job:
+                                self.current_run.duplicate_jobs += 1
+                                self._refresh_duplicate_job(db, existing_job, job_data)
+                                # Track existing job ID as part of current run
+                                self.current_run_job_ids.add(existing_job.id)
+                                continue
 
-                        new_job = self._build_job(job_data, term)
-                        if new_job is None:
-                            self.current_run.new_jobs -= 1
-                            self.current_run.jobs_discovered -= 1
-                            continue
+                            self.current_run.new_jobs += 1
 
-                        db.add(new_job)
-                        db.commit()
-                        db.refresh(new_job)
+                            # Always fetch job details to enrich IT metadata (industry/department/role_category)
+                            # even if description is already present from the card
+                            if job_data.get("url"):
+                                details_result = await self.adapter.fetch_job_details(job_data["url"])
+                                if details_result:
+                                    job_data.update(details_result)
 
-                        # Track new job ID as part of current run
-                        self.current_run_job_ids.add(new_job.id)
+                            new_job = self._build_job(job_data, term)
+                            if new_job is None:
+                                self.current_run.new_jobs -= 1
+                                self.current_run.jobs_discovered -= 1
+                                continue
 
-                        # The scan budget is applied to NEW distinct jobs, not
-                        # to every card. A stream of already-known duplicates
-                        # therefore can never starve fresh eligible jobs out of
-                        # the discovery budget.
-                        if self.current_run.new_jobs >= self.max_cards:
-                            self._stop_requested = True
-                            break
+                            db.add(new_job)
+                            db.commit()
+                            db.refresh(new_job)
 
-                    self._track_implicit_page(db, jobs_before_term, seen_pages)
+                            # Track new job ID as part of current run
+                            self.current_run_job_ids.add(new_job.id)
 
-                    # If this search term yielded no jobs and it's the first term,
-                    # this indicates a navigation/selector failure (not just empty results)
-                    if not term_yielded_any and self.current_run.jobs_discovered == 0:
-                        logger.warning(f"Search term '{term}' yielded no jobs - possible navigation failure")
+                            # The scan budget is applied to NEW distinct jobs, not
+                            # to every card. A stream of already-known duplicates
+                            # therefore can never starve fresh eligible jobs out of
+                            # the discovery budget.
+                            if self.current_run.new_jobs >= self.max_cards:
+                                self._stop_requested = True
+                                break
+
+                        self._track_implicit_page(db, jobs_before_term, seen_pages)
+
+                        # If this search term yielded no jobs and it's the first term,
+                        # this indicates a navigation/selector failure (not just empty results)
+                        if not term_yielded_any and self.current_run.jobs_discovered == 0:
+                            location_label = location or "india"
+                            logger.warning(
+                                f"Search term '{term}' in '{location_label}' yielded no jobs "
+                                "- possible navigation failure"
+                            )
+                            self.current_run.errors += 1
+
+                    except Exception as e:
+                        logger.error(f"Error during search for {term}: {str(e)}", exc_info=True)
                         self.current_run.errors += 1
 
-                except Exception as e:
-                    logger.error(f"Error during search for {term}: {str(e)}", exc_info=True)
-                    self.current_run.errors += 1
-
-                    error_lower = str(e).lower()
-                    if "login required" in error_lower or "sign in" in error_lower:
-                        self._finalize_run(db, DISCOVERY_STATUS_AUTH_REQUIRED, "Naukri login required.")
-                        self._transition_to_auth_required()
-                        return
-                    if "security verification" in error_lower or "captcha" in error_lower or "access blocked" in error_lower:
-                        self._finalize_run(db, DISCOVERY_STATUS_SECURITY_REQUIRED, f"Security verification required: {str(e)}")
-                        self._transition_to_security_required()
-                        # Page is left open by adapter for manual CAPTCHA resolution
-                        # Browser context will be cleaned up when session is stopped
-                        return
+                        error_lower = str(e).lower()
+                        if "login required" in error_lower or "sign in" in error_lower:
+                            self._finalize_run(db, DISCOVERY_STATUS_AUTH_REQUIRED, "Naukri login required.")
+                            self._transition_to_auth_required()
+                            return
+                        if "security verification" in error_lower or "captcha" in error_lower or "access blocked" in error_lower:
+                            self._finalize_run(db, DISCOVERY_STATUS_SECURITY_REQUIRED, f"Security verification required: {str(e)}")
+                            self._transition_to_security_required()
+                            # Page is left open by adapter for manual CAPTCHA resolution
+                            # Browser context will be cleaned up when session is stopped
+                            return
 
             if self._stop_requested:
                 self._finalize_run(db, DISCOVERY_STATUS_STOPPED, None)
@@ -245,6 +261,29 @@ class DiscoveryService:
             self.current_search = None
             if owns_session:
                 db.close()
+
+    @staticmethod
+    def _normalize_search_locations(locations: list[str] | None) -> list[str | None]:
+        """
+        Ordered, de-duplicated configured locations for E5-R8 multi-location search.
+
+        Returns a list where each entry is a non-empty location name. An empty
+        or all-blank input collapses to ``[None]`` so the caller still performs
+        one India-wide search (adapter path-based fallback), preserving the
+        pre-E5-R8 behaviour when no locations are configured.
+        """
+        ordered: list[str | None] = []
+        seen: set[str] = set()
+        for raw in locations or []:
+            name = (raw or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(name)
+        return ordered or [None]
 
     def _track_page_processed(self, db: Session, job_data: dict[str, Any], seen_pages: set[int]) -> None:
         page_number = job_data.get("page_number")

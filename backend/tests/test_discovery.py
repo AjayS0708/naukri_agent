@@ -170,6 +170,163 @@ async def test_discovery_tracks_multiple_pages_processed(
     assert service.current_run.new_jobs == 2
 
 
+def test_normalize_search_locations_orders_dedupes_and_falls_back():
+    assert DiscoveryService._normalize_search_locations(
+        ["Bengaluru", " Remote ", "bengaluru", "", None]
+    ) == ["Bengaluru", "Remote"]
+    assert DiscoveryService._normalize_search_locations([]) == [None]
+    assert DiscoveryService._normalize_search_locations(None) == [None]
+    assert DiscoveryService._normalize_search_locations(["   "]) == [None]
+
+
+@pytest.mark.asyncio
+async def test_discovery_searches_every_configured_location(
+    state_manager, mock_db_session, mock_adapter
+):
+    """E5-R8: every configured location (not only locations[0]) is searched."""
+    calls: list[tuple[str, list[str]]] = []
+
+    async def mock_search_jobs(term, locations, **kwargs):
+        calls.append((term, list(locations)))
+        yield {
+            "title": f"Engineer {locations[0] if locations else 'india'}",
+            "company": f"Corp {locations[0] if locations else 'india'}",
+            "url": f"http://naukri.com/job-{locations[0] if locations else 'india'}",
+            "external_job_id": f"id-{locations[0] if locations else 'india'}",
+            "page_number": 1,
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs
+    mock_adapter.fetch_job_details = AsyncMock(return_value={
+        "description": "description",
+        "industry": "IT",
+        "department": "Engineering",
+        "role_category": "Engineer",
+    })
+
+    service = DiscoveryService(state_manager)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = ["Bengaluru", "Remote"]
+
+    # Preferences + 2 jobs × 3 dedup lookups (external_job_id, url, title+company)
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences,
+        None, None, None,
+        None, None, None,
+    ]
+
+    await service.run_discovery(mock_db_session)
+
+    assert calls == [
+        ("Developer", ["Bengaluru"]),
+        ("Developer", ["Remote"]),
+    ]
+    assert service.current_run.searches_attempted == 2
+    assert service.current_run.new_jobs == 2
+    assert service.current_run.status == DISCOVERY_STATUS_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_discovery_pages_processed_can_exceed_searches_attempted(
+    state_manager, mock_db_session, mock_adapter
+):
+    """When a search yields page 2+, pages_processed > searches_attempted."""
+    async def mock_search_jobs_multi_page(*args, **kwargs):
+        yield {
+            "title": "Engineer A",
+            "company": "Corp A",
+            "url": "http://naukri.com/job-a",
+            "external_job_id": "a",
+            "page_number": 1,
+        }
+        yield {
+            "title": "Engineer B",
+            "company": "Corp B",
+            "url": "http://naukri.com/job-b",
+            "external_job_id": "b",
+            "page_number": 2,
+        }
+        yield {
+            "title": "Engineer C",
+            "company": "Corp C",
+            "url": "http://naukri.com/job-c",
+            "external_job_id": "c",
+            "page_number": 3,
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs_multi_page
+    mock_adapter.fetch_job_details = AsyncMock(return_value={
+        "description": "description",
+        "industry": "IT",
+        "department": "Engineering",
+        "role_category": "Engineer",
+    })
+
+    service = DiscoveryService(state_manager)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = ["Bengaluru"]
+
+    # Preferences + 3 jobs × 2 dedup lookups
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences,
+        None, None, None, None, None, None,
+    ]
+
+    await service.run_discovery(mock_db_session)
+
+    assert service.current_run.searches_attempted == 1
+    assert service.current_run.pages_processed == 3
+    assert service.current_run.pages_processed > service.current_run.searches_attempted
+
+
+@pytest.mark.asyncio
+async def test_discovery_empty_locations_still_searches_india_fallback(
+    state_manager, mock_db_session, mock_adapter
+):
+    """No configured locations still performs one unfiltered search."""
+    calls: list[tuple[str, list[str]]] = []
+
+    async def mock_search_jobs(term, locations, **kwargs):
+        calls.append((term, list(locations)))
+        yield {
+            "title": "Engineer",
+            "company": "Corp",
+            "url": "http://naukri.com/job",
+            "external_job_id": "1",
+            "page_number": 1,
+        }
+
+    mock_adapter.search_jobs = mock_search_jobs
+    mock_adapter.fetch_job_details = AsyncMock(return_value={
+        "description": "d",
+        "industry": "IT",
+        "department": "E",
+        "role_category": "R",
+    })
+
+    service = DiscoveryService(state_manager)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = []
+
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences, None, None,
+    ]
+
+    await service.run_discovery(mock_db_session)
+
+    assert calls == [("Developer", [])]
+    assert service.current_run.searches_attempted == 1
+
+
 @pytest.mark.asyncio
 async def test_discovery_halts_on_auth_required_exception(
     state_manager, mock_db_session, mock_adapter

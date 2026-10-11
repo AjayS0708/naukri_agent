@@ -200,6 +200,120 @@ class TestBuildNaukriSearchUrl:
         url = adapter._build_naukri_search_url("Developer", ["Bengaluru", "Mumbai", "Delhi"])
         assert url == "https://www.naukri.com/Developer-jobs-in-Bengaluru?experience=0"
 
+    def test_iter_urls_covers_every_configured_location(self):
+        adapter = NaukriAdapter()
+        urls = adapter._iter_naukri_search_urls(
+            "Software Engineer Fresher", ["Bengaluru", "Remote"]
+        )
+        assert urls == [
+            "https://www.naukri.com/Software-Engineer-Fresher-jobs-in-Bengaluru?experience=0",
+            "https://www.naukri.com/Software-Engineer-Fresher-jobs-in-Remote?experience=0",
+        ]
+
+    def test_iter_urls_dedupes_and_strips_blank_and_duplicates(self):
+        adapter = NaukriAdapter()
+        urls = adapter._iter_naukri_search_urls(
+            "Data Analyst", ["  Bengaluru  ", "", "bengaluru", "Remote", None]
+        )
+        assert urls == [
+            "https://www.naukri.com/Data-Analyst-jobs-in-Bengaluru?experience=0",
+            "https://www.naukri.com/Data-Analyst-jobs-in-Remote?experience=0",
+        ]
+
+    def test_iter_urls_empty_locations_falls_back_to_india_once(self):
+        adapter = NaukriAdapter()
+        assert adapter._iter_naukri_search_urls("Developer", []) == [
+            "https://www.naukri.com/Developer-jobs-in-india?experience=0"
+        ]
+
+
+class TestPickNextPageHref:
+    """Unit tests for the live-verified next-page picker (E5-R8)."""
+
+    def test_live_verified_next_anchor_with_hashed_class(self):
+        # Shape observed live on 2026-10-11: hashed btn-secondary class changed
+        # from the stale ...2BqIV selector; text+href identify Next.
+        adapter = NaukriAdapter()
+        href = adapter._pick_next_page_href([
+            {
+                "href": "/software-engineer-fresher-jobs-in-bengaluru-2",
+                "text": "Next",
+                "aria": None,
+                "rel": None,
+                "class": "styles_btn-secondary__2AsIP",
+                "disabled": False,
+            }
+        ])
+        assert href == "/software-engineer-fresher-jobs-in-bengaluru-2"
+
+    def test_previous_sharing_btn_secondary_class_is_rejected(self):
+        adapter = NaukriAdapter()
+        href = adapter._pick_next_page_href([
+            {
+                "href": "/software-engineer-fresher-jobs-in-bengaluru",
+                "text": "Previous",
+                "aria": None,
+                "rel": None,
+                "class": "styles_btn-secondary__2AsIP styles_previous__PobAs",
+                "disabled": False,
+            },
+            {
+                "href": "/software-engineer-fresher-jobs-in-bengaluru-2",
+                "text": "Next",
+                "aria": None,
+                "rel": None,
+                "class": "styles_btn-secondary__2AsIP",
+                "disabled": False,
+            },
+        ])
+        assert href == "/software-engineer-fresher-jobs-in-bengaluru-2"
+
+    def test_disabled_next_is_rejected(self):
+        adapter = NaukriAdapter()
+        assert adapter._pick_next_page_href([
+            {
+                "href": "/jobs-2",
+                "text": "Next",
+                "aria": None,
+                "rel": None,
+                "class": "styles_btn-secondary__2AsIP",
+                "disabled": True,
+            }
+        ]) is None
+
+    def test_aria_label_and_rel_next_accepted(self):
+        adapter = NaukriAdapter()
+        assert adapter._pick_next_page_href([
+            {"href": "/jobs-2", "text": "", "aria": "Next", "rel": None, "class": "", "disabled": False}
+        ]) == "/jobs-2"
+        assert adapter._pick_next_page_href([
+            {"href": "/jobs-2", "text": "", "aria": None, "rel": "next", "class": "", "disabled": False}
+        ]) == "/jobs-2"
+
+    def test_apply_links_are_never_followed(self):
+        adapter = NaukriAdapter()
+        assert adapter._pick_next_page_href([
+            {
+                "href": "https://example.com/apply",
+                "text": "Apply on company site",
+                "aria": None,
+                "rel": None,
+                "class": "styles_btn-secondary__2AsIP",
+                "disabled": False,
+            }
+        ]) is None
+
+    def test_missing_href_is_rejected(self):
+        adapter = NaukriAdapter()
+        assert adapter._pick_next_page_href([
+            {"href": None, "text": "Next", "aria": None, "rel": None, "class": "", "disabled": False}
+        ]) is None
+
+    def test_non_list_candidates_return_none(self):
+        adapter = NaukriAdapter()
+        assert adapter._pick_next_page_href(None) is None
+        assert adapter._pick_next_page_href({"href": "/jobs-2"}) is None
+
 
 class TestSecurityDetection:
     """Tests for _check_security using visible text (inner_text) not raw HTML."""
@@ -1893,11 +2007,12 @@ class TestSearchJobsUrlAndSelectors:
     @pytest.mark.asyncio
     async def test_search_jobs_emits_fresh_first_and_advances_pages(self):
         """Cards are emitted freshest-first per page, unknown dates last, and
-        pagination advances to the next page."""
+        pagination advances to the next page via the live Next href."""
         adapter = NaukriAdapter()
         adapter.browser = AsyncMock()
 
         mock_page = AsyncMock()
+        mock_page.url = "https://www.naukri.com/Developer-jobs-in-Mumbai"
         adapter.browser.new_page.return_value = mock_page
 
         now = datetime.now(UTC)
@@ -1912,6 +2027,11 @@ class TestSearchJobsUrlAndSelectors:
 
         pages_of_cards = [["c1a", "c1b"], ["c2a", "c2b"], []]
         calls = {"n": 0}
+        page_urls = [
+            "https://www.naukri.com/Developer-jobs-in-Mumbai",
+            "https://www.naukri.com/Developer-jobs-in-Mumbai-2",
+            "https://www.naukri.com/Developer-jobs-in-Mumbai-3",
+        ]
 
         def query_selector_all(selector):
             if selector == ".srp-jobtuple-wrapper":
@@ -1921,8 +2041,42 @@ class TestSearchJobsUrlAndSelectors:
             return []
 
         mock_page.query_selector_all.side_effect = query_selector_all
-        next_buttons = [AsyncMock(), AsyncMock(), None]
-        mock_page.query_selector.side_effect = next_buttons
+
+        next_candidates = [
+            [{
+                "href": "/Developer-jobs-in-Mumbai-2",
+                "text": "Next",
+                "aria": None,
+                "rel": None,
+                "class": "styles_btn-secondary__2AsIP",
+                "disabled": False,
+            }],
+            [{
+                "href": "/Developer-jobs-in-Mumbai-3",
+                "text": "Next",
+                "aria": None,
+                "rel": None,
+                "class": "styles_btn-secondary__2AsIP",
+                "disabled": False,
+            }],
+            [],
+        ]
+        eval_calls = {"n": 0}
+
+        def evaluate(_script):
+            idx = eval_calls["n"]
+            eval_calls["n"] += 1
+            return next_candidates[idx] if idx < len(next_candidates) else []
+
+        mock_page.evaluate.side_effect = evaluate
+        goto_urls: list[str] = []
+
+        async def goto(url, **kwargs):
+            goto_urls.append(url)
+            # Keep page.url in sync so the self-URL guard behaves realistically.
+            mock_page.url = url
+
+        mock_page.goto.side_effect = goto
 
         with patch.object(
             adapter, '_extract_card_data', new_callable=AsyncMock,
@@ -1936,9 +2090,146 @@ class TestSearchJobsUrlAndSelectors:
 
         assert [job["title"] for job in results] == ["New", "Old", "Newest", "Unknown"]
         assert [job["page_number"] for job in results] == [1, 1, 2, 2]
-        # Pagination advanced twice (page 1 -> 2 -> 3), then stopped.
-        assert next_buttons[0].click.await_count == 1
-        assert next_buttons[1].click.await_count == 1
+        # First goto is the initial search URL; then page 2 and page 3, then stop.
+        assert goto_urls == [
+            "https://www.naukri.com/Developer-jobs-in-Mumbai?experience=0",
+            "https://www.naukri.com/Developer-jobs-in-Mumbai-2",
+            "https://www.naukri.com/Developer-jobs-in-Mumbai-3",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_search_jobs_terminates_when_next_points_at_current_url(self):
+        """A Next target equal to the current page must not loop forever."""
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+
+        mock_page = AsyncMock()
+        mock_page.url = "https://www.naukri.com/Developer-jobs-in-Mumbai"
+        adapter.browser.new_page.return_value = mock_page
+        mock_page.query_selector_all.side_effect = lambda selector: (
+            ["c1"] if selector == ".srp-jobtuple-wrapper" else []
+        )
+        mock_page.evaluate.return_value = [{
+            "href": "/Developer-jobs-in-Mumbai",
+            "text": "Next",
+            "aria": None,
+            "rel": None,
+            "class": "styles_btn-secondary__2AsIP",
+            "disabled": False,
+        }]
+
+        with patch.object(adapter, '_extract_card_data', new_callable=AsyncMock, return_value={"title": "A"}):
+            with patch.object(adapter, '_check_security', new_callable=AsyncMock):
+                with patch('asyncio.sleep', new_callable=AsyncMock):
+                    results = [job async for job in adapter.search_jobs("Developer", ["Mumbai"])]
+
+        assert len(results) == 1
+        # Only the initial search navigation; no pagination goto.
+        assert mock_page.goto.await_count == 1
+        assert mock_page.goto.call_args_list[0][0][0] == (
+            "https://www.naukri.com/Developer-jobs-in-Mumbai?experience=0"
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_jobs_stops_when_already_visited_page_returns(self):
+        """If pagination cycles back to a visited URL, stop instead of re-yielding."""
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+
+        mock_page = AsyncMock()
+        mock_page.url = "https://www.naukri.com/Developer-jobs-in-Mumbai"
+        adapter.browser.new_page.return_value = mock_page
+
+        card_calls = {"n": 0}
+
+        def query_selector_all(selector):
+            if selector == ".srp-jobtuple-wrapper":
+                card_calls["n"] += 1
+                return ["c1"]
+            return []
+
+        mock_page.query_selector_all.side_effect = query_selector_all
+        mock_page.evaluate.return_value = [{
+            "href": "/Developer-jobs-in-Mumbai-2",
+            "text": "Next",
+            "aria": None,
+            "rel": None,
+            "class": "styles_btn-secondary__2AsIP",
+            "disabled": False,
+        }]
+
+        async def goto(url, **kwargs):
+            # Page 2's Next points back at a URL we already loaded... simulate
+            # by making evaluate always offer -2; after first goto, visited set
+            # contains -2 so a second offer of -2 must stop.
+            mock_page.url = url
+
+        mock_page.goto.side_effect = goto
+
+        # After advancing to -2, make the next candidate point at -2 again
+        # (cycle). Sequence: page1 cards, candidate -2, goto -2, page2 cards,
+        # candidate -2 (already visited), stop.
+        eval_responses = [
+            [{
+                "href": "/Developer-jobs-in-Mumbai-2",
+                "text": "Next",
+                "aria": None,
+                "rel": None,
+                "class": "styles_btn-secondary__2AsIP",
+                "disabled": False,
+            }],
+            [{
+                "href": "/Developer-jobs-in-Mumbai-2",
+                "text": "Next",
+                "aria": None,
+                "rel": None,
+                "class": "styles_btn-secondary__2AsIP",
+                "disabled": False,
+            }],
+        ]
+        eval_idx = {"n": 0}
+
+        def evaluate(_script):
+            idx = eval_idx["n"]
+            eval_idx["n"] += 1
+            return eval_responses[idx] if idx < len(eval_responses) else []
+
+        mock_page.evaluate.side_effect = evaluate
+
+        with patch.object(adapter, '_extract_card_data', new_callable=AsyncMock, side_effect=[{"title": "A"}, {"title": "B"}]):
+            with patch.object(adapter, '_check_security', new_callable=AsyncMock):
+                with patch('asyncio.sleep', new_callable=AsyncMock):
+                    results = [job async for job in adapter.search_jobs("Developer", ["Mumbai"])]
+
+        # Page 1 and page 2 each yield one card; no third load of the same URL.
+        assert [job["page_number"] for job in results] == [1, 2]
+        assert mock_page.goto.await_count == 2  # initial + page 2 only
+
+    @pytest.mark.asyncio
+    async def test_search_jobs_does_not_treat_stale_hashed_class_as_next(self):
+        """Regression: the pre-E5-R8 selector a.styles_btn-secondary__2BqIV
+        must not be required. A page with no Next control stops after page 1."""
+        adapter = NaukriAdapter()
+        adapter.browser = AsyncMock()
+
+        mock_page = AsyncMock()
+        mock_page.url = "https://www.naukri.com/Developer-jobs-in-Mumbai"
+        adapter.browser.new_page.return_value = mock_page
+        mock_page.query_selector_all.side_effect = lambda selector: (
+            ["c1"] if selector == ".srp-jobtuple-wrapper" else []
+        )
+        mock_page.evaluate.return_value = []
+        mock_page.query_selector.return_value = None
+
+        with patch.object(adapter, '_extract_card_data', new_callable=AsyncMock, return_value={"title": "A"}):
+            with patch.object(adapter, '_check_security', new_callable=AsyncMock):
+                with patch('asyncio.sleep', new_callable=AsyncMock):
+                    results = [job async for job in adapter.search_jobs("Developer", ["Mumbai"])]
+
+        assert len(results) == 1
+        assert results[0]["page_number"] == 1
+        # Only initial navigation; empty Next candidates must not paginate.
+        assert mock_page.goto.await_count == 1
 
 
 class TestSearchJobsCaptchaLifecycle:

@@ -418,6 +418,143 @@ class NaukriAdapter(JobPlatformAdapter):
         logger.info(f"Built Naukri search URL: {url}")
         return url
 
+    def _iter_naukri_search_urls(self, search_term: str, locations: List[str]) -> List[str]:
+        """
+        Build one Naukri search URL per configured location (E5-R8).
+
+        Every non-empty, de-duplicated location gets its own URL so discovery
+        is no longer pinned to ``locations[0]``. An empty/blank location list
+        still falls back to a single India-wide URL.
+        """
+        ordered: List[str] = []
+        seen: set[str] = set()
+        for raw in locations or []:
+            name = (raw or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(name)
+
+        if not ordered:
+            return [self._build_naukri_search_url(search_term, [])]
+
+        return [self._build_naukri_search_url(search_term, [name]) for name in ordered]
+
+    _NEXT_PAGE_TEXT_RE = re.compile(r"^next(\s*page)?$", re.IGNORECASE)
+
+    @classmethod
+    def _pick_next_page_href(cls, candidates: List[Dict[str, Any]]) -> Optional[str]:
+        """
+        Pick the href of the forward pagination control from collected anchors.
+
+        Live-verified Naukri shape (2026-10-11):
+          ``<a href="/<slug>-2" class="styles_btn-secondary__<hash>"><span>Next</span></a>`
+        Previous shares the hashed ``btn-secondary`` class, so text/rel/aria
+        (never the hash alone) identify the forward control. Disabled anchors
+        and Apply links are rejected.
+        """
+        if not isinstance(candidates, list):
+            return None
+
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            if candidate.get("disabled") or candidate.get("aria_disabled") == "true":
+                continue
+
+            href = (candidate.get("href") or "").strip()
+            if not href or href.lower().startswith("javascript"):
+                continue
+
+            text = (candidate.get("text") or "").strip()
+            aria = (candidate.get("aria") or "").strip().lower()
+            rel = (candidate.get("rel") or "").strip().lower()
+            css_class = (candidate.get("class") or "").lower()
+
+            if re.search(r"previous|prev\b", text, re.IGNORECASE):
+                continue
+            if re.search(r"\bapply\b", text, re.IGNORECASE) or "apply" in href.lower():
+                continue
+
+            is_next = (
+                rel == "next"
+                or aria == "next"
+                or bool(cls._NEXT_PAGE_TEXT_RE.match(text))
+                or "next" in css_class
+            )
+            if is_next:
+                return href
+
+        return None
+
+    async def _find_next_page_url(self, page: Page) -> Optional[str]:
+        """
+        Return the absolute URL of the next search-results page, or None.
+
+        Reads real pagination anchors from the live DOM (attribute and text
+        based; hashed CSS classes are never required). Relative hrefs are
+        resolved against the current URL. A Next target equal to the current
+        page is treated as terminal to avoid loops.
+        """
+        try:
+            candidates = await page.evaluate(
+                """() => {
+                    const sel = [
+                        'a[aria-label="Next" i]',
+                        'a[rel="next"]',
+                        'div[class*="pagination"] a',
+                        'a[class*="pagination"] a',
+                        'a[class*="btn-secondary"]',
+                    ].join(',');
+                    const nodes = Array.from(document.querySelectorAll(sel));
+                    const seen = new Set();
+                    const out = [];
+                    for (const a of nodes) {
+                        if (!a || !a.getAttribute) continue;
+                        const key = a.outerHTML.slice(0, 200);
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        out.push({
+                            href: a.getAttribute('href'),
+                            text: (a.innerText || a.textContent || '').trim().slice(0, 60),
+                            aria: a.getAttribute('aria-label'),
+                            rel: a.getAttribute('rel'),
+                            class: a.getAttribute('class') || '',
+                            disabled: a.hasAttribute('disabled') || a.getAttribute('aria-disabled') === 'true',
+                        });
+                    }
+                    return out;
+                }"""
+            )
+        except Exception as e:
+            logger.debug(f"Failed to collect pagination candidates: {e}")
+            return None
+
+        href = self._pick_next_page_href(candidates)
+        if not href:
+            return None
+
+        current = page.url
+        if not isinstance(current, str) or not current:
+            current = "https://www.naukri.com/"
+        absolute = urllib.parse.urljoin(current, href)
+
+        def _normalize(u: str) -> str:
+            parsed = urllib.parse.urlsplit(u)
+            path = parsed.path.rstrip("/") or "/"
+            return urllib.parse.urlunsplit(
+                (parsed.scheme.lower(), parsed.netloc.lower(), path, "", "")
+            )
+
+        if _normalize(absolute) == _normalize(current):
+            logger.info(f"Next-page target equals current URL, stopping pagination: {absolute}")
+            return None
+
+        return absolute
+
     async def search_jobs(self, search_term: str, locations: List[str]) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Navigates Naukri and scrapes job cards.
@@ -476,6 +613,9 @@ class NaukriAdapter(JobPlatformAdapter):
 
             # Paginate up to MAX_SEARCH_PAGES
             MAX_PAGES = 3
+            # Absolute URLs already loaded in this search call. Guards against
+            # a Next control that points at the current page (or a cycle).
+            visited_page_urls: set[str] = {page.url}
 
             for page_num in range(1, MAX_PAGES + 1):
                 # Use the working primary selector
@@ -499,13 +639,37 @@ class NaukriAdapter(JobPlatformAdapter):
                 for data in page_jobs:
                     yield data
 
-                # Next page
-                next_btn = await page.query_selector('a.styles_btn-secondary__2BqIV')
-                if next_btn:
-                    await next_btn.click()
-                    await asyncio.sleep(4)
-                else:
+                if page_num >= MAX_PAGES:
                     break
+
+                # An empty later page is terminal; do not chase further links.
+                if not job_cards and page_num > 1:
+                    break
+
+                # Next results page via the live pagination control's href.
+                # Naukri's control is an <a> (text "Next", path suffix -2, -3...)
+                # whose hashed CSS class changes between deploys; the previous
+                # hard-coded class never matched and pagination never advanced.
+                next_url = await self._find_next_page_url(page)
+                if not next_url:
+                    break
+                if next_url in visited_page_urls:
+                    logger.info(f"Next page URL already visited, stopping pagination: {next_url}")
+                    break
+
+                logger.info(f"Advancing search results page {page_num} -> {page_num + 1}: {next_url}")
+                try:
+                    await page.goto(next_url, wait_until="load", timeout=60000)
+                except Exception as e:
+                    logger.warning(f"Next page navigation with 'load' failed: {e}, retrying with 'domcontentloaded'")
+                    await page.goto(next_url, wait_until="domcontentloaded", timeout=60000)
+                visited_page_urls.add(next_url)
+                await asyncio.sleep(3)
+                await self._check_security(page)
+                try:
+                    await page.wait_for_selector('.srp-jobtuple-wrapper', timeout=10000)
+                except Exception:
+                    logger.debug("Job cards not immediately visible on next results page; continuing")
         except Exception as e:
             # Store security exceptions to prevent page closure
             error_msg = str(e).lower()
