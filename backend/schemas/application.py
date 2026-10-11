@@ -106,34 +106,6 @@ class ApplicationHistoryResponse(BaseModel):
     total: int
 
 
-class ApplicationLimitsUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    max_hourly_applications: int | None = Field(None, ge=0, description="Maximum applications per hour")
-    max_daily_applications: int | None = Field(None, ge=0, description="Maximum applications per day")
-
-
-class ApplicationLimitsResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    max_hourly_applications: int
-    max_daily_applications: int
-    hourly_used: int
-    daily_used: int
-    hourly_remaining: int
-    daily_remaining: int
-    hourly_percentage: float
-    daily_percentage: float
-
-
-class LimitCheckResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    allowed: bool
-    reason: str | None = None
-    hourly_used: int
-    daily_used: int
-    hourly_remaining: int
-    daily_remaining: int
-
-
 class ReconcileStaleExternalsResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # Rule 1 (E5-R5.3): exact page-chrome signature matches.

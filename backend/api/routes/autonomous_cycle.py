@@ -37,6 +37,8 @@ async def start_autonomous_cycle(
         )
 
     try:
+        # E5-R10: max_applications is not enforced as an application-count
+        # cap. The cycle processes every eligible matching job.
         cycle = AutonomousCycle(max_applications=request.max_applications, dry_run=False, enable_cli_output=False)
     except Exception:
         _runtime.fail("Unable to initialize autonomous cycle.")

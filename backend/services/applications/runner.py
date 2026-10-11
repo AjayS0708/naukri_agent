@@ -13,7 +13,6 @@ from backend.models.ai_queue import AIQueueItem
 from backend.schemas.agent import AgentState
 from backend.services.agent_state import AgentStateManager
 from backend.services.applications.service import ApplicationService, SafetyGateError
-from backend.services.applications.limits import ApplicationLimitService
 from backend.schemas.application import (
     ApplicationStatus,
     ApplicationMethod,
@@ -49,7 +48,6 @@ class ApplicationRunner:
         self.session = session
         self.state_manager = state_manager
         self.application_service = ApplicationService(session)
-        self.limit_service = ApplicationLimitService(session)
         self.adapter = NaukriAdapter(browser_type=get_settings().browser_type)
         self.ai_provider = GeminiProvider()
         self._stop_requested = False
@@ -248,14 +246,7 @@ class ApplicationRunner:
             ApplicationStatus.EXTERNAL_APPLICATION,
             ApplicationStatus.NEEDS_ATTENTION,
         ):
-            logger.info("Job %s has an unresolved prior attempt; manual reset required", job_id)
-            return "SKIPPED"
-
-        # Check application limits
-        limit_check = self.limit_service.check_limits()
-        if not limit_check.allowed:
-            logger.info(f"Job {job_id} blocked by application limits: {limit_check.reason}")
-            self.application_service.record_application_skip(job, limit_check.reason)
+            logger.info(f"Job {job_id} has an unresolved prior attempt; manual reset required")
             return "SKIPPED"
 
         # Open job page

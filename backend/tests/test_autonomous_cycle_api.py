@@ -2,14 +2,13 @@
 Checkpoint E3 — Tests for autonomous cycle control API.
 
 These tests verify:
-- Valid POST requests are accepted
-- Invalid max_applications is rejected
-- Client cannot control Gemini budget
+- Valid POST requests are accepted (with or without max_applications)
 - Concurrent requests return 409
 - Lock is released after execution
 - Status endpoint works correctly
 - No secrets are exposed
 - API uses the extracted AutonomousCycleService
+E5-R10: max_applications is optional and ignored (no application-count cap).
 """
 import pytest
 import asyncio
@@ -30,7 +29,7 @@ def mock_autonomous_cycle_run():
     """Mock the AutonomousCycle.run() to avoid actual execution in all tests."""
     async def fast_run():
         return {"status": "COMPLETED", "run_id": 1, "stats": {}}
-    
+
     with patch('backend.api.routes.autonomous_cycle.AutonomousCycle') as mock_cycle:
         mock_instance = AsyncMock()
         mock_instance.run = fast_run
@@ -42,49 +41,43 @@ class TestAutonomousCycleStart:
     def test_valid_post_accepted(self, client: TestClient) -> None:
         """A valid POST request to start a cycle should be accepted."""
         response = client.post("/api/autonomous-cycle/run", json={"max_applications": 2})
-        # The endpoint should return 200 or 202 (accepted)
         assert response.status_code in [200, 202]
 
-    def test_invalid_max_applications_rejected(self, client: TestClient) -> None:
-        """Invalid max_applications should be rejected with 422."""
-        response = client.post("/api/autonomous-cycle/run", json={"max_applications": 0})
-        assert response.status_code == 422
-
-    def test_max_applications_upper_bound(self, client: TestClient) -> None:
-        """max_applications cannot exceed 10."""
-        response = client.post("/api/autonomous-cycle/run", json={"max_applications": 11})
-        assert response.status_code == 422
-
-    def test_negative_max_applications_rejected(self, client: TestClient) -> None:
-        """Negative max_applications should be rejected."""
-        response = client.post("/api/autonomous-cycle/run", json={"max_applications": -1})
-        assert response.status_code == 422
-
-    def test_missing_max_applications_defaults(self, client: TestClient) -> None:
-        """Missing max_applications should use default value."""
+    def test_empty_body_accepted(self, client: TestClient) -> None:
+        """Empty body is accepted (E5-R10: no application-count cap)."""
         response = client.post("/api/autonomous-cycle/run", json={})
         assert response.status_code in [200, 202]
+
+    def test_null_max_applications_accepted(self, client: TestClient) -> None:
+        """max_applications: null is accepted (ignored field)."""
+        response = client.post("/api/autonomous-cycle/run", json={"max_applications": None})
+        assert response.status_code in [200, 202]
+
+    def test_unknown_field_rejected(self, client: TestClient) -> None:
+        """Unknown fields are still rejected (extra=forbid)."""
+        response = client.post(
+            "/api/autonomous-cycle/run",
+            json={"max_applications": 2, "gemini_budget": 100}
+        )
+        assert response.status_code == 422
 
 
 class TestAutonomousCycleConcurrency:
     def test_concurrent_post_returns_409(self, client: TestClient) -> None:
         """A second POST while a cycle is running should return 409."""
-        # Mock the cycle.run() to take some time
         async def slow_run():
-            await asyncio.sleep(0.5)  # Simulate a running cycle
+            await asyncio.sleep(0.5)
             return {"status": "COMPLETED", "run_id": 1, "stats": {}}
-        
+
         with patch('backend.api.routes.autonomous_cycle.AutonomousCycle') as mock_cycle:
             mock_instance = AsyncMock()
             mock_instance.run = slow_run
             mock_cycle.return_value = mock_instance
-            
-            # First request should succeed
-            response1 = client.post("/api/autonomous-cycle/run", json={"max_applications": 2})
+
+            response1 = client.post("/api/autonomous-cycle/run", json={})
             assert response1.status_code in [200, 202]
 
-            # Second request should return 409 (cycle is still running)
-            response2 = client.post("/api/autonomous-cycle/run", json={"max_applications": 2})
+            response2 = client.post("/api/autonomous-cycle/run", json={})
             assert response2.status_code == 409
 
 
@@ -115,7 +108,7 @@ class TestAutonomousCycleStatus:
 class TestAutonomousCycleSecurity:
     def test_no_secrets_in_response(self, client: TestClient) -> None:
         """Autonomous cycle responses should not expose secrets."""
-        response = client.post("/api/autonomous-cycle/run", json={"max_applications": 2})
+        response = client.post("/api/autonomous-cycle/run", json={})
         if response.status_code in [200, 202]:
             data = response.json()
             FORBIDDEN_KEYS = {
@@ -136,12 +129,10 @@ class TestAutonomousCycleSecurity:
 
     def test_client_cannot_control_gemini_budget(self, client: TestClient) -> None:
         """The request schema should not allow gemini_budget parameter."""
-        # Try to send gemini_budget - should be rejected by schema validation
         response = client.post(
             "/api/autonomous-cycle/run",
-            json={"max_applications": 2, "gemini_budget": 100}
+            json={"gemini_budget": 100}
         )
-        # Should fail validation because gemini_budget is not in the schema
         assert response.status_code == 422
 
 

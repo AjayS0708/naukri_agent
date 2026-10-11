@@ -18,10 +18,12 @@ class AutonomousCycleRuntime:
     def lock_held(self) -> bool:
         return self._lock.locked()
 
-    def start(self, max_applications: int) -> Optional[dict[str, Any]]:
+    def start(self, max_applications: Optional[int] = None) -> Optional[dict[str, Any]]:
         """Atomically begin a run, returning None when another run is active."""
         if not self._lock.acquire(blocking=False):
             return None
+        # E5-R10: max_applications is recorded for display only; it is not
+        # enforced as an application-count cap.
         self._active_run = {"run_id": None, "status": "RUNNING", "max_applications": max_applications, "started_at": datetime.now(UTC)}
         return self._active_run.copy()
 

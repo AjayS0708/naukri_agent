@@ -10,7 +10,6 @@ from backend.schemas.matching import (
     JobPreferenceUpdate, JobPreferenceResponse,
     EvaluateJobRequest, MatchDecision
 )
-from backend.schemas.application import ApplicationLimitsResponse
 from backend.models.profile import Profile
 from backend.models.job import Job
 from backend.schemas.profile import ProfileStatus
@@ -45,8 +44,6 @@ def update_preferences(req: JobPreferenceUpdate, db: Session = Depends(get_db)):
     pref.employment_types = req.employment_types
     pref.min_salary_lpa = req.min_salary_lpa
     pref.aggressiveness = req.aggressiveness.value
-    pref.max_daily_applications = req.max_daily_applications
-    pref.max_hourly_applications = req.max_hourly_applications
     
     db.commit()
     db.refresh(pref)

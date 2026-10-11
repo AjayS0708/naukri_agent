@@ -47,7 +47,6 @@ class DecisionReasonCode(StrEnum):
     PREVIOUS_POSITIVE_FEEDBACK = "PREVIOUS_POSITIVE_FEEDBACK"
     
     # System limits
-    APPLICATION_LIMIT_REACHED = "APPLICATION_LIMIT_REACHED"
     AI_QUOTA_EXHAUSTED = "AI_QUOTA_EXHAUSTED"
     
     # Unknown/attention needed

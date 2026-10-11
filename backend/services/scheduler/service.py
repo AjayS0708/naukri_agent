@@ -15,7 +15,6 @@ from backend.models.matching import JobPreference
 from backend.models.ai import JobAnalysisModel
 from backend.services.discovery.service import DiscoveryService
 from backend.services.agent_state import AgentStateManager
-from backend.services.applications.limits import ApplicationLimitService
 from backend.services.applications.runner import ApplicationRunner
 from backend.services.gemini.queue import AIQueueService
 from backend.services.gemini.provider import GeminiProvider
@@ -265,21 +264,7 @@ class SchedulerService:
             logger.info("scheduler_skip_discovery_agent_busy", extra={"state": current_state.value})
             return
 
-        # Check application limits before starting discovery
-        db = SessionLocal()
-        try:
-            limit_service = ApplicationLimitService(db)
-            limit_check = limit_service.check_limits()
-
-            if not limit_check.allowed:
-                logger.info("scheduler_skip_discovery_limits_reached", extra={
-                    "reason": limit_check.reason,
-                    "hourly_used": limit_check.hourly_used,
-                    "daily_used": limit_check.daily_used
-                })
-                return
-        finally:
-            db.close()
+        # E5-R10: no hourly/daily application-count gate before discovery.
 
         # Initialize cycle statistics
         cycle_stats = {

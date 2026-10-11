@@ -27,7 +27,6 @@ class SkipReason(StrEnum):
     SUSPICIOUS_JOB = "SUSPICIOUS_JOB"
     COMPANY_UNIDENTIFIED = "COMPANY_UNIDENTIFIED"
     INSUFFICIENT_RELEVANCE = "INSUFFICIENT_RELEVANCE"
-    APPLICATION_LIMIT_REACHED = "APPLICATION_LIMIT_REACHED"
     PROFILE_NOT_CONFIRMED = "PROFILE_NOT_CONFIRMED"
     MISSING_REQUIRED_DATA = "MISSING_REQUIRED_DATA"
     UNKNOWN = "UNKNOWN"
@@ -42,8 +41,6 @@ class JobPreferenceBase(BaseModel):
     it_keyword_list: list[str] = Field(default_factory=list)
     min_salary_lpa: float | None = None
     aggressiveness: Aggressiveness = Field(default=Aggressiveness.BALANCED)
-    max_daily_applications: int = Field(default=20, ge=1)
-    max_hourly_applications: int = Field(default=4, ge=1)
 
 
 class JobPreferenceResponse(JobPreferenceBase):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Autonomous Cycle Command - CHECKPOINT C / E3
+Autonomous Cycle Command - CHECKPOINT C / E3 / E5-R10
 
 This script is a thin CLI wrapper around the AutonomousCycleService.
 The actual autonomous cycle logic is in backend/services/autonomous_cycle/service.py.
@@ -10,10 +10,13 @@ services in sequence with the required constraints:
 discovery -> hard filters -> AI queue -> Gemini -> final safety gate -> ApplicationRunner
 
 It supports:
-- --max-applications N: limit on real applications (default 1)
 - --dry-run: discovery and analysis only, no Apply clicks or application records
-- --max-jobs N: cap on jobs inspected per run
-- --max-cards N: cap on cards scanned per run (default 150)
+- --max-jobs N: optional soft cap on jobs inspected per run (default: unlimited)
+- --max-cards N: cap on cards scanned per run (default: 150)
+
+--max-applications is accepted for CLI compatibility but is NOT enforced as an
+application-count cap (E5-R10). Every eligible matching job is processed until
+the queue is empty or a genuine blocker (AUTH/SECURITY) stops the run.
 
 No input() prompts. Exit code 0 on normal completion, non-zero on AUTH/SECURITY/critical stop.
 """
@@ -31,8 +34,8 @@ def main():
     parser.add_argument(
         "--max-applications",
         type=int,
-        default=1,
-        help="Maximum number of real applications to perform (default: 1)"
+        default=None,
+        help="Accepted for compatibility; NOT enforced as an application-count cap (E5-R10)",
     )
     parser.add_argument(
         "--dry-run",
@@ -43,7 +46,7 @@ def main():
         "--max-jobs",
         type=int,
         default=None,
-        help="Cap on jobs inspected per run (default: unlimited)"
+        help="Optional soft cap on jobs inspected per run (default: unlimited)"
     )
     parser.add_argument(
         "--max-cards",
@@ -71,3 +74,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

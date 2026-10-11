@@ -59,11 +59,9 @@ export function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Autonomous cycle state (E3)
-  const MAX_APPLICATION_OPTIONS = Array.from({ length: 10 }, (_, i) => i + 1);
   const [cycleStatus, setCycleStatus] = useState<AutonomousCycleStatusResponse | null>(null);
   const [cycleLoading, setCycleLoading] = useState(false);
   const [showRunConfirmation, setShowRunConfirmation] = useState(false);
-  const [maxApplications, setMaxApplications] = useState(1);
   const [startCycleLoading, setStartCycleLoading] = useState(false);
   const [cycleConflict, setCycleConflict] = useState(false);
 
@@ -189,8 +187,8 @@ export function App() {
     setStartCycleLoading(true);
     setCycleConflict(false);
 
-    try {
-      const result = await startAutonomousCycle({ max_applications: maxApplications });
+try {
+      const result = await startAutonomousCycle({});
       setCycleStatus({
         active_state: "RUNNING",
         lock_held: true,
@@ -217,11 +215,6 @@ export function App() {
 
   const handleCancelRunCycle = () => {
     setShowRunConfirmation(false);
-  };
-
-  const handleMaxApplicationsChange = (value: number) => {
-    if (!MAX_APPLICATION_OPTIONS.includes(value)) return;
-    setMaxApplications(value);
   };
 
   const handleNavClick = (page: typeof currentPage) => {
@@ -389,35 +382,19 @@ export function App() {
                       <li>Discover jobs from Naukri</li>
                       <li>Apply deterministic hard filters</li>
                       <li>Evaluate candidates with Gemini AI</li>
-                      <li><strong>Submit real Naukri applications</strong> (up to {maxApplications})</li>
+                      <li><strong>Submit real Naukri applications</strong> to every eligible matching job</li>
                     </ul>
-                    <label className="field" style={{ marginBottom: "16px" }}>
-                      <span>Maximum applications</span>
-                      <select
-                        value={maxApplications}
-                        onChange={(event) => handleMaxApplicationsChange(Number(event.target.value))}
-                        disabled={startCycleLoading}
-                        aria-label="Maximum applications per cycle"
-                      >
-                        {MAX_APPLICATION_OPTIONS.map((option) => (
-                          <option key={option} value={option}>
-                            {option}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <p className="warning-text" style={{ marginTop: "0" }}>
-                      {maxApplications} real Naukri application{maxApplications === 1 ? "" : "s"} will be attempted.
-                    </p>
-                    <p>Gemini budget is internally derived as {maxApplications * 2} for candidate evaluation.</p>
                     <p>All existing safety rules will be enforced:</p>
                     <ul>
                       <li>Duplicate protection</li>
                       <li>External application boundary</li>
                       <li>Post-click evidence verification</li>
                       <li>CAPTCHA/security challenge handling</li>
-                      <li>max_applications hard cap</li>
+                      <li>Truthful APPLIED confirmation only</li>
                     </ul>
+                    <p className="warning-text" style={{ marginTop: "0" }}>
+                      The run continues until every eligible matching job is processed or a genuine blocker stops it. There is no hourly or daily application-count cap.
+                    </p>
                     <p className="warning-text">Only one autonomous cycle can run at a time.</p>
                   </div>
                   <div className="modal-footer">

@@ -93,13 +93,13 @@ export interface NeedsAttentionResponse {
 // ── Autonomous Cycle types (Checkpoint E3) ───────────────────────────────
 
 export interface AutonomousCycleStartRequest {
-  max_applications: number;
+  max_applications?: number | null;
 }
 
 export interface AutonomousCycleStartResponse {
   run_id: number | null;
   status: string;
-  max_applications: number;
+  max_applications: number | null;
   message: string;
 }
 

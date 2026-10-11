@@ -55,8 +55,6 @@ export function JobPreferences() {
                 employment_types: splitStr(data.employment_types),
                 min_salary_lpa: data.min_salary_lpa ? parseFloat(data.min_salary_lpa) : null,
                 aggressiveness: data.aggressiveness,
-                max_daily_applications: 20,
-                max_hourly_applications: 4,
             };
 
             await apiRequest("/matching/preferences", {

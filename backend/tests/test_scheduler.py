@@ -491,14 +491,9 @@ class TestSchedulerService:
             mock_session.close = MagicMock()
             mock_session_local.return_value = mock_session
 
-            with patch('backend.services.scheduler.service.ApplicationLimitService') as mock_limit_class:
-                mock_limit_service = MagicMock()
-                mock_limit_service.check_limits.return_value = MagicMock(allowed=True)
-                mock_limit_class.return_value = mock_limit_service
+            await scheduler_service._run_discovery_task()
 
-                await scheduler_service._run_discovery_task()
-
-                scheduler_service.discovery_service.run_discovery.assert_called_once()
+            scheduler_service.discovery_service.run_discovery.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_run_discovery_task_skip_when_busy(self, scheduler_service, state_manager):
@@ -521,13 +516,8 @@ class TestSchedulerService:
             mock_session.close = MagicMock()
             mock_session_local.return_value = mock_session
 
-            with patch('backend.services.scheduler.service.ApplicationLimitService') as mock_limit_class:
-                mock_limit_service = MagicMock()
-                mock_limit_service.check_limits.return_value = MagicMock(allowed=True)
-                mock_limit_class.return_value = mock_limit_service
-
-                with patch('backend.services.scheduler.service.logger'):
-                    await scheduler_service._run_discovery_task()
+            with patch('backend.services.scheduler.service.logger'):
+                await scheduler_service._run_discovery_task()
 
 
 class TestPhase9ASchedulerIntegration:
@@ -575,16 +565,11 @@ class TestPhase9ASchedulerIntegration:
         with patch('backend.services.scheduler.service.SessionLocal') as mock_session_local:
             mock_session_local.return_value = mock_db
 
-            with patch('backend.services.scheduler.service.ApplicationLimitService') as mock_limit_class:
-                mock_limit_service = MagicMock()
-                mock_limit_service.check_limits.return_value = MagicMock(allowed=True)
-                mock_limit_class.return_value = mock_limit_service
+            # Run the full cycle
+            await scheduler_service._run_discovery_task()
 
-                # Run the full cycle
-                await scheduler_service._run_discovery_task()
-
-                # Verify discovery was called (first step of Phase 9A)
-                scheduler_service.discovery_service.run_discovery.assert_called_once()
+            # Verify discovery was called (first step of Phase 9A)
+            scheduler_service.discovery_service.run_discovery.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_phase_9a_hard_filter_method_exists(self, scheduler_service, mock_db):
@@ -678,38 +663,33 @@ class TestPhase9ASchedulerIntegration:
         with patch('backend.services.scheduler.service.SessionLocal') as mock_session_local:
             mock_session_local.return_value = mock_db
 
-            with patch('backend.services.scheduler.service.ApplicationLimitService') as mock_limit_class:
-                mock_limit_service = MagicMock()
-                mock_limit_service.check_limits.return_value = MagicMock(allowed=True)
-                mock_limit_class.return_value = mock_limit_service
+            # Patch internal methods to verify they're called
+            with patch.object(scheduler_service, '_apply_hard_filters_and_enqueue', new_callable=AsyncMock) as mock_filter:
+                mock_filter.return_value = {
+                    "discovered": 0,
+                    "hard_filtered": 0,
+                    "queued": 0,
+                    "errors": []
+                }
 
-                # Patch internal methods to verify they're called
-                with patch.object(scheduler_service, '_apply_hard_filters_and_enqueue', new_callable=AsyncMock) as mock_filter:
-                    mock_filter.return_value = {
-                        "discovered": 0,
-                        "hard_filtered": 0,
-                        "queued": 0,
+                with patch.object(scheduler_service, '_process_ai_queue_items', new_callable=AsyncMock) as mock_ai:
+                    mock_ai.return_value = {
+                        "processed": 0,
+                        "quota_blocked": 0,
                         "errors": []
                     }
 
-                    with patch.object(scheduler_service, '_process_ai_queue_items', new_callable=AsyncMock) as mock_ai:
-                        mock_ai.return_value = {
-                            "processed": 0,
-                            "quota_blocked": 0,
+                    with patch.object(scheduler_service, '_invoke_application_runner', new_callable=AsyncMock) as mock_app:
+                        mock_app.return_value = {
+                            "candidates": 0,
+                            "applied": 0,
                             "errors": []
                         }
 
-                        with patch.object(scheduler_service, '_invoke_application_runner', new_callable=AsyncMock) as mock_app:
-                            mock_app.return_value = {
-                                "candidates": 0,
-                                "applied": 0,
-                                "errors": []
-                            }
+                        await scheduler_service._run_discovery_task()
 
-                            await scheduler_service._run_discovery_task()
-
-                            # Verify all phases were called in order
-                            scheduler_service.discovery_service.run_discovery.assert_called_once()
-                            mock_filter.assert_called_once()
-                            mock_ai.assert_called_once()
-                            mock_app.assert_called_once()
+                        # Verify all phases were called in order
+                        scheduler_service.discovery_service.run_discovery.assert_called_once()
+                        mock_filter.assert_called_once()
+                        mock_ai.assert_called_once()
+                        mock_app.assert_called_once()

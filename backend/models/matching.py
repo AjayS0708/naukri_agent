@@ -26,9 +26,6 @@ class JobPreference(Base):
     min_salary_lpa: Mapped[Optional[float]] = mapped_column(Integer, nullable=True)
     aggressiveness: Mapped[str] = mapped_column(String(32), default="BALANCED") 
     
-    max_daily_applications: Mapped[int] = mapped_column(Integer, default=20)
-    max_hourly_applications: Mapped[int] = mapped_column(Integer, default=4)
-    
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

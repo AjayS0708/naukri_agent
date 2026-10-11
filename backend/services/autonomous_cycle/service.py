@@ -14,11 +14,12 @@ No automation logic is duplicated.
 """
 
 import asyncio
+import re
 from datetime import UTC, datetime
 from typing import Optional
 
 from sqlalchemy.orm import Session
-from sqlalchemy import case, select
+from sqlalchemy import select
 
 from backend.database.database import SessionLocal
 from backend.services.agent_state import AgentStateManager
@@ -26,7 +27,6 @@ from backend.services.discovery.service import DiscoveryService
 from backend.services.matching.engine import MatchEngine
 from backend.services.gemini.queue import AIQueueService
 from backend.services.applications.runner import ApplicationRunner
-from backend.services.applications.limits import ApplicationLimitService
 from backend.services.applications.service import ApplicationService
 from backend.models.profile import Profile
 from backend.models.matching import JobPreference
@@ -86,6 +86,274 @@ def application_mode_rank(job: Job) -> int:
     if mode == "EXTERNAL":
         return 2
     return 1
+
+
+def interest_priority_rank(job: Job) -> int:
+    """Ascending rank for interest-tier prioritization (E5-R10/E5-R10B).
+
+    0 = Data Analytics / BI / reporting / visualization (highest interest)
+    1 = Data Engineering / ETL / Cloud / AI-ML / Data Science
+    2 = Graduate engineering / fresher software engineering / trainee / apprenticeship
+    3 = Other eligible roles that passed hard filters
+
+    E5-R10B: word-boundary multi-token phrases plus HARD role exclusions
+    (Sales/Support/Admin/Managerial/Creative/Trade) that always force rank 3
+    so domain keywords (data engineer, analytics, aws, tableau) cannot promote
+    sales/support titles. Soft exclusions (architect/consultant) only demote
+    when no clean multi-token target phrase hits. Legitimate IC target roles
+    still classify by clean multi-token matches. Within a tier, native Naukri
+    Apply, freshness, and match score remain the secondary ranking criteria.
+    Not a count cap.
+    """
+    title = (job.title or "").lower().strip()
+    if not title:
+        return 3
+
+    # HARD role exclusions: Sales/Support/Admin/Managerial/Creative/Trade and
+    # pure non-target professions. These ALWAYS force rank 3 even when a
+    # domain keyword (data engineer, analytics, aws, tableau) appears in the
+    # same title — e.g. "Data Engineer Sales", "Analytics Sales Manager",
+    # "Video Analytics Engineer" must never inherit a target tier.
+    hard_exclusion_patterns = (
+        r"\bsales\b",
+        r"\bselling\b",
+        r"\bbiz dev\b",
+        r"\bbusiness development\b",
+        r"\bsupport\b",
+        r"\bhelp ?desk\b",
+        r"\bcustomer (support|success|service|care)\b",
+        r"\baccount (manager|executive|head)\b",
+        r"\brelationship manager\b",
+        r"\bchannel sales\b",
+        r"\bpre-?sales\b",
+        r"\bpresales\b",
+        r"\bmarketing\b",
+        r"\bad operations\b",
+        r"\badops\b",
+        r"\brecruiter\b",
+        r"\brecruitment\b",
+        r"\bhr\b",
+        r"\bhuman resources\b",
+        r"\badmin(istrator|istration)?\b",
+        r"\boffice admin\b",
+        r"\bfacilities\b",
+        r"\breceptionist\b",
+        r"\bsecretary\b",
+        r"\bfinance\b",
+        r"\bvideo\b",
+        r"\bgraphic designer\b",
+        r"\bui/?ux designer\b",
+        r"\bproduct manager\b",
+        r"\bdelivery manager\b",
+        r"\bengineering manager\b",
+        r"\btech(nical)? lead\b",
+        r"\bteam lead(er)?\b",
+        r"\bhead of\b",
+        r"\bdirector\b",
+        r"\bchief\b",
+        r"\bmanager\b",
+        r"\bmanaging\b",
+        r"\bprincipal engineer\b",
+        r"\bstaff engineer\b",
+        r"\btrainer\b",
+        r"\btraining\b",
+        r"\binstructor\b",
+        r"\bteacher\b",
+        r"\bcontent writer\b",
+        r"\bcopywriter\b",
+        r"\btechnical writer\b",
+        r"\bsecurity analyst\b",
+        r"\bcyber ?security\b",
+        r"\bnetwork engineer\b",
+        r"\bsystem admin\b",
+        r"\bsysadmin\b",
+        r"\bqa engineer\b",
+        r"\bquality assurance\b",
+        r"\bmanual tester\b",
+        r"\btest engineer\b",
+        r"\bautomation tester\b",
+        r"\bmobile (developer|engineer)\b",
+        r"\bsalesforce\b",
+        r"\bservice ?now\b",
+        r"\bhubspot\b",
+        r"\bdata entry\b",
+        r"\bclerk\b",
+        r"\bpeon\b",
+        r"\bhelper\b",
+        r"\blabour\b",
+        r"\blabor\b",
+        r"\bfield (executive|sales)\b",
+        r"\btelecaller\b",
+        r"\bcall cent(er|re)\b",
+        r"\bchat support\b",
+        r"\bvoice support\b",
+        r"\bmechanical engineer\b",
+        r"\bcivil engineer\b",
+        r"\belectrical engineer\b",
+        r"\bindustrial engineer\b",
+        r"\bproduction engineer\b",
+        r"\bdoctor\b",
+        r"\bnurse\b",
+        r"\bpharmacist\b",
+        r"\baccountant\b",
+        r"\baccounting\b",
+        r"\binsurance\b",
+        r"\bbank(er|ing)?\b",
+    )
+
+    # SOFT exclusions: advisory/consulting titles that can legitimately
+    # coexist with a clean target-domain phrase (Tableau Consultant,
+    # Cloud Architect, Solutions Architect). Only force rank 3 when no
+    # positive multi-token phrase hits.
+    soft_exclusion_patterns = (
+        r"\barchitect\b",
+        r"\bconsultant\b",
+        r"\badvisor\b",
+        r"\bstrategist\b",
+    )
+
+    # Positive multi-token phrases only (no bare 'analytics', 'aws',
+    # 'dashboard', 'get ', or bare 'software engineer' in manager titles).
+    p1_phrases = (
+        r"\bdata analyst\b",
+        r"\bdata analytics\b",
+        r"\banalytics engineer\b",
+        r"\banalytics developer\b",
+        r"\banalytics consultant\b",
+        r"\banalytics specialist\b",
+        r"\banalytics scientist\b",
+        r"\bproduct analyst\b",
+        r"\bmarketing analyst\b",
+        r"\bmarketing analytics\b",
+        r"\bbusiness analyst\b",
+        r"\bbusiness analytics\b",
+        r"\bbusiness intelligence\b",
+        r"\bbi developer\b",
+        r"\bbi engineer\b",
+        r"\bbi consultant\b",
+        r"\bbi analyst\b",
+        r"\bpower bi\b",
+        r"\btableau\b(?!.*\b(sales|support|admin|manager)\b)",
+        r"\blooker\b",
+        r"\bqlik\b",
+        r"\bqlikview\b",
+        r"\bsuperset\b",
+        r"\bmetabase\b",
+        r"\bdata visualization\b",
+        r"\bdata visualisation\b",
+        r"\bdata viz\b",
+        r"\breporting analyst\b",
+        r"\breporting engineer\b",
+        r"\breport developer\b",
+        r"\bsql analyst\b",
+        r"\bsql developer\b",
+        r"\bsql engineer\b",
+        r"\bpython analytics\b",
+        r"\bdashboard developer\b",
+        r"\bdashboard engineer\b",
+        r"\bdashboard designer\b",
+        r"\breporting specialist\b",
+        r"\bdata quality analyst\b",
+        r"\bmi analyst\b",
+        r"\breporting developer\b",
+        r"\btableau developer\b",
+        r"\btableau consultant\b",
+    )
+    p2_phrases = (
+        r"\bdata engineer\b",
+        r"\bdata engineering\b",
+        r"\betl\b",
+        r"\bdata pipeline\b",
+        r"\bdata platform\b",
+        r"\bdata infrastructure\b",
+        r"\bcloud engineer\b",
+        r"\bcloud developer\b",
+        r"\bcloud architect\b",
+        r"\bsolutions architect\b",
+        r"\baws engineer\b",
+        r"\baws developer\b",
+        r"\baws architect\b",
+        r"\bazure engineer\b",
+        r"\bazure developer\b",
+        r"\bazure architect\b",
+        r"\bgcp engineer\b",
+        r"\bgcp developer\b",
+        r"\bgcp architect\b",
+        r"\bgoogle cloud\b",
+        r"\bmachine learning\b(?!.*\bsales\b)",
+        r"\bml engineer\b",
+        r"\bml developer\b",
+        r"\bai/ml\b",
+        r"\bai engineer\b",
+        r"\bai developer\b",
+        r"\bdeep learning\b",
+        r"\bdata science\b",
+        r"\bdata scientist\b",
+        r"\bartificial intelligence\b",
+        r"\bmlops\b",
+        r"\bnlp engineer\b",
+        r"\bcomputer vision\b",
+        r"\bsnowflake\b",
+        r"\bbigquery\b",
+        r"\bredshift\b",
+        r"\bdatabricks\b",
+        r"\bapache spark\b",
+        r"\bkafka\b",
+        r"\bairflow\b",
+        r"\bdbt\b",
+        r"\bhadoop\b",
+    )
+    p3_phrases = (
+        r"\bgraduate engineer\b",
+        r"\bgraduate trainee\b",
+        r"\bgraduate software\b",
+        r"\bfresher software\b",
+        r"\bfresher engineer\b",
+        r"\bsoftware engineer\b(?!.*\b(manager|head|director|vp|chief|lead|principal|staff)\b)",
+        r"\bsoftware developer\b(?!.*\b(manager|head|director|vp|chief|lead|principal|staff)\b)",
+        r"\bsde\b",
+        r"\bswe\b",
+        r"\btrainee engineer\b",
+        r"\btrainee software\b",
+        r"\bapprentice\b",
+        r"\bapprenticeship\b",
+        r"\bintern\b(?!.*\b(sales|support|admin|marketing)\b)",
+        r"\bentry level\b(?!.*\b(sales|support|admin|marketing)\b)",
+        r"\bentry-level\b",
+        r"\bjunior software\b",
+        r"\bjunior engineer\b",
+        r"\bjunior developer\b",
+        r"\bengineering trainee\b",
+        r"\bdeveloper trainee\b",
+        r"\bget engineer\b",
+        r"\bget software\b",
+        r"\bget trainee\b",
+        r"\bgraduate developer\b",
+        r"\bfresher developer\b",
+        r"\btrainee developer\b",
+    )
+
+    # HARD exclusions always win: a sales/support/admin/managerial/creative
+    # title can never inherit a target tier from a lone domain keyword.
+    if any(re.search(p, title) for p in hard_exclusion_patterns):
+        return 3
+
+    has_soft_exclusion = any(re.search(p, title) for p in soft_exclusion_patterns)
+    p1_hit = any(re.search(p, title) for p in p1_phrases)
+    p2_hit = any(re.search(p, title) for p in p2_phrases)
+    p3_hit = any(re.search(p, title) for p in p3_phrases)
+
+    # Soft exclusions (architect/consultant/advisor) only demote when no
+    # clean multi-token target phrase is present.
+    if has_soft_exclusion and not (p1_hit or p2_hit or p3_hit):
+        return 3
+    if p1_hit:
+        return 0
+    if p2_hit:
+        return 1
+    if p3_hit:
+        return 2
+    return 3
 
 # Excluded job ID per rules
 EXCLUDED_JOB_ID = "300926927428"
@@ -158,12 +426,16 @@ class AutonomousCycle:
 
     def __init__(
         self,
-        max_applications: int = 1,
+        max_applications: Optional[int] = None,
         dry_run: bool = False,
         max_jobs: Optional[int] = None,
         max_cards: int = 150,
         enable_cli_output: bool = True,
     ):
+        # E5-R10: max_applications is accepted for API compatibility but is
+        # NOT enforced as an application-count cap. Runs process every
+        # eligible matching job until the queue is exhausted or a genuine
+        # blocker (AUTH/SECURITY/critical error) stops the run.
         self.max_applications = max_applications
         self.dry_run = dry_run
         self.max_jobs = max_jobs
@@ -185,8 +457,9 @@ class AutonomousCycle:
         """Map the recorded stop reason to the documented terminal contract.
 
         README, MASTER_PRD and ARCHITECTURE all state: "Exit code 0 on normal
-        completion, non-zero on AUTH/SECURITY/critical stop." Reaching a
-        configured application limit is a normal completion, not a failure.
+        completion, non-zero on AUTH/SECURITY/critical stop." E5-R10 removed
+        application-count limits; a cycle that exhausts the eligible queue or
+        stops on an explicit stop_is_normal reason completes with exit 0.
         """
         if not self.stop_reason or self.stop_is_normal:
             return 0, "COMPLETED"
@@ -220,17 +493,10 @@ class AutonomousCycle:
                 self._print("ERROR: No job preferences found. Please configure preferences first.")
                 return {"exit_code": 1, "run_id": None, "status": "FAILED", "stats": {}}
 
-            self._print(f"\nStarting autonomous cycle (dry_run={self.dry_run}, max_applications={self.max_applications}, max_jobs={self.max_jobs})")
+            self._print(f"\nStarting autonomous cycle (dry_run={self.dry_run}, max_jobs={self.max_jobs})")
             self._print(f"Profile: {profile.data.get('name', 'Unknown')}")
             self._print(f"Job titles: {', '.join(preferences.job_titles or [])}")
             self._print(f"Locations: {', '.join(preferences.locations or [])}")
-
-            # Check application limits before starting
-            limit_service = ApplicationLimitService(db)
-            limit_check = limit_service.check_limits()
-            if not limit_check.allowed:
-                self._print(f"ERROR: Application limits reached: {limit_check.reason}")
-                return {"exit_code": 2, "run_id": None, "status": "FAILED", "stats": {}}
 
             # Step 1: Discovery
             self._print("\n[1/5] Running discovery...")
@@ -327,7 +593,7 @@ class AutonomousCycle:
                     "stats": {**enqueue_stats, **ai_stats}
                 }
 
-            # Step 4: Run applications with max-applications limit
+            # Step 4: Run applications (E5-R10: no count cap)
             self._print("\n[4/5] Running applications...")
             app_stats = await self._run_applications(db, profile, preferences)
             self._print(f"  Candidates: {app_stats['candidates']}")
@@ -343,8 +609,6 @@ class AutonomousCycle:
 
             self._print("\nSUMMARY")
             self._print("=" * 60)
-            self._print(f"max_applications: {self.max_applications}")
-            self._print(f"Gemini candidate budget: {self.max_applications * 2}")
             self._print(f"Cards scanned: {enqueue_stats['discovered']}")
             self._print(f"Total jobs discovered: {enqueue_stats['discovered']}")
             self._print(f"Skipped on experience: {enqueue_stats['skipped_experience']}")
@@ -507,28 +771,27 @@ class AutonomousCycle:
 
         # D6.2: Bounded Gemini Candidate Evaluation
         if eligible_jobs:
-            # E5-R9: native-first, then freshness-first (newest grounded
-            # posting dates, then most recently discovered), then match score.
-            # Unknown/ambiguous application_mode is never treated as native.
-            # Jobs with an unknown posting date never outrank known-fresh jobs
-            # within the same application-mode tier.
+            # E5-R10: interest priority first, then E5-R9 native-first, then
+            # freshness-first (newest grounded posting dates, then most recently
+            # discovered), then match score. Unknown/ambiguous application_mode
+            # is never treated as native. Jobs with an unknown posting date
+            # never outrank known-fresh jobs within the same interest/mode tier.
+            # No application-count cap is applied here; every eligible job is
+            # enqueued and the run continues until the eligible queue is empty.
             eligible_jobs.sort(
                 key=lambda x: (
+                    interest_priority_rank(x["job"]),
                     application_mode_rank(x["job"]),
                     job_freshness_key(x["job"]),
                     -x["match_score"],
                 )
             )
 
-            gemini_budget = max(1, self.max_applications * 2)
-            selected_jobs = eligible_jobs[:gemini_budget]
-            capped_jobs = eligible_jobs[gemini_budget:]
-
-            for selected in selected_jobs:
+            for selected in eligible_jobs:
                 queue_item = ai_queue_service.enqueue_job(
                     job_id=selected["job"].id,
                     priority=selected["match_score"],
-                    priority_reason=f"Selected as top candidate (Gemini budget={gemini_budget}, max_applications={self.max_applications})",
+                    priority_reason="Selected as eligible candidate (E5-R10: no application-count cap)",
                     queue_source="AUTONOMOUS_CYCLE",
                 )
 
@@ -540,14 +803,6 @@ class AutonomousCycle:
                         selected["salary_pass"], selected["experience_pass"], selected["employment_pass"],
                         "PENDING", "PENDING", "QUEUED (SELECTED)"
                     )
-
-            for other in capped_jobs:
-                stats["capped"] += 1
-                self.tracker.add_decision(
-                    other["job"].id, other["job"].company, other["job"].title, "N/A",
-                    other["salary_pass"], other["experience_pass"], other["employment_pass"],
-                    "N/A", f"D6.2 Gemini budget cap (budget={gemini_budget})", "CAPPED"
-                )
 
         stats["enqueued_queue_item_ids"] = enqueued_queue_item_ids
         return stats
@@ -591,7 +846,12 @@ class AutonomousCycle:
     async def _run_applications(
         self, db: Session, profile: Profile, preferences: JobPreference
     ) -> dict:
-        """Run applications for eligible jobs with max-applications limit."""
+        """Run applications for eligible jobs (E5-R10: no count cap).
+
+        Candidates are ordered interest_priority_rank → application_mode_rank
+        → job_freshness_key → -match_score, matching enqueue order so the
+        apply loop processes the same priority sequence the AI queue used.
+        """
         stats = {
             "candidates": 0,
             "applied": 0,
@@ -622,14 +882,6 @@ class AutonomousCycle:
             self._print("WARNING: No current discovery run or current_run_job_ids, returning no application candidates")
             return stats
 
-        # Freshness-first: process the most recently posted jobs first, and
-        # place jobs with an unknown posting date after all known-fresh jobs.
-        stmt = stmt.order_by(
-            case((Job.posted_at.is_(None), 1), else_=0),
-            Job.posted_at.desc(),
-            Job.discovered_at.desc(),
-        )
-
         if self.max_jobs:
             stmt = stmt.limit(self.max_jobs)
 
@@ -639,18 +891,37 @@ class AutonomousCycle:
         if not eligible_jobs:
             return stats
 
+        # E5-R10B: order candidates identically to enqueue — interest tier,
+        # then native-first application mode, then freshness (newest grounded
+        # posting first; unknown posted_at last), then higher match score.
+        # Match score is read from the persisted AI analysis so the apply loop
+        # does not depend on enqueue-time order alone.
+        match_scores: dict[int, float] = {}
+        job_ids = [job.id for job in eligible_jobs]
+        analyses = db.execute(
+            select(JobAnalysisModel).where(JobAnalysisModel.job_id.in_(job_ids))
+        ).scalars().all()
+        for analysis in analyses:
+            match_scores[analysis.job_id] = analysis.match_score or 0
+
+        eligible_jobs.sort(
+            key=lambda job: (
+                interest_priority_rank(job),
+                application_mode_rank(job),
+                job_freshness_key(job),
+                -match_scores.get(job.id, 0),
+            )
+        )
+
         # E5-R5.2: bounded tolerance for isolated runner errors. One ordinary
         # ERROR is recorded and skipped; the second consecutive ERROR aborts
         # the remaining candidates. Any valid non-ERROR outcome resets the
         # counter. SECURITY/AUTH stops remain immediate and authoritative.
+        # E5-R10: no per-run application-count cap; the loop continues until
+        # every eligible candidate is processed or a genuine blocker stops it.
         consecutive_errors = 0
 
         for job in eligible_jobs:
-            if self.applications_count >= self.max_applications:
-                self.stop_reason = f"Reached max-applications limit ({self.max_applications})"
-                self.stop_is_normal = True
-                break
-
             try:
                 result = await self._process_single_job(db, job, profile, preferences)
 
@@ -747,16 +1018,6 @@ class AutonomousCycle:
             self.tracker.add_decision(
                 job.id, job.company, job.title, "N/A", False, False, False,
                 analysis_model.recommendation or "N/A", "Duplicate", "SKIPPED"
-            )
-            return "SKIPPED"
-
-        limit_service = ApplicationLimitService(db)
-        limit_check = limit_service.check_limits()
-        if not limit_check.allowed:
-            self.stop_reason = f"Application limits reached: {limit_check.reason}"
-            self.tracker.add_decision(
-                job.id, job.company, job.title, "N/A", False, False, False,
-                analysis_model.recommendation or "N/A", limit_check.reason, "SKIPPED"
             )
             return "SKIPPED"
 

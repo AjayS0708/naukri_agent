@@ -75,8 +75,6 @@ def job_preferences(db_session: Session):
         employment_types=["Full-time", "Contract"],
         min_salary_lpa=4.0,
         aggressiveness="BALANCED",
-        max_daily_applications=20,
-        max_hourly_applications=4,
     )
     db_session.add(preferences)
     db_session.commit()
@@ -123,9 +121,9 @@ def _make_analyzed_job(db_session: Session, index: int) -> Job:
     return job
 
 
-def _make_cycle(db_session: Session, jobs, max_applications: int) -> AutonomousCycle:
+def _make_cycle(db_session: Session, jobs) -> AutonomousCycle:
     cycle = AutonomousCycle(
-        max_applications=max_applications, dry_run=False, enable_cli_output=False
+        max_applications=None, dry_run=False, enable_cli_output=False
     )
     cycle.current_discovery_run = DiscoveryRun(
         status="COMPLETED",
@@ -151,15 +149,15 @@ def _unconfirmed_stats() -> dict:
     }
 
 
-class TestBudgetAccounting:
-    """max_applications counts only confirmed APPLIED outcomes (E5-R5.2)."""
+class TestNoApplicationCountCap:
+    """E5-R10: runs process every eligible job; no application-count cap."""
 
     @pytest.mark.asyncio
-    async def test_unconfirmed_submission_not_counted_in_budget(
+    async def test_unconfirmed_submission_not_counted_in_applied(
         self, db_session, confirmed_profile, job_preferences
     ):
         job = _make_analyzed_job(db_session, 0)
-        cycle = _make_cycle(db_session, [job], max_applications=1)
+        cycle = _make_cycle(db_session, [job])
 
         with patch(
             "backend.services.autonomous_cycle.service.ApplicationRunner"
@@ -178,11 +176,11 @@ class TestBudgetAccounting:
         mock_runner.return_value.run_applications.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_external_needs_attention_failed_do_not_consume_budget(
+    async def test_external_needs_attention_failed_continue(
         self, db_session, confirmed_profile, job_preferences
     ):
         jobs = [_make_analyzed_job(db_session, i) for i in range(3)]
-        cycle = _make_cycle(db_session, jobs, max_applications=2)
+        cycle = _make_cycle(db_session, jobs)
 
         with patch.object(
             cycle,
@@ -203,11 +201,13 @@ class TestBudgetAccounting:
         assert cycle.stop_reason is None
 
     @pytest.mark.asyncio
-    async def test_confirmed_applied_consumes_budget_and_stops_at_limit(
+    async def test_all_eligible_jobs_processed_without_count_cap(
         self, db_session, confirmed_profile, job_preferences
     ):
+        """E5-R10: even with max_applications=2, all 3 jobs are processed."""
         jobs = [_make_analyzed_job(db_session, i) for i in range(3)]
-        cycle = _make_cycle(db_session, jobs, max_applications=2)
+        cycle = _make_cycle(db_session, jobs)
+        cycle.max_applications = 2
 
         with patch.object(
             cycle,
@@ -219,12 +219,11 @@ class TestBudgetAccounting:
                 db_session, confirmed_profile, job_preferences
             )
 
-        assert mock_process.await_count == 2
-        assert stats["applied"] == 2
-        assert cycle.applications_count == 2
-        assert cycle.stop_reason is not None
-        assert "max-applications" in cycle.stop_reason
-        assert cycle.stop_is_normal is True
+        assert mock_process.await_count == 3
+        assert stats["applied"] == 3
+        assert cycle.applications_count == 3
+        assert cycle.stop_reason is None
+        assert cycle.stop_is_normal is False
 
 
 class TestBoundedErrorRecovery:
@@ -235,7 +234,7 @@ class TestBoundedErrorRecovery:
         self, db_session, confirmed_profile, job_preferences
     ):
         jobs = [_make_analyzed_job(db_session, i) for i in range(2)]
-        cycle = _make_cycle(db_session, jobs, max_applications=5)
+        cycle = _make_cycle(db_session, jobs)
 
         with patch.object(
             cycle,
@@ -258,7 +257,7 @@ class TestBoundedErrorRecovery:
         self, db_session, confirmed_profile, job_preferences
     ):
         jobs = [_make_analyzed_job(db_session, i) for i in range(3)]
-        cycle = _make_cycle(db_session, jobs, max_applications=5)
+        cycle = _make_cycle(db_session, jobs)
 
         with patch.object(
             cycle,
@@ -283,7 +282,7 @@ class TestBoundedErrorRecovery:
         self, db_session, confirmed_profile, job_preferences
     ):
         jobs = [_make_analyzed_job(db_session, i) for i in range(4)]
-        cycle = _make_cycle(db_session, jobs, max_applications=5)
+        cycle = _make_cycle(db_session, jobs)
 
         with patch.object(
             cycle,
@@ -307,7 +306,7 @@ class TestBoundedErrorRecovery:
         self, db_session, confirmed_profile, job_preferences
     ):
         jobs = [_make_analyzed_job(db_session, i) for i in range(2)]
-        cycle = _make_cycle(db_session, jobs, max_applications=5)
+        cycle = _make_cycle(db_session, jobs)
 
         with patch.object(
             cycle,
@@ -328,7 +327,7 @@ class TestBoundedErrorRecovery:
         self, db_session, confirmed_profile, job_preferences
     ):
         jobs = [_make_analyzed_job(db_session, i) for i in range(2)]
-        cycle = _make_cycle(db_session, jobs, max_applications=5)
+        cycle = _make_cycle(db_session, jobs)
 
         with patch.object(
             cycle,
@@ -369,7 +368,7 @@ class TestCandidacyDistinctRows:
                 )
             )
         db_session.commit()
-        cycle = _make_cycle(db_session, [job], max_applications=2)
+        cycle = _make_cycle(db_session, [job])
 
         with patch.object(
             cycle, "_process_single_job", new_callable=AsyncMock, return_value="SKIPPED"
@@ -399,7 +398,7 @@ class TestCandidacyDistinctRows:
             )
         )
         db_session.commit()
-        cycle = _make_cycle(db_session, [job], max_applications=2)
+        cycle = _make_cycle(db_session, [job])
 
         with patch.object(
             cycle, "_process_single_job", new_callable=AsyncMock, return_value="SKIPPED"
@@ -427,7 +426,7 @@ class TestCandidacyDistinctRows:
             )
         )
         db_session.commit()
-        cycle = _make_cycle(db_session, [job], max_applications=2)
+        cycle = _make_cycle(db_session, [job])
 
         with patch.object(
             cycle, "_process_single_job", new_callable=AsyncMock, return_value="SKIPPED"

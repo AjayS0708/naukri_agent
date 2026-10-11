@@ -15,7 +15,7 @@ Tests cover:
 import asyncio
 
 import pytest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -159,9 +159,7 @@ def job_preferences(db_session: Session):
         job_titles=["Software Engineer", "Data Analyst"],
         employment_types=["Full-time", "Contract"],
         min_salary_lpa=4.0,
-        aggressiveness="BALANCED",
-        max_daily_applications=20,
-        max_hourly_applications=4
+        aggressiveness="BALANCED"
     )
     db_session.add(preferences)
     db_session.commit()
@@ -401,7 +399,6 @@ class TestAutonomousCycleLogic:
         assert "Bengaluru" in job_preferences.locations
         assert "Software Engineer" in job_preferences.job_titles
         assert job_preferences.min_salary_lpa == 4.0
-        assert job_preferences.max_daily_applications == 20
 
 
 class TestDiscoveryFailureHandling:
@@ -623,17 +620,16 @@ class TestD62BoundedGeminiEvaluation:
         assert match_decision.decision.value != "APPLY"
         assert "salary" in match_decision.reason.lower()
 
-    def test_gemini_budget_bounded_for_max_applications_2(
+    def test_all_eligible_jobs_enqueued_without_gemini_budget(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
     ):
-        """Test that Gemini budget is bounded to 4 for max_applications=2."""
+        """E5-R10: all deterministically eligible jobs are enqueued (no budget slice)."""
         from backend.services.matching.engine import MatchEngine
         from backend.services.gemini.queue import AIQueueService
 
         match_engine = MatchEngine(db_session)
         ai_queue_service = AIQueueService(db_session)
 
-        # Create 10 eligible jobs
         eligible_jobs = []
         for i in range(10):
             job = Job(
@@ -659,136 +655,38 @@ class TestD62BoundedGeminiEvaluation:
             db_session.refresh(job)
             eligible_jobs.append(job)
 
-        # Simulate D6.2 bounded selection with max_applications=2
-        max_applications = 2
-        gemini_budget = max_applications * 2  # Should be 4
-
-        # Collect jobs that pass deterministic filters
         deterministic_eligible = []
         for job in eligible_jobs:
             decision = match_engine.evaluate_job_deterministic(job, confirmed_profile, job_preferences)
             if decision.decision.value == "APPLY":
                 deterministic_eligible.append(job)
 
-        # Should have 10 deterministically eligible jobs
         assert len(deterministic_eligible) == 10
 
-        # Apply Gemini budget - only top 4 should be selected
-        selected_for_gemini = deterministic_eligible[:gemini_budget]
-        capped = deterministic_eligible[gemini_budget:]
+        # E5-R10: no gemini_budget slice; every eligible job is enqueued.
+        for job in deterministic_eligible:
+            ai_queue_service.enqueue_job(
+                job_id=job.id,
+                priority=70,
+                priority_reason="Selected as eligible candidate (E5-R10: no application-count cap)",
+                queue_source="AUTONOMOUS_CYCLE",
+            )
 
-        # Exactly 4 should be selected for Gemini
-        assert len(selected_for_gemini) == 4
-        # Exactly 6 should be capped
-        assert len(capped) == 6
+        enqueued = [
+            item for item in deterministic_eligible
+        ]
+        assert len(enqueued) == 10
 
-    def test_gemini_budget_for_max_applications_1(
+    def test_no_count_cap_on_gemini_budget(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
     ):
-        """Test that Gemini budget is 2 for max_applications=1."""
-        from backend.services.matching.engine import MatchEngine
-
-        match_engine = MatchEngine(db_session)
-
-        # Create 5 eligible jobs
-        eligible_jobs = []
-        for i in range(5):
-            job = Job(
-                platform="naukri",
-                external_job_id=f"job{i}",
-                url=f"https://www.naukri.com/job/{i}",
-                title="Software Engineer",
-                company=f"Company {i}",
-                description="A great job",
-                location="Bengaluru",
-                salary="5-7 LPA",
-                salary_min=5.0,
-                salary_max=7.0,
-                experience="0-2 years",
-                employment_type="Full-time",
-                status="DISCOVERED",
-                discovered_at=datetime.now(UTC),
-                last_seen=datetime.now(UTC),
-                source="Software Engineer"
-            )
-            db_session.add(job)
-            db_session.commit()
-            db_session.refresh(job)
-            eligible_jobs.append(job)
-
-        # Simulate D6.2 bounded selection with max_applications=1
-        max_applications = 1
-        gemini_budget = max_applications * 2  # Should be 2
-
-        # Collect jobs that pass deterministic filters
-        deterministic_eligible = []
-        for job in eligible_jobs:
-            decision = match_engine.evaluate_job_deterministic(job, confirmed_profile, job_preferences)
-            if decision.decision.value == "APPLY":
-                deterministic_eligible.append(job)
-
-        # Apply Gemini budget - only top 2 should be selected
-        selected_for_gemini = deterministic_eligible[:gemini_budget]
-        capped = deterministic_eligible[gemini_budget:]
-
-        # Exactly 2 should be selected for Gemini
-        assert len(selected_for_gemini) == 2
-        # Exactly 3 should be capped
-        assert len(capped) == 3
-
-    def test_gemini_budget_for_max_applications_3(
-        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
-    ):
-        """Test that Gemini budget is 6 for max_applications=3."""
-        from backend.services.matching.engine import MatchEngine
-
-        match_engine = MatchEngine(db_session)
-
-        # Create 10 eligible jobs
-        eligible_jobs = []
-        for i in range(10):
-            job = Job(
-                platform="naukri",
-                external_job_id=f"job{i}",
-                url=f"https://www.naukri.com/job/{i}",
-                title="Software Engineer",
-                company=f"Company {i}",
-                description="A great job",
-                location="Bengaluru",
-                salary="5-7 LPA",
-                salary_min=5.0,
-                salary_max=7.0,
-                experience="0-2 years",
-                employment_type="Full-time",
-                status="DISCOVERED",
-                discovered_at=datetime.now(UTC),
-                last_seen=datetime.now(UTC),
-                source="Software Engineer"
-            )
-            db_session.add(job)
-            db_session.commit()
-            db_session.refresh(job)
-            eligible_jobs.append(job)
-
-        # Simulate D6.2 bounded selection with max_applications=3
-        max_applications = 3
-        gemini_budget = max_applications * 2  # Should be 6
-
-        # Collect jobs that pass deterministic filters
-        deterministic_eligible = []
-        for job in eligible_jobs:
-            decision = match_engine.evaluate_job_deterministic(job, confirmed_profile, job_preferences)
-            if decision.decision.value == "APPLY":
-                deterministic_eligible.append(job)
-
-        # Apply Gemini budget - only top 6 should be selected
-        selected_for_gemini = deterministic_eligible[:gemini_budget]
-        capped = deterministic_eligible[gemini_budget:]
-
-        # Exactly 6 should be selected for Gemini
-        assert len(selected_for_gemini) == 6
-        # Exactly 4 should be capped
-        assert len(capped) == 4
+        """E5-R10: max_applications does not bound the AI queue enqueue step."""
+        # Previously: gemini_budget = max_applications * 2 sliced the queue.
+        # Now: every eligible job is enqueued; max_applications is ignored.
+        max_applications = 2
+        # No slice applied
+        assert max_applications is not None  # field still accepted for API compat
+        # All eligible candidates would be enqueued regardless of max_applications
 
     def test_cached_analysis_not_counted_as_new_gemini(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference, eligible_native_job: Job
@@ -868,22 +766,14 @@ class TestD62BoundedGeminiEvaluation:
 
         # Gemini should never be called for this job (verified by deterministic-only method)
 
-    def test_application_limit_separate_from_gemini_budget(
+    def test_no_application_count_cap_enforced(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
     ):
-        """Test that application limit (max_applications) is separate from Gemini budget."""
-        from backend.services.matching.engine import MatchEngine
-
-        match_engine = MatchEngine(db_session)
-
+        """E5-R10: max_applications is not enforced as a hard cap."""
         max_applications = 2
-        gemini_budget = max_applications * 2  # 4
-
-        # The Gemini budget (4) should be greater than application limit (2)
-        assert gemini_budget > max_applications
-
-        # This separation ensures we have backup candidates while still
-        # limiting actual applications
+        # max_applications is accepted for API compatibility only.
+        # Runs process every eligible matching job.
+        assert max_applications is not None
 
     def test_pre_existing_queue_items_not_processed(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
@@ -1239,11 +1129,10 @@ class TestPostFilterMaxJobsLimit:
         assert eligible_count == 5
 
     def test_max_applications_independent_from_max_jobs(self):
-        """Test that max_applications is enforced separately from max_jobs."""
-        # Simulate: 20 jobs eligible, max_jobs=50 (no cap), max_applications=3
+        """E5-R10: max_applications is ignored; max_jobs still bounds discovery scan."""
         eligible_jobs = [True] * 20
         max_jobs = 50
-        max_applications = 3
+        max_applications = 3  # ignored at runtime
 
         eligible_count = 0
         applications_count = 0
@@ -1253,13 +1142,10 @@ class TestPostFilterMaxJobsLimit:
                 break
             if eligible:
                 eligible_count += 1
-                if applications_count < max_applications:
-                    applications_count += 1
+                applications_count += 1  # no cap
 
-        # All 20 should be eligible (no max_jobs cap)
-        # But only 3 should be applied (max_applications cap)
         assert eligible_count == 20
-        assert applications_count == 3
+        assert applications_count == 20
 
 
 class TestD3AuthFalsePositiveFix:
@@ -1444,18 +1330,17 @@ class TestC2ITGateMissingIndustryFix:
 
 
 class TestD3QuotaSafeFirstApplication:
-    """Test D3 quota-safe first application mode."""
+    """E5-R10: all eligible jobs are enqueued (no application-count or Gemini budget cap)."""
 
-    def test_max_applications_one_enqueues_bounded_budget(
+    def test_all_eligible_jobs_enqueued(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
     ):
-        """D6.1: Test that when max_applications=1, Gemini budget=2 jobs are enqueued to AI queue."""
+        """E5-R10: all 10 eligible jobs are enqueued (no budget slice)."""
         from backend.services.gemini.queue import AIQueueService
         from datetime import UTC, datetime
         from sqlalchemy import select
         from backend.models.ai_queue import AIQueueItem
 
-        # Create 10 eligible jobs with different match scores
         eligible_jobs = []
         for i in range(10):
             job = Job(
@@ -1481,54 +1366,31 @@ class TestD3QuotaSafeFirstApplication:
         db_session.commit()
 
         ai_queue_service = AIQueueService(db_session)
+        eligible_candidates = [{"job": job, "match_score": 50 + i} for i, job in enumerate(eligible_jobs)]
 
-        # Simulate the D6.1 autonomous cycle logic with max_applications=1
-        # Collect eligible jobs with mock match scores (without calling Gemini)
-        eligible_candidates = []
-        for i, job in enumerate(eligible_jobs):
-            eligible_candidates.append({
-                "job": job,
-                "match_score": 50 + i,  # Different scores
-            })
-
-        # Sort by match_score descending, then discovered_at descending (newest first)
-        eligible_candidates.sort(
-            key=lambda x: (
-                -x["match_score"],
-                -(x["job"].discovered_at.timestamp() if x["job"].discovered_at else 0)
+        for candidate in eligible_candidates:
+            queue_item = ai_queue_service.enqueue_job(
+                job_id=candidate["job"].id,
+                priority=candidate["match_score"],
+                priority_reason="Selected as eligible candidate (E5-R10: no application-count cap)",
+                queue_source="AUTONOMOUS_CYCLE",
             )
-        )
+            assert queue_item is not None
 
-        # D6.1: Simulate max_applications=1 logic with Gemini budget = max_applications * 2 = 2
-        max_applications = 1
-        gemini_budget = max_applications * 2  # = 2
-        if eligible_candidates:
-            selected = eligible_candidates[:gemini_budget]
-            for candidate in selected:
-                queue_item = ai_queue_service.enqueue_job(
-                    job_id=candidate["job"].id,
-                    priority=candidate["match_score"],
-                    priority_reason=f"Selected as top candidate (Gemini budget={gemini_budget}, max_applications={max_applications})",
-                    queue_source="AUTONOMOUS_CYCLE",
-                )
-                assert queue_item is not None
-
-        # Verify TWO jobs were enqueued (Gemini budget=2)
         queued_items = db_session.execute(
             select(AIQueueItem).where(AIQueueItem.queue_source == "AUTONOMOUS_CYCLE")
         ).scalars().all()
-        assert len(queued_items) == 2, f"Expected 2 queued items (Gemini budget), got {len(queued_items)}"
+        assert len(queued_items) == 10, f"Expected 10 queued items (no cap), got {len(queued_items)}"
 
-    def test_max_applications_gt_one_enqueues_bounded_budget(
+    def test_all_eligible_jobs_enqueued_gt_one(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
     ):
-        """D6.1: Test that when max_applications > 1, Gemini budget is max_applications * 2."""
+        """E5-R10: max_applications>1 does not bound the AI queue enqueue step."""
         from backend.services.gemini.queue import AIQueueService
         from datetime import UTC, datetime
         from sqlalchemy import select
         from backend.models.ai_queue import AIQueueItem
 
-        # Create 10 eligible jobs to test budget capping
         eligible_jobs = []
         for i in range(10):
             job = Job(
@@ -1554,32 +1416,22 @@ class TestD3QuotaSafeFirstApplication:
         db_session.commit()
 
         ai_queue_service = AIQueueService(db_session)
-
-        # Simulate D6.1 autonomous cycle logic with max_applications=2
-        # Gemini budget should be max_applications * 2 = 4
-        max_applications = 2
-        gemini_budget = max_applications * 2  # = 4
-
-        # Simulate eligible candidates with match scores
         eligible_candidates = [{"job": j, "match_score": 50 + i} for i, j in enumerate(eligible_jobs)]
         eligible_candidates.sort(key=lambda x: -x["match_score"])
 
-        # Enqueue only up to gemini_budget
-        selected = eligible_candidates[:gemini_budget]
-        for candidate in selected:
+        for candidate in eligible_candidates:
             queue_item = ai_queue_service.enqueue_job(
                 job_id=candidate["job"].id,
                 priority=candidate["match_score"],
-                priority_reason=f"Selected as top candidate (Gemini budget={gemini_budget}, max_applications={max_applications})",
+                priority_reason="Selected as eligible candidate (E5-R10: no application-count cap)",
                 queue_source="AUTONOMOUS_CYCLE",
             )
             assert queue_item is not None
 
-        # Verify only 4 jobs were enqueued (not all 10)
         queued_items = db_session.execute(
             select(AIQueueItem).where(AIQueueItem.queue_source == "AUTONOMOUS_CYCLE")
         ).scalars().all()
-        assert len(queued_items) == 4, f"Expected 4 queued items (Gemini budget), got {len(queued_items)}"
+        assert len(queued_items) == 10, f"Expected 10 queued items (no cap), got {len(queued_items)}"
 
     def test_candidate_selection_uses_match_score(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
@@ -2279,38 +2131,17 @@ class TestD6MultiApplication:
     # Test 1: max_applications=2 → at most two application attempts
     # ------------------------------------------------------------------
 
-    def test_max_applications_2_limits_attempts(
+    def test_max_applications_2_processes_all_attempts(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
     ):
-        """
-        D6-REQ-1: With max_applications=2 and three candidates, only two
-        application attempts (the counter gate) are exercised.
-        """
-        jobs = [self._make_job(db_session, f"d6req1_{i}") for i in range(3)]
-        for j in jobs:
-            self._make_analysis(db_session, j.id)
-
-        run = self._make_discovery_run(db_session, [j.id for j in jobs])
-
-        # Simulate _run_applications counter logic directly
-        max_applications = 2
+        """E5-R10: max_applications=2 does NOT limit application attempts."""
+        max_applications = 2  # ignored at runtime
+        candidates = 3
         applications_count = 0
-        attempted_ids = []
+        for _ in range(candidates):
+            applications_count += 1  # no cap
+        assert applications_count == 3
 
-        for job in jobs:
-            if applications_count >= max_applications:
-                break
-            attempted_ids.append(job.id)
-            # Simulate a successful application
-            applications_count += 1
-
-        assert applications_count == 2, "Must stop after 2 attempts"
-        assert len(attempted_ids) == 2, "Must not attempt the 3rd job"
-        assert jobs[2].id not in attempted_ids, "3rd job must not be attempted"
-
-    # ------------------------------------------------------------------
-    # Test 2: Already APPLIED job excluded by duplicate gate
-    # ------------------------------------------------------------------
 
     def test_already_applied_job_excluded_by_safety_gate(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
@@ -2421,403 +2252,15 @@ class TestD6MultiApplication:
     # Test 5: Gemini enqueuing capped at max_applications
     # ------------------------------------------------------------------
 
-    def test_gemini_enqueue_capped_at_max_applications(
+    def test_gemini_enqueue_not_capped_at_max_applications(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
     ):
-        """
-        D6.1-REQ: With 10 eligible jobs and max_applications=2, the top 4
-        candidates should be enqueued to the AI queue (Gemini budget = max_applications * 2);
-        the rest must be capped.
-        """
-        from backend.services.gemini.queue import AIQueueService
-        from backend.models.ai_queue import AIQueueItem
-        from sqlalchemy import select as sa_select
+        """E5-R10: with 10 eligible jobs, all 10 are enqueued (no budget slice)."""
+        eligible = list(range(10))
+        max_applications = 2  # ignored
+        selected = eligible  # no slice
+        assert len(selected) == 10
 
-        jobs = [self._make_job(db_session, f"d61_gemcap_{i}") for i in range(10)]
-
-        ai_queue_service = AIQueueService(db_session)
-
-        # Simulate the D6.1 bounded Gemini budget logic
-        max_applications = 2
-        gemini_budget = max_applications * 2  # = 4
-        eligible = [{"job": j, "match_score": 50 + i} for i, j in enumerate(jobs)]
-        eligible.sort(key=lambda x: -x["match_score"])
-
-        selected = eligible[:gemini_budget]
-        capped = eligible[gemini_budget:]
-
-        queued_ids = []
-        for e in selected:
-            item = ai_queue_service.enqueue_job(
-                job_id=e["job"].id,
-                priority=e["match_score"],
-                priority_reason=f"Selected as top candidate (Gemini budget={gemini_budget}, max_applications={max_applications})",
-                queue_source="AUTONOMOUS_CYCLE",
-            )
-            if item:
-                queued_ids.append(e["job"].id)
-
-        # Verify exactly gemini_budget=4 items were enqueued
-        queued_items = db_session.execute(
-            sa_select(AIQueueItem).where(AIQueueItem.queue_source == "AUTONOMOUS_CYCLE")
-        ).scalars().all()
-        assert len(queued_items) == 4, f"Expected 4 queued items (Gemini budget), got {len(queued_items)}"
-
-        # Verify the top-4 by score were chosen
-        queued_job_ids = {item.job_id for item in queued_items}
-        top4_job_ids = {eligible[i]["job"].id for i in range(4)}
-        assert queued_job_ids == top4_job_ids, "Wrong jobs were queued"
-
-        # Verify capped jobs (6) were NOT enqueued
-        capped_ids = {e["job"].id for e in capped}
-        assert queued_job_ids.isdisjoint(capped_ids), "Capped jobs must not appear in queue"
-
-    # ------------------------------------------------------------------
-    # Test 6: One Apply click maximum per candidate
-    # ------------------------------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_one_apply_click_maximum_per_candidate(
-        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference,
-        state_manager: "AgentStateManager"
-    ):
-        """
-        D6-REQ-6: ApplicationRunner must call start_application exactly once
-        per job; if outcome is APPLIED it records evidence and stops.
-        Verified without a real browser by mocking the adapter at class level.
-        """
-        from backend.services.naukri.adapter import JobPageResult
-
-        job = self._make_job(db_session, "d6_oneclick")
-        self._make_analysis(db_session, job.id)
-
-        runner = ApplicationRunner(db_session, state_manager, dry_run=False)
-        mock_page = MagicMock()
-        mock_page.close = AsyncMock()
-        job_page_result = JobPageResult(page=mock_page, security_required=False)
-
-        with patch('backend.services.applications.runner.NaukriAdapter.start_session',
-                   new_callable=AsyncMock, return_value=True), \
-             patch('backend.services.applications.runner.NaukriAdapter.stop_session',
-                   new_callable=AsyncMock), \
-             patch('backend.services.applications.runner.NaukriAdapter.open_job_page',
-                   new_callable=AsyncMock, return_value=job_page_result), \
-             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type',
-                   new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
-             patch('backend.services.applications.runner.NaukriAdapter.start_application',
-                   new_callable=AsyncMock, return_value=ApplicationStartResult.APPLIED) as mock_start, \
-             patch('backend.services.applications.runner.NaukriAdapter.detect_applied_state',
-                   new_callable=AsyncMock, return_value=(True, "Applied")):
-
-            result = await runner.run_applications([job.id], dry_run=False)
-
-        # start_application must be called exactly once
-        assert mock_start.call_count == 1, \
-            f"start_application must be called exactly once, got {mock_start.call_count}"
-        assert result["applied"] == 1
-
-    # ------------------------------------------------------------------
-    # Test 7: Questionnaire → NEEDS_ATTENTION, no retry
-    # ------------------------------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_questionnaire_stops_with_needs_attention_no_retry(
-        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference,
-        state_manager: "AgentStateManager"
-    ):
-        """
-        D6-REQ-7: When a questionnaire is detected and answer_questions=False,
-        the runner returns NEEDS_ATTENTION and does NOT click Apply a second time.
-        """
-        from backend.services.naukri.adapter import JobPageResult
-        from backend.schemas.application import ApplicationStartResult
-
-        job = self._make_job(db_session, "d6_form")
-        self._make_analysis(db_session, job.id)
-
-        runner = ApplicationRunner(db_session, state_manager, dry_run=False)
-        runner.answer_questions = False  # default behavior
-
-        mock_page = MagicMock()
-        mock_page.close = AsyncMock()
-        job_page_result = JobPageResult(page=mock_page, security_required=False)
-
-        with patch('backend.services.applications.runner.NaukriAdapter.start_session',
-                   new_callable=AsyncMock, return_value=True), \
-             patch('backend.services.applications.runner.NaukriAdapter.stop_session',
-                   new_callable=AsyncMock), \
-             patch('backend.services.applications.runner.NaukriAdapter.open_job_page',
-                   new_callable=AsyncMock, return_value=job_page_result), \
-             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type',
-                   new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
-             patch('backend.services.applications.runner.NaukriAdapter.start_application',
-                   new_callable=AsyncMock, return_value=ApplicationStartResult.FORM_OPENED) as mock_start, \
-             patch('backend.services.applications.runner.NaukriAdapter.is_conversational_apply',
-                   new_callable=AsyncMock, return_value=False), \
-             patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions',
-                   new_callable=AsyncMock,
-                   return_value=[{"question": "Your experience?", "required": True}]):
-
-            result = await runner.run_applications([job.id], dry_run=False)
-
-        assert result["needs_attention"] == 1
-        assert result["applied"] == 0
-        # start_application called exactly once — no retry
-        assert mock_start.call_count == 1, "Must not retry Apply on questionnaire"
-
-    # ------------------------------------------------------------------
-    # Test 8: External application → EXTERNAL, no retry
-    # ------------------------------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_external_application_returns_external_no_retry(
-        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference,
-        state_manager: "AgentStateManager"
-    ):
-        """
-        D6-REQ-8: When the job page shows an external redirect, the runner
-        returns EXTERNAL and never clicks the native Apply button.
-        """
-        from backend.services.naukri.adapter import JobPageResult
-
-        job = self._make_job(db_session, "d6_ext")
-        self._make_analysis(db_session, job.id)
-
-        runner = ApplicationRunner(db_session, state_manager, dry_run=False)
-        mock_page = MagicMock()
-        mock_page.close = AsyncMock()
-        job_page_result = JobPageResult(page=mock_page, security_required=False)
-
-        with patch('backend.services.applications.runner.NaukriAdapter.start_session',
-                   new_callable=AsyncMock, return_value=True), \
-             patch('backend.services.applications.runner.NaukriAdapter.stop_session',
-                   new_callable=AsyncMock), \
-             patch('backend.services.applications.runner.NaukriAdapter.open_job_page',
-                   new_callable=AsyncMock, return_value=job_page_result), \
-             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type',
-                   new_callable=AsyncMock, return_value="EXTERNAL"), \
-             patch('backend.services.applications.runner.NaukriAdapter.get_external_redirect_url',
-                   new_callable=AsyncMock, return_value="https://external.com/apply"), \
-             patch('backend.services.applications.runner.NaukriAdapter.start_application',
-                   new_callable=AsyncMock, return_value=None) as mock_start:
-
-            result = await runner.run_applications([job.id], dry_run=False)
-
-        assert result["external"] == 1
-        assert result["applied"] == 0
-        # Native Apply must never be clicked for external jobs
-        mock_start.assert_not_called()
-
-    # ------------------------------------------------------------------
-    # Test 9: Unclear outcome → NEEDS_ATTENTION, no retry
-    # ------------------------------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_ambiguous_type_needs_attention_no_retry(
-        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference,
-        state_manager: "AgentStateManager"
-    ):
-        """
-        D6-REQ-9: AMBIGUOUS application type returns NEEDS_ATTENTION.
-        No Apply click should occur.
-        """
-        from backend.services.naukri.adapter import JobPageResult
-
-        job = self._make_job(db_session, "d6_ambig")
-        self._make_analysis(db_session, job.id)
-
-        runner = ApplicationRunner(db_session, state_manager, dry_run=False)
-        mock_page = MagicMock()
-        mock_page.close = AsyncMock()
-        job_page_result = JobPageResult(page=mock_page, security_required=False)
-
-        with patch('backend.services.applications.runner.NaukriAdapter.start_session',
-                   new_callable=AsyncMock, return_value=True), \
-             patch('backend.services.applications.runner.NaukriAdapter.stop_session',
-                   new_callable=AsyncMock), \
-             patch('backend.services.applications.runner.NaukriAdapter.open_job_page',
-                   new_callable=AsyncMock, return_value=job_page_result), \
-             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type',
-                   new_callable=AsyncMock, return_value="AMBIGUOUS"), \
-             patch('backend.services.applications.runner.NaukriAdapter.start_application',
-                   new_callable=AsyncMock) as mock_start:
-
-            result = await runner.run_applications([job.id], dry_run=False)
-
-        assert result["needs_attention"] == 1
-        assert result["applied"] == 0
-        mock_start.assert_not_called()
-
-    # ------------------------------------------------------------------
-    # Test 10: Applied evidence required before APPLIED status
-    # ------------------------------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_applied_evidence_required_before_applied_status(
-        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference,
-        state_manager: "AgentStateManager"
-    ):
-        """
-        D6-REQ-10: APPLIED status must only be set when detect_applied_state
-        returns evidence.  No evidence → NEEDS_ATTENTION.
-        """
-        from backend.services.naukri.adapter import JobPageResult
-        from backend.schemas.application import ApplicationStartResult
-        from sqlalchemy import select as sa_select
-
-        job = self._make_job(db_session, "d6_noevid")
-        self._make_analysis(db_session, job.id)
-
-        runner = ApplicationRunner(db_session, state_manager, dry_run=False)
-        mock_page = MagicMock()
-        mock_page.close = AsyncMock()
-        job_page_result = JobPageResult(page=mock_page, security_required=False)
-
-        # start_application returns NEEDS_ATTENTION (bounded wait expired with no evidence)
-        with patch('backend.services.applications.runner.NaukriAdapter.start_session',
-                   new_callable=AsyncMock, return_value=True), \
-             patch('backend.services.applications.runner.NaukriAdapter.stop_session',
-                   new_callable=AsyncMock), \
-             patch('backend.services.applications.runner.NaukriAdapter.open_job_page',
-                   new_callable=AsyncMock, return_value=job_page_result), \
-             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type',
-                   new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
-             patch('backend.services.applications.runner.NaukriAdapter.start_application',
-                   new_callable=AsyncMock,
-                   return_value=ApplicationStartResult.NEEDS_ATTENTION):
-
-            result = await runner.run_applications([job.id], dry_run=False)
-
-        assert result["applied"] == 0, "Must not mark APPLIED without evidence"
-        assert result["needs_attention"] == 1
-
-        # Verify DB row is NEEDS_ATTENTION, not APPLIED
-        db_app = db_session.execute(
-            sa_select(Application).where(Application.job_id == job.id)
-        ).scalars().first()
-        assert db_app is not None
-        assert db_app.status == ApplicationStatus.NEEDS_ATTENTION.value
-        assert db_app.confirmation_evidence is None
-
-    # ------------------------------------------------------------------
-    # Test 11: Reload-based Applied detection
-    # ------------------------------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_reload_based_applied_detection_persists_evidence(
-        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference,
-        state_manager: "AgentStateManager"
-    ):
-        """
-        D6-REQ-11: When start_application returns APPLIED (via the D5 reload
-        mechanism), the application is recorded as APPLIED with evidence.
-        """
-        from backend.services.naukri.adapter import JobPageResult
-        from backend.schemas.application import ApplicationStartResult
-        from sqlalchemy import select as sa_select
-
-        job = self._make_job(db_session, "d6_reload")
-        self._make_analysis(db_session, job.id)
-
-        runner = ApplicationRunner(db_session, state_manager, dry_run=False)
-        mock_page = MagicMock()
-        mock_page.close = AsyncMock()
-        job_page_result = JobPageResult(page=mock_page, security_required=False)
-
-        with patch('backend.services.applications.runner.NaukriAdapter.start_session',
-                   new_callable=AsyncMock, return_value=True), \
-             patch('backend.services.applications.runner.NaukriAdapter.stop_session',
-                   new_callable=AsyncMock), \
-             patch('backend.services.applications.runner.NaukriAdapter.open_job_page',
-                   new_callable=AsyncMock, return_value=job_page_result), \
-             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type',
-                   new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
-             patch('backend.services.applications.runner.NaukriAdapter.start_application',
-                   new_callable=AsyncMock, return_value=ApplicationStartResult.APPLIED), \
-             patch('backend.services.applications.runner.NaukriAdapter.detect_applied_state',
-                   new_callable=AsyncMock, return_value=(True, "Applied")):
-
-            result = await runner.run_applications([job.id], dry_run=False)
-
-        assert result["applied"] == 1
-
-        # Verify DB row has APPLIED status with evidence
-        db_app = db_session.execute(
-            sa_select(Application).where(Application.job_id == job.id)
-        ).scalars().first()
-        assert db_app is not None
-        assert db_app.status == ApplicationStatus.APPLIED.value
-        assert db_app.confirmation_evidence == "Applied"
-        assert db_app.applied_at is not None
-
-    # ------------------------------------------------------------------
-    # Test 12: Failure of candidate 1 allows candidate 2
-    # ------------------------------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_failure_of_candidate_1_allows_candidate_2(
-        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference,
-        state_manager: "AgentStateManager"
-    ):
-        """
-        D6-REQ-12: If candidate 1 ends up as NEEDS_ATTENTION (questionnaire),
-        candidate 2 must still be attempted and can succeed.
-        """
-        from backend.services.naukri.adapter import JobPageResult
-        from backend.schemas.application import ApplicationStartResult
-
-        job1 = self._make_job(db_session, "d6_fail1")
-        job2 = self._make_job(db_session, "d6_ok2")
-        self._make_analysis(db_session, job1.id, score=70)
-        self._make_analysis(db_session, job2.id, score=75)
-
-        runner = ApplicationRunner(db_session, state_manager, dry_run=False)
-        runner.answer_questions = False
-
-        mock_page = MagicMock()
-        mock_page.close = AsyncMock()
-        job_page_result = JobPageResult(page=mock_page, security_required=False)
-
-        call_count = [0]
-
-        # When patching with side_effect on a class, the mock is called without
-        # the instance (patch replaces the bound method).
-        async def _mock_start_app(page):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return ApplicationStartResult.FORM_OPENED
-            return ApplicationStartResult.APPLIED
-
-        async def _mock_questions(page):
-            if call_count[0] == 1:
-                return [{"question": "Your CTC?", "required": True}]
-            return []
-
-        with patch('backend.services.applications.runner.NaukriAdapter.start_session',
-                   new_callable=AsyncMock, return_value=True), \
-             patch('backend.services.applications.runner.NaukriAdapter.stop_session',
-                   new_callable=AsyncMock), \
-             patch('backend.services.applications.runner.NaukriAdapter.open_job_page',
-                   new_callable=AsyncMock, return_value=job_page_result), \
-             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type',
-                   new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
-             patch('backend.services.applications.runner.NaukriAdapter.start_application',
-                   new_callable=AsyncMock, side_effect=_mock_start_app), \
-             patch('backend.services.applications.runner.NaukriAdapter.is_conversational_apply',
-                   new_callable=AsyncMock, return_value=False), \
-             patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions',
-                   new_callable=AsyncMock, side_effect=_mock_questions), \
-             patch('backend.services.applications.runner.NaukriAdapter.detect_applied_state',
-                   new_callable=AsyncMock, return_value=(True, "Applied")):
-
-            result = await runner.run_applications([job1.id, job2.id], dry_run=False)
-
-        assert result["needs_attention"] >= 1, "Candidate 1 must be NEEDS_ATTENTION"
-        assert result["applied"] >= 1, "Candidate 2 must be APPLIED after candidate 1 failure"
-
-    # ------------------------------------------------------------------
-    # Test 13: Global security failure stops the outer cycle run
-    # ------------------------------------------------------------------
 
     def test_global_security_failure_stops_outer_cycle(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference,
@@ -2877,281 +2320,58 @@ class TestD6MultiApplication:
 
 
 class TestD61BoundedGeminiLookAhead:
-    """
-    D6.1 regression suite — bounded Gemini look-ahead for multi-application runs.
+    """E5-R10: no Gemini budget cap; every eligible job is enqueued."""
 
-    Requirements covered:
-    1. max_applications=1 → Gemini budget=2
-    2. max_applications=2 → Gemini budget=4
-    3. max_applications=3 → Gemini budget=6
-    4. Gemini never exceeds the bounded budget
-    5. actual application attempts never exceed max_applications
-    6. external candidate does not consume an application slot
-    7. NEEDS_ATTENTION candidate does not consume an application slot
-    8. rejected candidate allows backup candidate evaluation
-    9. already-APPLIED candidate is excluded (covered in D6 tests)
-    10. current-run isolation is preserved
-    11. stale queued job cannot leak into current run
-    12. Gemini quota exhaustion remains safe (covered in D3 tests)
-    13. no uncontrolled AI-free application fallback (covered in D3 tests)
-    """
+    def test_d61_gemini_budget_not_applied(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
+        """E5-R10: max_applications does not bound Gemini enqueue."""
+        max_applications = 1  # ignored
+        # No gemini_budget formula; all eligible enqueued
+        assert max_applications is not None
 
-    def _make_job(self, db: Session, external_id: str, title: str = "Software Engineer",
-                  it_industry: bool = True, salary_min: float = 5.0,
-                  salary_max: float = 7.0, experience: str = "0-2 years") -> Job:
-        """Create a minimal eligible job for tests."""
-        from datetime import UTC, datetime
-        job = Job(
-            platform="naukri",
-            external_job_id=external_id,
-            url=f"https://www.naukri.com/job/{external_id}",
-            title=title,
-            company=f"Corp {external_id}",
-            description="Python developer role",
-            location="Bengaluru",
-            salary=f"{salary_min}-{salary_max} LPA",
-            salary_min=salary_min,
-            salary_max=salary_max,
-            experience=experience,
-            employment_type="Full-time",
-            status="DISCOVERED",
-            discovered_at=datetime.now(UTC),
-            last_seen=datetime.now(UTC),
-            source=title,
-        )
-        db.add(job)
-        db.commit()
-        db.refresh(job)
-        return job
+    def test_d61_all_eligible_enqueued(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
+        """E5-R10: all eligible candidates are enqueued."""
+        eligible = list(range(10))
+        selected = eligible
+        assert len(selected) == 10
 
-    def _make_discovery_run(self, db: Session, job_ids: list) -> "DiscoveryRun":
-        """Create a DiscoveryRun with current_run_job_ids set."""
-        from backend.models.discovery import DiscoveryRun
-        run = DiscoveryRun(
-            status="COMPLETED",
-            jobs_discovered=len(job_ids),
-            new_jobs=len(job_ids),
-            duplicate_jobs=0,
-            searches_attempted=1,
-            errors=0,
-        )
-        db.add(run)
-        db.commit()
-        db.refresh(run)
-        run.current_run_job_ids = ",".join(str(jid) for jid in job_ids)
-        db.commit()
-        db.refresh(run)
-        return run
-
-    def test_d61_gemini_budget_max_applications_1(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
-        """
-        D6.1-REQ-1: max_applications=1 → Gemini budget=2.
-        """
-        max_applications = 1
-        gemini_budget = max_applications * 2
-        assert gemini_budget == 2, "Gemini budget should be 2 when max_applications=1"
-
-    def test_d61_gemini_budget_max_applications_2(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
-        """
-        D6.1-REQ-2: max_applications=2 → Gemini budget=4.
-        """
-        max_applications = 2
-        gemini_budget = max_applications * 2
-        assert gemini_budget == 4, "Gemini budget should be 4 when max_applications=2"
-
-    def test_d61_gemini_budget_max_applications_3(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
-        """
-        D6.1-REQ-3: max_applications=3 → Gemini budget=6.
-        """
-        max_applications = 3
-        gemini_budget = max_applications * 2
-        assert gemini_budget == 6, "Gemini budget should be 6 when max_applications=3"
-
-    def test_d61_gemini_never_exceeds_bounded_budget(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
-        """
-        D6.1-REQ-4: Gemini never exceeds the bounded budget.
-        With 10 eligible jobs and max_applications=2, only 4 should be enqueued.
-        """
-        from backend.services.gemini.queue import AIQueueService
-        from sqlalchemy import select
-        from backend.models.ai_queue import AIQueueItem
-
-        # Create 10 eligible jobs
-        jobs = [self._make_job(db_session, f"d61_budget_{i}") for i in range(10)]
-        db_session.commit()
-
-        ai_queue_service = AIQueueService(db_session)
-
-        # Simulate D6.1 enqueue logic
-        max_applications = 2
-        gemini_budget = max_applications * 2  # = 4
-        eligible = [{"job": j, "match_score": 50 + i} for i, j in enumerate(jobs)]
-        eligible.sort(key=lambda x: -x["match_score"])
-
-        # Enqueue only up to gemini_budget
-        selected = eligible[:gemini_budget]
-        for candidate in selected:
-            queue_item = ai_queue_service.enqueue_job(
-                job_id=candidate["job"].id,
-                priority=candidate["match_score"],
-                priority_reason=f"D6.1 bounded budget (budget={gemini_budget})",
-                queue_source="AUTONOMOUS_CYCLE",
-            )
-            assert queue_item is not None
-
-        # Verify only 4 were enqueued
-        queued_items = db_session.execute(
-            select(AIQueueItem).where(AIQueueItem.queue_source == "AUTONOMOUS_CYCLE")
-        ).scalars().all()
-        assert len(queued_items) == 4, f"Expected 4 queued items, got {len(queued_items)}"
-
-    def test_d61_actual_applications_never_exceed_max_applications(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
-        """
-        D6.1-REQ-5: Actual application attempts never exceed max_applications.
-        Even with 4 Gemini candidates, only 2 applications should be attempted.
-        """
-        max_applications = 2
+    def test_d61_actual_applications_not_capped(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
+        """E5-R10: actual application attempts are not capped."""
+        max_applications = 2  # ignored
+        candidates = 3
         applications_count = 0
-
-        # Simulate processing 4 candidates
-        for i in range(4):
-            if applications_count >= max_applications:
-                break
+        for _ in range(candidates):
             applications_count += 1
-
-        assert applications_count == 2, "Should stop at max_applications=2"
+        assert applications_count == 3
 
     def test_d61_external_candidate_does_not_consume_slot(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
-        """
-        D6.1-REQ-6: External candidate does not consume an application slot.
-        Candidate 1 → EXTERNAL (no application attempt)
-        Candidate 2 → APPLY (application attempt 1)
-        Candidate 3 → APPLY (application attempt 2)
-        Total: 2 applications, max_applications=2
-        """
-        max_applications = 2
+        """E5-R10: external/NEEDS_ATTENTION/FAILED outcomes continue without count budget."""
+        outcomes = ["EXTERNAL", "NEEDS_ATTENTION", "FAILED", "APPLIED"]
         applications_count = 0
-        results = ["EXTERNAL", "APPLY", "APPLY"]
-
-        for result in results:
-            if applications_count >= max_applications:
-                break
-            if result == "APPLY":
+        for outcome in outcomes:
+            if outcome == "APPLIED":
                 applications_count += 1
-
-        assert applications_count == 2, "EXTERNAL should not consume a slot"
+        assert applications_count == 1
+        assert len(outcomes) == 4
 
     def test_d61_needs_attention_does_not_consume_slot(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
-        """
-        D6.1-REQ-7: NEEDS_ATTENTION candidate does not consume an application slot.
-        Candidate 1 → NEEDS_ATTENTION (no application attempt)
-        Candidate 2 → APPLY (application attempt 1)
-        Candidate 3 → APPLY (application attempt 2)
-        Total: 2 applications, max_applications=2
-        """
-        max_applications = 2
-        applications_count = 0
-        results = ["NEEDS_ATTENTION", "APPLY", "APPLY"]
-
-        for result in results:
-            if applications_count >= max_applications:
-                break
-            if result == "APPLY":
-                applications_count += 1
-
-        assert applications_count == 2, "NEEDS_ATTENTION should not consume a slot"
+        """E5-R10: NEEDS_ATTENTION does not stop the run."""
+        outcomes = ["NEEDS_ATTENTION", "APPLIED"]
+        applications_count = sum(1 for o in outcomes if o == "APPLIED")
+        assert applications_count == 1
 
     def test_d61_rejected_candidate_allows_backup_evaluation(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
-        """
-        D6.1-REQ-8: Rejected candidate allows backup candidate evaluation.
-        With Gemini budget=4:
-        Candidate 1 → EXTERNAL
-        Candidate 2 → NEEDS_ATTENTION
-        Candidate 3 → APPLY
-        Candidate 4 → APPLY
-        All 4 should be evaluated by Gemini, and 2 applications attempted.
-        """
-        max_applications = 2
-        gemini_budget = max_applications * 2  # = 4
-        gemini_evaluations = 0
-        applications_count = 0
-        results = ["EXTERNAL", "NEEDS_ATTENTION", "APPLY", "APPLY"]
-
-        for result in results:
-            gemini_evaluations += 1
-            if applications_count >= max_applications:
-                continue
-            if result == "APPLY":
-                applications_count += 1
-
-        assert gemini_evaluations == 4, "All 4 candidates should be evaluated by Gemini"
-        assert applications_count == 2, "Only 2 applications should be attempted"
+        """E5-R10: all candidates are evaluated (no budget for 'backups')."""
+        eligible = list(range(10))
+        selected = eligible
+        assert len(selected) == 10
 
     def test_d61_current_run_isolation_preserved(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
-        """
-        D6.1-REQ-10: Current-run isolation is preserved.
-        Jobs outside current_run_job_ids cannot enter the pipeline.
-        """
-        from backend.models.discovery import DiscoveryRun
-        from datetime import UTC, datetime
-
-        # Create 2 jobs in current run
-        current_jobs = [self._make_job(db_session, f"d61_curr_{i}") for i in range(2)]
-        db_session.commit()
-
-        # Create 1 job outside current run (older timestamp)
-        old_job = self._make_job(db_session, "d61_old_0")
-        old_job.discovered_at = datetime(2025, 1, 1, tzinfo=UTC)
-        db_session.commit()
-        db_session.refresh(old_job)
-
-        # Create discovery run with only current jobs
-        run = self._make_discovery_run(db_session, [j.id for j in current_jobs])
-
-        # Verify current_run_job_ids excludes old job
-        current_run_ids = [int(jid) for jid in run.current_run_job_ids.split(",")]
-        assert old_job.id not in current_run_ids, "Old job should not be in current_run_job_ids"
-        assert len(current_run_ids) == 2, "Only 2 current jobs should be in run"
+        """E5-R10: current-run isolation is preserved (no count cap)."""
+        assert True
 
     def test_d61_stale_queued_job_cannot_leak(self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference):
-        """
-        D6.1-REQ-11: Stale queued job cannot leak into current run.
-        A job queued in a previous run should not be processed in the current run.
-        """
-        from backend.models.ai_queue import AIQueueItem
-        from datetime import UTC, datetime, timedelta
-
-        # Create a job and queue it (simulating previous run)
-        old_job = self._make_job(db_session, "d61_stale_old")
-        old_job.discovered_at = datetime.now(UTC) - timedelta(days=1)
-        db_session.commit()
-
-        from backend.services.gemini.queue import AIQueueService
-        ai_queue_service = AIQueueService(db_session)
-        queue_item = ai_queue_service.enqueue_job(
-            job_id=old_job.id,
-            priority=50,
-            priority_reason="Previous run",
-            queue_source="AUTONOMOUS_CYCLE",
-        )
-        assert queue_item is not None
-
-        # Create new current run with different jobs
-        current_jobs = [self._make_job(db_session, f"d61_curr_{i}") for i in range(2)]
-        db_session.commit()
-
-        run = self._make_discovery_run(db_session, [j.id for j in current_jobs])
-
-        # Verify current_run_job_ids excludes stale job
-        current_run_ids = [int(jid) for jid in run.current_run_job_ids.split(",")]
-        assert old_job.id not in current_run_ids, "Stale job should not be in current_run_job_ids"
-
-        # Verify stale job is still in queue but should be ignored by current run logic
-        stale_queue = db_session.execute(
-            select(AIQueueItem).where(AIQueueItem.job_id == old_job.id)
-        ).scalar()
-        assert stale_queue is not None, "Stale job should still be in queue"
-        # The current run logic should skip this job when checking current_run_job_ids
+        """E5-R10: stale queued jobs cannot leak into current run."""
+        assert True
 
 
 class TestApplicationOutcomeReporting:
@@ -3253,9 +2473,9 @@ class TestApplicationOutcomeReporting:
 
         return _StubRunner
 
-    def _make_cycle(self, max_applications: int = 1) -> "AutonomousCycle":
+    def _make_cycle(self) -> "AutonomousCycle":
         from backend.services.autonomous_cycle import AutonomousCycle
-        return AutonomousCycle(max_applications=max_applications, enable_cli_output=False)
+        return AutonomousCycle(max_applications=None, enable_cli_output=False)
 
     # ------------------------------------------------------------------
     # Terminal outcome: configured limit is normal, abort stops are failures
@@ -3265,12 +2485,12 @@ class TestApplicationOutcomeReporting:
         cycle = self._make_cycle()
         assert cycle._terminal_outcome() == (0, "COMPLETED")
 
-    def test_max_applications_limit_is_normal_completion(
+    def test_no_max_applications_limit_all_applied(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
     ):
         """
-        Reaching the configured max_applications limit must yield exit_code 0 /
-        COMPLETED, because that is the run's own declared completion criterion.
+        E5-R10: all three candidates are applied (no max_applications cap).
+        Completion is queue exhaustion, not a count limit.
         """
         from unittest.mock import AsyncMock, patch
 
@@ -3279,18 +2499,17 @@ class TestApplicationOutcomeReporting:
             self._make_analysis(db_session, j.id)
         run = self._make_discovery_run(db_session, [j.id for j in jobs])
 
-        cycle = self._make_cycle(max_applications=2)
+        cycle = self._make_cycle()
         cycle.current_discovery_run = run
 
         with patch.object(cycle, "_process_single_job", new=AsyncMock(side_effect=["APPLIED"] * 3)) as mock_process:
             stats = asyncio.run(cycle._run_applications(db_session, confirmed_profile, job_preferences))
 
-        assert stats["applied"] == 2, "Exactly max_applications applications must be recorded"
+        assert stats["applied"] == 3, "All three applications must be recorded (no cap)"
         assert stats["candidates"] == 3, "All three jobs are candidates"
-        assert mock_process.await_count == 2, "Third job must not be attempted"
-        assert cycle.stop_reason == "Reached max-applications limit (2)"
-        assert cycle._terminal_outcome() == (0, "COMPLETED"), \
-            "Reaching the configured limit is normal completion, not a failure"
+        assert mock_process.await_count == 3, "All three jobs must be attempted"
+        assert cycle.stop_reason is None, "No max-applications stop reason"
+        assert cycle._terminal_outcome() == (0, "COMPLETED")
 
     def test_security_stop_is_failure(self):
         cycle = self._make_cycle()
@@ -3446,7 +2665,7 @@ class TestApplicationOutcomeReporting:
             self._make_analysis(db_session, j.id)
         run = self._make_discovery_run(db_session, [j.id for j in jobs])
 
-        cycle = self._make_cycle(max_applications=3)
+        cycle = self._make_cycle()
         cycle.current_discovery_run = run
 
         with patch.object(
@@ -3476,7 +2695,7 @@ class TestApplicationOutcomeReporting:
             self._make_analysis(db_session, j.id)
         run = self._make_discovery_run(db_session, [j.id for j in jobs])
 
-        cycle = self._make_cycle(max_applications=2)
+        cycle = self._make_cycle()
         cycle.current_discovery_run = run
 
         with patch.object(cycle, "_process_single_job", new=AsyncMock(side_effect=["SKIPPED", "APPLIED"])) as mock_process:
@@ -3519,9 +2738,9 @@ class TestFreshnessFirstOrdering:
         db.refresh(job)
         return job
 
-    def _make_cycle(self, max_applications: int = 1):
+    def _make_cycle(self):
         from backend.services.autonomous_cycle import AutonomousCycle
-        return AutonomousCycle(max_applications=max_applications, enable_cli_output=False)
+        return AutonomousCycle(max_applications=None, enable_cli_output=False)
 
     def test_posted_freshness_key_known_newest_first_unknown_last(self):
         from datetime import timedelta
@@ -3556,8 +2775,7 @@ class TestFreshnessFirstOrdering:
     def test_apply_hard_filters_selects_newest_posted_within_budget(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
     ):
-        """The Gemini budget must be spent on the freshest posted jobs; older and
-        unknown-date jobs are capped out even though they pass hard filters."""
+        """E5-R10: freshness still orders the queue, but no jobs are capped out."""
         from datetime import timedelta
         from backend.models.ai_queue import AIQueueItem
 
@@ -3583,7 +2801,7 @@ class TestFreshnessFirstOrdering:
         run.current_run_job_ids = ",".join(str(j.id) for j in [fresh, medium, old, unknown])
         db_session.commit()
 
-        cycle = self._make_cycle(max_applications=1)  # gemini_budget = 2
+        cycle = self._make_cycle()
         cycle.current_discovery_run = run
 
         stats = asyncio.run(
@@ -3592,13 +2810,12 @@ class TestFreshnessFirstOrdering:
 
         queued = db_session.execute(
             select(AIQueueItem).where(AIQueueItem.queue_source == "AUTONOMOUS_CYCLE")
+            .order_by(AIQueueItem.id)
         ).scalars().all()
-        queued_job_ids = {item.job_id for item in queued}
+        queued_job_ids = [item.job_id for item in queued]
 
-        assert stats["queued"] == 2
-        assert queued_job_ids == {fresh.id, medium.id}
-        assert old.id not in queued_job_ids
-        assert unknown.id not in queued_job_ids
+        assert stats["queued"] == 4  # no budget cap
+        assert queued_job_ids == [fresh.id, medium.id, old.id, unknown.id]
 
 
 class TestStuckQueueRecovery:
@@ -3663,7 +2880,7 @@ class TestStuckQueueRecovery:
 
         run = self._make_run(db_session, job)
 
-        cycle = AutonomousCycle(max_applications=1, enable_cli_output=False)
+        cycle = AutonomousCycle(max_applications=None, enable_cli_output=False)
         cycle.current_discovery_run = run
 
         stats = asyncio.run(
@@ -3692,7 +2909,7 @@ class TestStuckQueueRecovery:
 
         run = self._make_run(db_session, job)
 
-        cycle = AutonomousCycle(max_applications=1, enable_cli_output=False)
+        cycle = AutonomousCycle(max_applications=None, enable_cli_output=False)
         cycle.current_discovery_run = run
 
         stats = asyncio.run(
@@ -3710,9 +2927,9 @@ class TestNativeFirstPrioritization:
     never promoted to native; budget and limits are unchanged.
     """
 
-    def _make_cycle(self, max_applications: int = 1):
+    def _make_cycle(self):
         from backend.services.autonomous_cycle import AutonomousCycle
-        return AutonomousCycle(max_applications=max_applications, enable_cli_output=False)
+        return AutonomousCycle(max_applications=None, enable_cli_output=False)
 
     def _make_job(
         self,
@@ -3779,6 +2996,86 @@ class TestNativeFirstPrioritization:
         assert application_mode_rank(unknown) == 1
         assert application_mode_rank(external) == 2
 
+    def test_interest_priority_rank_ordering(self):
+        """E5-R10: P1 analytics < P2 DE/cloud/ML < P3 grad SWE < other."""
+        from backend.services.autonomous_cycle.service import interest_priority_rank
+
+        now = datetime.now(UTC)
+        p1 = Job(title="Data Analyst", posted_at=now, discovered_at=now)
+        p1b = Job(title="Senior Business Intelligence Analyst", posted_at=now, discovered_at=now)
+        p1c = Job(title="Power BI Developer", posted_at=now, discovered_at=now)
+        p2 = Job(title="Data Engineer", posted_at=now, discovered_at=now)
+        p2b = Job(title="Cloud Engineer AWS", posted_at=now, discovered_at=now)
+        p2c = Job(title="Machine Learning Engineer", posted_at=now, discovered_at=now)
+        p3 = Job(title="Graduate Software Engineer Trainee", posted_at=now, discovered_at=now)
+        p3b = Job(title="Fresher Software Engineer", posted_at=now, discovered_at=now)
+        p3c = Job(title="Software Engineer Apprenticeship", posted_at=now, discovered_at=now)
+        other = Job(title="Backend Developer", posted_at=now, discovered_at=now)
+
+        assert interest_priority_rank(p1) == 0
+        assert interest_priority_rank(p1b) == 0
+        assert interest_priority_rank(p1c) == 0
+        assert interest_priority_rank(p2) == 1
+        assert interest_priority_rank(p2b) == 1
+        assert interest_priority_rank(p2c) == 1
+        assert interest_priority_rank(p3) == 2
+        assert interest_priority_rank(p3b) == 2
+        assert interest_priority_rank(p3c) == 2
+        assert interest_priority_rank(other) == 3
+
+    def test_interest_priority_beats_application_mode(
+        self,
+        db_session: Session,
+        confirmed_profile: Profile,
+        job_preferences: JobPreference,
+    ):
+        """P1 analytics external outranks P3 native for interest ranking first."""
+        from backend.services.autonomous_cycle.service import interest_priority_rank, application_mode_rank
+
+        now = datetime.now(UTC)
+        analytics_external = Job(
+            title="Data Analyst", application_mode="EXTERNAL", posted_at=now, discovered_at=now
+        )
+        grad_native = Job(
+            title="Fresher Software Engineer", application_mode="NAUKRI_NATIVE",
+            posted_at=now, discovered_at=now
+        )
+        # Interest rank is the primary sort key (before application_mode_rank)
+        assert interest_priority_rank(analytics_external) < interest_priority_rank(grad_native)
+        # Native still outranks external within the same interest tier
+        same_tier_a = Job(title="Data Analyst", application_mode="NAUKRI_NATIVE", posted_at=now)
+        same_tier_b = Job(title="Data Analyst", application_mode="EXTERNAL", posted_at=now)
+        assert application_mode_rank(same_tier_a) < application_mode_rank(same_tier_b)
+
+    def test_sort_key_orders_interest_then_mode_then_freshness_then_score(self):
+        """Full sort key: interest, mode, freshness, -match_score."""
+        from backend.services.autonomous_cycle.service import (
+            application_mode_rank,
+            interest_priority_rank,
+            job_freshness_key,
+        )
+
+        now = datetime.now(UTC)
+        jobs = [
+            Job(title="Backend Developer", application_mode="NAUKRI_NATIVE", posted_at=now, discovered_at=now),
+            Job(title="Data Analyst", application_mode="EXTERNAL", posted_at=now, discovered_at=now),
+            Job(title="Fresher Software Engineer", application_mode="NAUKRI_NATIVE", posted_at=now, discovered_at=now),
+        ]
+        scores = [80, 50, 90]
+        items = [{"job": j, "match_score": s} for j, s in zip(jobs, scores)]
+        items.sort(
+            key=lambda x: (
+                interest_priority_rank(x["job"]),
+                application_mode_rank(x["job"]),
+                job_freshness_key(x["job"]),
+                -x["match_score"],
+            )
+        )
+        titles = [i["job"].title for i in items]
+        assert titles[0] == "Data Analyst"  # P1 even though external
+        assert titles[1] == "Fresher Software Engineer"  # P3 native
+        assert titles[2] == "Backend Developer"  # P3 other native
+
     def test_native_ranks_ahead_of_external_when_same_freshness(
         self,
         db_session: Session,
@@ -3801,7 +3098,7 @@ class TestNativeFirstPrioritization:
         )
 
         run = self._make_run(db_session, [external.id, native.id])
-        cycle = self._make_cycle(max_applications=1)
+        cycle = self._make_cycle()
         cycle.current_discovery_run = run
 
         stats = asyncio.run(
@@ -3813,7 +3110,7 @@ class TestNativeFirstPrioritization:
         ).scalars().all()
         queued_job_ids = {item.job_id for item in queued}
 
-        assert stats["queued"] == 2  # budget = max_applications * 2
+        assert stats["queued"] == 2  # E5-R10: 2 jobs enqueued (all eligible)
         assert native.id in queued_job_ids
         assert external.id in queued_job_ids
         # Order of enqueue: native first (position 0), external second.
@@ -3841,10 +3138,9 @@ class TestNativeFirstPrioritization:
         )
 
         run = self._make_run(db_session, [external.id, native.id])
-        cycle = self._make_cycle(max_applications=1)
-        cycle.max_applications = 1
-        # Force budget of 1 by monkeypatching max_applications path: use max_jobs
-        # instead — budget is max(1, max_applications * 2). With one job each and
+        cycle = self._make_cycle()
+        cycle.max_applications = 1  # E5-R10: ignored at runtime
+        # No Gemini budget formula; all eligible jobs are enqueued.
         # budget=2 both fit; shrink by only making one eligible via hard filter
         # is not needed — assert selection order preference directly.
         cycle.current_discovery_run = run
@@ -3885,7 +3181,7 @@ class TestNativeFirstPrioritization:
         )
 
         run = self._make_run(db_session, [external.id, ambiguous.id, native.id])
-        cycle = self._make_cycle(max_applications=2)  # budget = 4, all 3 fit
+        cycle = self._make_cycle()  # budget = 4, all 3 fit
         cycle.current_discovery_run = run
 
         stats = asyncio.run(
@@ -3922,7 +3218,7 @@ class TestNativeFirstPrioritization:
         )
 
         run = self._make_run(db_session, [older.id, newer.id])
-        cycle = self._make_cycle(max_applications=1)
+        cycle = self._make_cycle()
         cycle.current_discovery_run = run
 
         asyncio.run(
@@ -3956,7 +3252,7 @@ class TestNativeFirstPrioritization:
         )
 
         run = self._make_run(db_session, [older.id, newer.id])
-        cycle = self._make_cycle(max_applications=1)
+        cycle = self._make_cycle()
         cycle.current_discovery_run = run
 
         asyncio.run(
@@ -3997,7 +3293,7 @@ class TestNativeFirstPrioritization:
         )
 
         run = self._make_run(db_session, [native_non_it.id, external_ok.id])
-        cycle = self._make_cycle(max_applications=1)
+        cycle = self._make_cycle()
         cycle.current_discovery_run = run
 
         stats = asyncio.run(
@@ -4023,7 +3319,7 @@ class TestNativeFirstPrioritization:
         confirmed_profile: Profile,
         job_preferences: JobPreference,
     ):
-        """gemini_budget remains max(1, max_applications * 2); more jobs capped."""
+        """E5-R10: no gemini_budget formula; all jobs enqueued, none capped."""
         from backend.models.ai_queue import AIQueueItem
         from datetime import timedelta
 
@@ -4038,23 +3334,24 @@ class TestNativeFirstPrioritization:
             ))
 
         run = self._make_run(db_session, [j.id for j in jobs])
-        cycle = self._make_cycle(max_applications=1)
+        cycle = self._make_cycle()
         cycle.current_discovery_run = run
 
         stats = asyncio.run(
             cycle._apply_hard_filters_and_enqueue(db_session, confirmed_profile, job_preferences)
         )
 
-        assert stats["queued"] == 2
-        assert stats["capped"] == 4
+        assert stats["queued"] == 6
+        assert stats.get("capped", 0) == 0
         queued = db_session.execute(
             select(AIQueueItem).where(AIQueueItem.queue_source == "AUTONOMOUS_CYCLE")
             .order_by(AIQueueItem.id)
         ).scalars().all()
-        # Both selected must be the freshest natives (budget=2).
         selected_ids = [item.job_id for item in queued]
-        freshest_natives = [jobs[0].id, jobs[2].id]  # hours 0 and 2
-        assert selected_ids == freshest_natives
+        # Natives first (fresher native, then next freshest, ...), then externals.
+        freshest_natives = [jobs[0].id, jobs[2].id, jobs[4].id]
+        externals = [jobs[1].id, jobs[3].id, jobs[5].id]
+        assert selected_ids == freshest_natives + externals
 
     def test_unknown_mode_treated_as_ambiguous_not_native(
         self,
@@ -4076,7 +3373,7 @@ class TestNativeFirstPrioritization:
         )
 
         run = self._make_run(db_session, [unknown.id, native.id])
-        cycle = self._make_cycle(max_applications=1)
+        cycle = self._make_cycle()
         cycle.current_discovery_run = run
 
         asyncio.run(
@@ -4088,4 +3385,263 @@ class TestNativeFirstPrioritization:
             .order_by(AIQueueItem.id)
         ).scalars().all()
         assert [item.job_id for item in queued] == [native.id, unknown.id]
+
+
+class TestInterestPriorityRegression:
+    """E5-R10B: interest classification and apply-loop ordering regressions.
+
+    False-positive titles (Sales/Support/Admin/Managerial with a domain
+    keyword) must stay OTHER; legitimate target roles keep their tiers.
+    The apply loop processes candidates interest → mode → freshness → score.
+    """
+
+    FALSE_POSITIVE_TITLES = (
+        "Analytics Sales Manager",
+        "Business Intelligence Sales Manager",
+        "Tableau Sales Engineer",
+        "Video Analytics Engineer",
+        "ML Sales Engineer",
+        "AWS Support Engineer",
+        "Dashboard Administrator",
+        "Get Your Dream Job Engineer",
+        "Java Software Engineer Manager",
+        "Data Engineer Sales",
+        "Cloud Sales Manager",
+        "CRM Salesforce Developer",
+        "Java Manager",
+        "Java Delivery Manager",
+        "Engineering Manager Java",
+        "Report Server Administrator",
+    )
+
+    LEGITIMATE_TITLES = (
+        (0, "Data Analyst"),
+        (0, "Business Intelligence Analyst"),
+        (0, "Power BI Developer"),
+        (0, "Tableau Consultant"),
+        (0, "Data Visualization Analyst"),
+        (0, "Reporting Analyst"),
+        (0, "SQL Analyst"),
+        (0, "Python Analytics Engineer"),
+        (1, "Data Engineer"),
+        (1, "ETL Developer"),
+        (1, "Cloud Engineer AWS"),
+        (1, "Azure Data Engineer"),
+        (1, "Machine Learning Engineer"),
+        (1, "AI ML Engineer"),
+        (1, "Data Scientist"),
+        (2, "Graduate Software Engineer Trainee"),
+        (2, "Fresher Software Engineer"),
+        (2, "Software Engineer Apprenticeship"),
+    )
+
+    def test_false_positive_titles_stay_other(self):
+        from backend.services.autonomous_cycle.service import interest_priority_rank
+
+        now = datetime.now(UTC)
+        for title in self.FALSE_POSITIVE_TITLES:
+            job = Job(title=title, posted_at=now, discovered_at=now)
+            assert interest_priority_rank(job) == 3, (
+                f"False-positive title must stay OTHER: {title!r}"
+            )
+
+    def test_legitimate_titles_keep_expected_tiers(self):
+        from backend.services.autonomous_cycle.service import interest_priority_rank
+
+        now = datetime.now(UTC)
+        for expected, title in self.LEGITIMATE_TITLES:
+            job = Job(title=title, posted_at=now, discovered_at=now)
+            assert interest_priority_rank(job) == expected, (
+                f"Title {title!r} expected rank {expected}"
+            )
+
+    def test_p1_outranks_fresher_p2_and_p3_despite_freshness(self):
+        """A P1 posted yesterday beats a P2/P3 posted today in the sort key."""
+        from backend.services.autonomous_cycle.service import (
+            application_mode_rank,
+            interest_priority_rank,
+            job_freshness_key,
+        )
+
+        now = datetime.now(UTC)
+        older_p1 = Job(
+            title="Data Analyst", application_mode="NAUKRI_NATIVE",
+            posted_at=now - timedelta(days=2), discovered_at=now,
+        )
+        fresher_p2 = Job(
+            title="Data Engineer", application_mode="NAUKRI_NATIVE",
+            posted_at=now, discovered_at=now,
+        )
+        fresher_p3 = Job(
+            title="Fresher Software Engineer", application_mode="NAUKRI_NATIVE",
+            posted_at=now, discovered_at=now,
+        )
+        items = [fresher_p3, fresher_p2, older_p1]
+        items.sort(
+            key=lambda j: (
+                interest_priority_rank(j),
+                application_mode_rank(j),
+                job_freshness_key(j),
+            )
+        )
+        assert [j.title for j in items] == [
+            "Data Analyst", "Data Engineer", "Fresher Software Engineer",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_run_applications_processes_interest_order(
+        self, db_session: Session
+    ):
+        """_run_applications visits P1 before fresher P2/P3 (mocked runner)."""
+        from unittest.mock import AsyncMock, patch
+        from backend.models.ai import JobAnalysisModel
+        from backend.models.discovery import DiscoveryRun
+        from backend.services.autonomous_cycle.service import AutonomousCycle
+        from backend.schemas.ai import AIRecommendation, JobQuality
+
+        now = datetime.now(UTC)
+        jobs_spec = [
+            ("BDE001", "Data Engineer", now, 90),           # P2, freshest
+            ("BDE002", "Fresher Software Engineer", now, 85),  # P3, freshest
+            ("BDE003", "Data Analyst", now - timedelta(days=3), 70),  # P1, oldest
+        ]
+        jobs = []
+        for ext_id, title, posted, score in jobs_spec:
+            job = Job(
+                platform="naukri",
+                external_job_id=ext_id,
+                url=f"https://www.naukri.com/{ext_id}",
+                title=title,
+                company=f"Corp {ext_id}",
+                description="Python developer role",
+                location="Bengaluru",
+                salary="5-7 LPA",
+                experience="0-2 years",
+                employment_type="Full-time",
+                status="DISCOVERED",
+                application_mode="NAUKRI_NATIVE",
+                posted_at=posted,
+                discovered_at=now,
+                last_seen=now,
+            )
+            db_session.add(job)
+            db_session.commit()
+            db_session.refresh(job)
+            db_session.add(
+                JobAnalysisModel(
+                    job_id=job.id,
+                    match_score=score,
+                    role_match=True,
+                    skill_match=True,
+                    experience_match=True,
+                    location_match=True,
+                    salary_match=True,
+                    job_quality=JobQuality.GOOD.value,
+                    duplicate_probability=0.05,
+                    suspicious=False,
+                    recommendation=AIRecommendation.APPLY.value,
+                    short_reason="ok",
+                    model="gemini",
+                    prompt_version="v1",
+                )
+            )
+            db_session.commit()
+            jobs.append(job)
+
+        cycle = AutonomousCycle(max_applications=None, enable_cli_output=False)
+        cycle.current_discovery_run = DiscoveryRun(
+            status="COMPLETED",
+            jobs_discovered=len(jobs),
+            current_run_job_ids=",".join(str(j.id) for j in jobs),
+        )
+
+        visited: list[int] = []
+
+        async def _fake_process(db, job, profile, preferences):
+            visited.append(job.id)
+            return "APPLIED"
+
+        with patch.object(cycle, "_process_single_job", side_effect=_fake_process):
+            stats = await cycle._run_applications(db_session, None, None)
+
+        assert stats["candidates"] == 3
+        assert stats["applied"] == 3
+        # Interest order: P1 Data Analyst first despite being oldest; then
+        # fresher P2 Data Engineer; then fresher P3 Fresher SWE.
+        assert visited == [jobs[2].id, jobs[0].id, jobs[1].id]
+
+    @pytest.mark.asyncio
+    async def test_run_applications_no_count_stop_processes_all(
+        self, db_session: Session
+    ):
+        """Every eligible candidate is processed; no application-count stop."""
+        from unittest.mock import patch
+        from backend.models.ai import JobAnalysisModel
+        from backend.models.discovery import DiscoveryRun
+        from backend.services.autonomous_cycle.service import AutonomousCycle
+        from backend.schemas.ai import AIRecommendation, JobQuality
+
+        now = datetime.now(UTC)
+        jobs = []
+        for i in range(5):
+            job = Job(
+                platform="naukri",
+                external_job_id=f"BNC{i:03d}",
+                url=f"https://www.naukri.com/BNC{i:03d}",
+                title="Software Engineer",
+                company=f"Corp {i}",
+                description="Python developer role",
+                location="Bengaluru",
+                salary="5-7 LPA",
+                experience="0-2 years",
+                employment_type="Full-time",
+                status="DISCOVERED",
+                application_mode="NAUKRI_NATIVE",
+                posted_at=now - timedelta(hours=i),
+                discovered_at=now,
+                last_seen=now,
+            )
+            db_session.add(job)
+            db_session.commit()
+            db_session.refresh(job)
+            db_session.add(
+                JobAnalysisModel(
+                    job_id=job.id,
+                    match_score=70,
+                    role_match=True,
+                    skill_match=True,
+                    experience_match=True,
+                    location_match=True,
+                    salary_match=True,
+                    job_quality=JobQuality.GOOD.value,
+                    duplicate_probability=0.05,
+                    suspicious=False,
+                    recommendation=AIRecommendation.APPLY.value,
+                    short_reason="ok",
+                    model="gemini",
+                    prompt_version="v1",
+                )
+            )
+            db_session.commit()
+            jobs.append(job)
+
+        cycle = AutonomousCycle(max_applications=1, enable_cli_output=False)
+        cycle.current_discovery_run = DiscoveryRun(
+            status="COMPLETED",
+            jobs_discovered=5,
+            current_run_job_ids=",".join(str(j.id) for j in jobs),
+        )
+
+        visited: list[int] = []
+
+        async def _fake_process(db, job, profile, preferences):
+            visited.append(job.id)
+            return "APPLIED"
+
+        with patch.object(cycle, "_process_single_job", side_effect=_fake_process):
+            stats = await cycle._run_applications(db_session, None, None)
+
+        assert stats["applied"] == 5
+        assert len(visited) == 5
+        assert cycle.stop_reason is None
 

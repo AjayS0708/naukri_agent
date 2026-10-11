@@ -2,33 +2,25 @@
 Autonomous Cycle API Schemas - CHECKPOINT E3
 
 Schemas for the autonomous cycle control API.
+E5-R10: no application-count cap is enforced; max_applications is accepted
+for backward compatibility but ignored at runtime.
 """
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AutonomousCycleStartRequest(BaseModel):
     """Request to start an autonomous cycle."""
     model_config = ConfigDict(extra="forbid")
 
-    max_applications: int = Field(
-        default=2,
-        ge=1,
-        le=10,
-        description="Maximum number of real applications to perform (1-10)"
+    # Deprecated/ignored (E5-R10): kept so older clients do not break.
+    # The run processes every eligible matching job; no count cap applies.
+    max_applications: Optional[int] = Field(
+        default=None,
+        description="Ignored (E5-R10). Runs process all eligible matching jobs."
     )
-
-    @field_validator("max_applications")
-    @classmethod
-    def validate_max_applications(cls, v: int) -> int:
-        """Validate max_applications is within safe bounds."""
-        if v < 1:
-            raise ValueError("max_applications must be at least 1")
-        if v > 10:
-            raise ValueError("max_applications cannot exceed 10")
-        return v
 
 
 class AutonomousCycleStartResponse(BaseModel):
@@ -37,7 +29,7 @@ class AutonomousCycleStartResponse(BaseModel):
 
     run_id: Optional[int] = None
     status: str
-    max_applications: int
+    max_applications: Optional[int] = None
     message: str
 
 

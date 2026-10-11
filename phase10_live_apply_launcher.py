@@ -26,7 +26,6 @@ from backend.models.scheduler import SchedulerConfig
 from backend.schemas.ai import AIRecommendation, JobAnalysis
 from backend.schemas.agent import AgentState
 from backend.services.agent_state import AgentStateManager
-from backend.services.applications.limits import ApplicationLimitService
 from backend.services.applications.runner import ApplicationRunner
 from backend.services.applications.service import ApplicationService
 from backend.services.gemini.provider import APIQuotaExhaustedError, GeminiProvider
@@ -615,15 +614,15 @@ def deterministic_check(job: Job, profile: Profile, preferences: JobPreference, 
 
 
 def preflight(session, job_id: Optional[str] = None) -> dict:
-    """Preflight checks for profile, preferences, scheduler, and limits.
+    """Preflight checks for profile, preferences, scheduler, and schema.
 
     If job_id is provided, validates that it exists in DB.
     Does not require job_id for URL-based ingest (job will be ingested in-process).
+    E5-R10: no hourly/daily application-count gate.
     """
     profile = session.execute(select(Profile)).scalars().first()
     preferences = session.execute(select(JobPreference)).scalars().first()
     scheduler = session.execute(select(SchedulerConfig)).scalars().first()
-    limits = ApplicationLimitService(session).check_limits()
     columns = {column["name"] for column in inspect(session.get_bind()).get_columns("applications")}
 
     if not profile or not profile.confirmed:
@@ -632,8 +631,6 @@ def preflight(session, job_id: Optional[str] = None) -> dict:
         raise RuntimeError("Job preferences are required")
     if scheduler and scheduler.is_running:
         raise RuntimeError("Scheduler must be stopped")
-    if not limits.allowed:
-        raise RuntimeError(f"Application limit blocked: {limits.reason}")
     if "confirmation_evidence" not in columns:
         raise RuntimeError("applications.confirmation_evidence column is missing")
 

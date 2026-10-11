@@ -85,9 +85,7 @@ def job_preferences(db_session: Session):
         job_titles=["Software Engineer", "Data Analyst"],
         employment_types=["Full-time", "Contract"],
         min_salary_lpa=4.0,
-        aggressiveness="BALANCED",
-        max_daily_applications=20,
-        max_hourly_applications=4
+        aggressiveness="BALANCED"
     )
     db_session.add(preferences)
     db_session.commit()
