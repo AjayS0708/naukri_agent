@@ -384,6 +384,15 @@ class ApplicationRunner:
                 )
                 return "NEEDS_ATTENTION"
 
+            # E5-R7: Naukri's native Apply opens a multi-step *conversational*
+            # drawer (chatbot_Drawer) that asks one screening question at a time
+            # and submits on the final Save. Drive it to completion here; the
+            # legacy single-form path below cannot model this flow.
+            if await self.adapter.is_conversational_apply(page):
+                return await self._complete_conversational_application(
+                    page, application, job, profile
+                )
+
             # Detect and answer questions
             questions = await self.adapter.detect_application_questions(page)
             if questions and not self.answer_questions:
@@ -587,4 +596,147 @@ class ApplicationRunner:
         except Exception as e:
             logger.warning(f"AI answer generation failed: {e}")
 
+        return None
+
+    # E5-R7: conversational (chatbot_Drawer) application support ----------------
+
+    _CONVERSATIONAL_MAX_STEPS = 12
+
+    async def _complete_conversational_application(
+        self, page, application, job: Job, profile: Profile
+    ) -> str:
+        """Drive Naukri's multi-step conversational apply drawer to completion.
+
+        The drawer shows one screening question at a time; each answered
+        question is submitted with Save. Applied is only recorded on explicit
+        confirmation evidence — never inferred.
+        """
+        for step in range(1, self._CONVERSATIONAL_MAX_STEPS + 1):
+            applied, evidence = await self.adapter.detect_applied_state(page)
+            if applied:
+                self.application_service.update_application(
+                    application.id,
+                    ApplicationUpdate(
+                        status=ApplicationStatus.APPLIED,
+                        applied_at=datetime.now(UTC),
+                        application_method=ApplicationMethod.NAUKRI_NATIVE,
+                        confirmation_evidence=evidence,
+                    ),
+                )
+                logger.info("Conversational apply confirmed (step %d): %s", step, evidence)
+                return "APPLIED"
+
+            questions = await self.adapter.detect_application_questions(page)
+            if not questions:
+                logger.info("Conversational drawer has no more questions (step %d)", step)
+                break
+
+            question = questions[0]
+            question_text = question.get("question", "")
+            options = question.get("options") or []
+
+            answer = self._get_answer_from_profile(question_text, profile)
+            if options:
+                if not answer or self.adapter._normalize_choice(answer) not in [
+                    self.adapter._normalize_choice(o) for o in options
+                ]:
+                    answer = self._answer_radio_via_ai(question_text, options, job, profile)
+                if not answer:
+                    self.application_service.update_application(
+                        application.id,
+                        ApplicationUpdate(
+                            status=ApplicationStatus.NEEDS_ATTENTION,
+                            needs_attention=True,
+                            skip_reason=f"Could not choose an option for: {question_text}",
+                        ),
+                    )
+                    return "NEEDS_ATTENTION"
+            else:
+                if not answer:
+                    answer = self._get_ai_answer(question_text, job, profile)
+                if not answer:
+                    self.application_service.update_application(
+                        application.id,
+                        ApplicationUpdate(
+                            status=ApplicationStatus.NEEDS_ATTENTION,
+                            needs_attention=True,
+                            skip_reason=f"Could not answer question: {question_text}",
+                        ),
+                    )
+                    return "NEEDS_ATTENTION"
+
+            if not await self.adapter.answer_conversational_question(page, answer):
+                self.application_service.update_application(
+                    application.id,
+                    ApplicationUpdate(
+                        status=ApplicationStatus.NEEDS_ATTENTION,
+                        needs_attention=True,
+                        skip_reason=f"Failed to answer question: {question_text}",
+                    ),
+                )
+                return "NEEDS_ATTENTION"
+
+            logger.info(
+                "Conversational step %d answered %r with %r", step, question_text, answer
+            )
+            await asyncio.sleep(2.0)
+
+        # Final explicit confirmation after the loop (or a final Save attempt).
+        applied, evidence = await self.adapter.detect_applied_state(page)
+        if not applied:
+            await self.adapter.submit_application(page)
+            await asyncio.sleep(2.0)
+            applied, evidence = await self.adapter.detect_applied_state(page)
+
+        if applied:
+            self.application_service.update_application(
+                application.id,
+                ApplicationUpdate(
+                    status=ApplicationStatus.APPLIED,
+                    applied_at=datetime.now(UTC),
+                    application_method=ApplicationMethod.NAUKRI_NATIVE,
+                    confirmation_evidence=evidence,
+                ),
+            )
+            logger.info("Conversational apply confirmed after loop: %s", evidence)
+            return "APPLIED"
+
+        self.application_service.update_application(
+            application.id,
+            ApplicationUpdate(
+                status=ApplicationStatus.NEEDS_ATTENTION,
+                needs_attention=True,
+                skip_reason="Conversational apply completed without Applied confirmation",
+            ),
+        )
+        logger.warning("Conversational apply without Applied confirmation for job %s", job.id)
+        return "NEEDS_ATTENTION"
+
+    def _answer_radio_via_ai(
+        self, question: str, options: list[str], job: Job, profile: Profile
+    ) -> Optional[str]:
+        """Ask the AI to pick exactly one of the provided radio options.
+
+        Returns the matched option (normalized back to its original casing) or
+        None when no option can be chosen confidently. Never fabricates a choice.
+        """
+        try:
+            constrained = (
+                f"{question}\n"
+                f"Options: {', '.join(options)}. "
+                "Reply with exactly one option word/phrase from the list."
+            )
+            raw = self._get_ai_answer(constrained, job, profile)
+            if not raw:
+                return None
+            norm_raw = self.adapter._normalize_choice(raw)
+            for option in options:
+                if self.adapter._normalize_choice(option) == norm_raw:
+                    return option
+            for option in options:
+                norm_opt = self.adapter._normalize_choice(option)
+                if norm_opt and (norm_opt in norm_raw or norm_raw in norm_opt):
+                    return option
+        except Exception as exc:
+            logger.warning("Radio AI answer failed: %s", exc)
         return None

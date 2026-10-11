@@ -448,7 +448,15 @@ class AutonomousCycle:
                 select(AIQueueItem).where(AIQueueItem.job_id == job.id)
             ).scalars().first()
 
-            if existing_queue:
+            # E5-R7: A queued item in a terminal state (analysis already stored
+            # or permanently failed) is done — skip it. A reprocessable item
+            # (QUEUED/RETRY_PENDING/QUOTA_BLOCKED) with no analysis is a stuck
+            # prior attempt (e.g. transient Gemini "returned None"); let it fall
+            # through the deterministic filter so it is re-enqueued and retried
+            # this cycle instead of being silently dropped as hard_filtered.
+            if existing_queue and existing_queue.status in (
+                "COMPLETED", "FAILED", "NEEDS_ATTENTION"
+            ):
                 stats["hard_filtered"] += 1
                 continue
 
@@ -579,7 +587,7 @@ class AutonomousCycle:
             Application, Application.job_id == Job.id
         ).where(
             (Application.id == None) | (Application.status == ApplicationStatus.SKIPPED.value)
-        )
+        ).distinct()
 
         if self.current_discovery_run and self.current_discovery_run.current_run_job_ids:
             try:

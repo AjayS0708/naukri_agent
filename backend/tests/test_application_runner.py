@@ -161,6 +161,7 @@ class TestApplicationRunner:
              patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
              patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=ApplicationStartResult.FORM_OPENED), \
+             patch('backend.services.applications.runner.NaukriAdapter.is_conversational_apply', new_callable=AsyncMock, return_value=False), \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=[]), \
              patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True), \
              patch('backend.services.applications.runner.NaukriAdapter.confirm_submission', new_callable=AsyncMock, return_value=True):
@@ -195,6 +196,7 @@ class TestApplicationRunner:
              patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
              patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=ApplicationStartResult.FORM_OPENED), \
+             patch('backend.services.applications.runner.NaukriAdapter.is_conversational_apply', new_callable=AsyncMock, return_value=False), \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=[]), \
              patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True), \
              patch('backend.services.applications.runner.NaukriAdapter.confirm_submission', new_callable=AsyncMock, return_value=False):
@@ -230,6 +232,7 @@ class TestApplicationRunner:
              patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
              patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=ApplicationStartResult.FORM_OPENED), \
+             patch('backend.services.applications.runner.NaukriAdapter.is_conversational_apply', new_callable=AsyncMock, return_value=False), \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=[]), \
              patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True), \
              patch('backend.services.applications.runner.NaukriAdapter.confirm_submission', new_callable=AsyncMock, return_value=True):
@@ -586,6 +589,7 @@ class TestApplicationRunner:
              patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
              patch('backend.services.applications.runner.NaukriAdapter.start_application', new_callable=AsyncMock, return_value=ApplicationStartResult.FORM_OPENED), \
+             patch('backend.services.applications.runner.NaukriAdapter.is_conversational_apply', new_callable=AsyncMock, return_value=False), \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions', new_callable=AsyncMock, return_value=[]), \
              patch('backend.services.applications.runner.NaukriAdapter.submit_application', new_callable=AsyncMock, return_value=True) as mock_submit, \
              patch('backend.services.applications.runner.NaukriAdapter.confirm_submission', new_callable=AsyncMock, return_value=True):

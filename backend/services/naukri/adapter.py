@@ -1009,6 +1009,21 @@ class NaukriAdapter(JobPlatformAdapter):
                 logger.info("No visible application container found for question detection")
                 return []
 
+            # E5-R7: Naukri's conversational drawer renders ONE question at a time
+            # (a bot message plus either a radio group or a contenteditable box).
+            # Detect it as a single structured question rather than treating each
+            # radio input as its own field. Only apply when the container really
+            # is the conversational drawer, so legacy forms keep their behavior.
+            container_cls = (await container.get_attribute("class")) or ""
+            if "chatbot_Drawer" in container_cls:
+                conv = await self._detect_conversational_question(container)
+                if conv is not None:
+                    logger.info(
+                        "Detected conversational question (%s): %r options=%s",
+                        conv["type"], conv["question"], conv.get("options"),
+                    )
+                    return [conv]
+
             # Search for input/textarea/select fields within the container
             for selector in ['input', 'textarea', 'select']:
                 for element in await container.query_selector_all(selector):
@@ -1067,6 +1082,133 @@ class NaukriAdapter(JobPlatformAdapter):
             logger.warning(f"Error detecting questions: {e}")
             return []
 
+    async def _detect_conversational_question(self, container) -> Optional[Dict[str, Any]]:
+        """Detect the single active question inside Naukri's conversational drawer.
+
+        Returns a dict {question, type ('radio'|'text'), options, required} or
+        None when the container is not a conversational drawer.
+        """
+        bot_msg = None
+        for selector in (".botMsg span", ".botMsg"):
+            el = await container.query_selector(selector)
+            if el is not None and await el.is_visible():
+                text = (await el.inner_text()).strip()
+                if text:
+                    bot_msg = text
+                    break
+        if bot_msg is None:
+            return None
+
+        # Radio group (single-select) -> capture the option labels.
+        radios = await container.query_selector_all('input[type="radio"]')
+        options = []
+        for radio in radios:
+            radio_id = await radio.get_attribute("id")
+            label_text = ""
+            if radio_id:
+                label = await container.query_selector(f'label[for="{radio_id}"]')
+                if label is not None:
+                    label_text = (await label.inner_text()).strip()
+            if not label_text:
+                label_text = (await radio.get_attribute("value") or "").strip()
+            if label_text:
+                options.append(label_text)
+        if options:
+            return {
+                "question": bot_msg,
+                "type": "radio",
+                "options": options,
+                "required": True,
+            }
+
+        # Text question (contenteditable composer).
+        composer = await container.query_selector('[contenteditable="true"]')
+        if composer is not None and await composer.is_visible():
+            return {"question": bot_msg, "type": "text", "options": [], "required": True}
+
+        return {"question": bot_msg, "type": "text", "options": [], "required": True}
+
+    @staticmethod
+    def _normalize_choice(text: str) -> str:
+        return " ".join((text or "").strip().lower().split())
+
+    async def answer_conversational_question(self, page: Page, answer: str) -> bool:
+        """Answer the active conversational question and click Save.
+
+        Handles both radio-group questions (clicks the matching option) and
+        text questions (fills the contenteditable composer), then clicks the
+        drawer's Save control. Returns True only when an answer surface was
+        found and Save was clicked.
+        """
+        container = await self._get_visible_application_container(page)
+        if container is None:
+            logger.warning("answer_conversational_question: no application container")
+            return False
+
+        target = self._normalize_choice(answer)
+        answered = False
+
+        radios = await container.query_selector_all('input[type="radio"]')
+        if radios:
+            best = None
+            best_score = -1
+            for radio in radios:
+                radio_id = await radio.get_attribute("id")
+                value = (await radio.get_attribute("value") or "").strip()
+                label_text = value
+                if radio_id:
+                    label = await container.query_selector(f'label[for="{radio_id}"]')
+                    if label is not None:
+                        label_text = (await label.inner_text()).strip() or value
+                norm = self._normalize_choice(label_text)
+                score = -1
+                if norm and norm == target:
+                    score = 100
+                elif norm and (norm in target or target in norm):
+                    score = len(norm)
+                if score > best_score:
+                    best_score = score
+                    best = radio
+            if best is not None and best_score >= 0:
+                try:
+                    await best.check()
+                    answered = True
+                    logger.info(
+                        "Conversational radio selected (score=%d) for answer=%r",
+                        best_score, answer,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to select conversational radio: %s", exc)
+        else:
+            composer = await container.query_selector('[contenteditable="true"]')
+            if composer is not None and await composer.is_visible():
+                try:
+                    await composer.fill(answer)
+                    answered = True
+                    logger.info("Conversational text answer filled for %r", answer)
+                except Exception as exc:
+                    logger.warning("Failed to fill conversational composer: %s", exc)
+
+        if not answered:
+            logger.warning("No conversational answer surface matched answer=%r", answer)
+            return False
+
+        return await self._click_conversational_save(page)
+
+    async def _click_conversational_save(self, page: Page) -> bool:
+        """Click the conversational drawer's Save control (a div, not a button)."""
+        for selector in (".sendMsg", ".send .sendMsg", "#sendMsg .sendMsg"):
+            el = await page.query_selector(selector)
+            if el is not None and await el.is_visible():
+                try:
+                    await el.click()
+                    logger.info("Conversational Save clicked via %s", selector)
+                    return True
+                except Exception as exc:
+                    logger.warning("Conversational Save click failed (%s): %s", selector, exc)
+        logger.warning("No visible conversational Save control found")
+        return False
+
     async def detect_applied_state(
         self, page: Page, scan_whole_page: bool = True
     ) -> tuple[bool, str]:
@@ -1113,14 +1255,71 @@ class NaukriAdapter(JobPlatformAdapter):
             return False, ""
 
     async def _get_visible_application_container(self, page: Page):
+        # Legacy/compat selectors (kept for non-Naukri layouts and future changes).
         for selector in ['[role="dialog"]', ".apply-drawer", ".apply-modal", "form"]:
             for element in await page.query_selector_all(selector):
                 if await element.is_visible():
                     return element
+
+        # E5-R7: Naukri's native Apply opens a right-side *conversational* apply
+        # drawer whose stable class is ``chatbot_Drawer`` (the element id is
+        # instance-hashed, e.g. ``_nmx360oi8Drawer``). Live DOM capture on a
+        # native job confirmed this is the application surface: it hosts the
+        # screening question, radio/text inputs, and a Save control. None of the
+        # legacy selectors above match it (Naukri pages contain zero <form> and
+        # zero role="dialog"), so without this branch every genuine native
+        # application was misreported as "form did not open" -> NEEDS_ATTENTION.
+        for selector in (".chatbot_Drawer", '[class*="chatbot_Drawer"]'):
+            for element in await page.query_selector_all(selector):
+                if not await element.is_visible():
+                    continue
+                if await self._looks_like_application_form(element):
+                    return element
         return None
+
+    async def _looks_like_application_form(self, element) -> bool:
+        """True when a visible container is an application surface, not page chrome.
+
+        E5-R7 false-positive guards:
+        - Reject the Apply-button wrapper (``styles_jhc__apply-button-container__*``)
+          and any apply-button element, which also contain the substring "apply".
+        - Require a real input surface (radio/text/select) or a Save/Submit control.
+        """
+        cls = (await element.get_attribute("class")) or ""
+        if "apply-button" in cls.lower():
+            return False
+        id_attr = (await element.get_attribute("id")) or ""
+        if "apply-button" in id_attr.lower():
+            return False
+
+        for probe in (
+            'input[type="radio"]',
+            'input:not([type="hidden"]):not([type="file"])',
+            "textarea",
+            "select",
+            '[contenteditable="true"]',
+            'button[type="submit"]',
+            ".sendMsg",
+            ".submit-btn",
+        ):
+            try:
+                found = await element.query_selector(probe)
+            except Exception:
+                found = None
+            if found is not None and await found.is_visible():
+                return True
+        return False
 
     async def _has_visible_application_container(self, page: Page) -> bool:
         return await self._get_visible_application_container(page) is not None
+
+    async def is_conversational_apply(self, page: Page) -> bool:
+        """True when the visible application surface is Naukri's chatbot drawer."""
+        container = await self._get_visible_application_container(page)
+        if container is None:
+            return False
+        cls = (await container.get_attribute("class")) or ""
+        return "chatbot_Drawer" in cls
 
     async def answer_question(self, page: Page, question: str, answer: str) -> bool:
         """
@@ -1175,7 +1374,11 @@ class NaukriAdapter(JobPlatformAdapter):
                 'button[type="submit"]',
                 '.submit-btn',
                 'input[type="submit"]',
-                'button.submit'
+                'button.submit',
+                # E5-R7: Naukri's conversational apply drawer submits via a
+                # Save control that is a div (class "sendMsg"), not a button.
+                '.sendMsg',
+                '.send .sendMsg',
             ]
 
             for selector in submit_selectors:

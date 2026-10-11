@@ -468,3 +468,106 @@ def test_experience_rule_allow_missing_with_fresher_title():
     allowed, reason = experience_passes_fresher_rule(job, preference)
     assert allowed is True
     assert "entry-level" in reason.lower()
+
+
+# ── E5-R7: job_titles-derived role targeting ──────────────────────────────
+
+# The user's configured job_titles (source of truth for allowed roles).
+E5R7_CONFIGURED_JOB_TITLES = [
+    "Software Engineer Fresher", "Graduate Engineer Trainee",
+    "Software Developer Trainee", "Associate Software Engineer",
+    "Junior Data Analyst", "Data Analyst Fresher", "Data Engineer Fresher",
+    "DevOps Trainee", "Python Developer Fresher", "QA Engineer Fresher",
+    "SQL Developer Fresher",
+]
+
+
+def test_e5r7_graduate_engineer_trainee_allowed():
+    """Graduate Engineer Trainee family must pass (previously starved)."""
+    for title in (
+        "Graduate Engineer Trainee",
+        "Post Graduate Engineer Trainee",
+        "Graduate Trainee (Cloud Test Engineering)",
+        "InstaSafe Technologies u Graduate Engineer Trainee",
+        "Graduate Engineer Trainee ( GET)",
+    ):
+        assert title_matches_allowed_role(title)[0] is True, title
+        assert title_matches_allowed_role(title, E5R7_CONFIGURED_JOB_TITLES)[0] is True, title
+
+
+def test_e5r7_data_analyst_allowed():
+    """Data Analyst family must pass, with and without configured titles."""
+    for title in ("Data Analyst", "Data Analyst (Fresher)", "Junior Data Analyst"):
+        assert title_matches_allowed_role(title)[0] is True, title
+        assert title_matches_allowed_role(title, E5R7_CONFIGURED_JOB_TITLES)[0] is True, title
+
+
+def test_e5r7_ai_ml_cloud_elk_mis_allowed():
+    """Curated fresher families (AI/ML, cloud, ELK, MIS) must pass."""
+    for title in (
+        "AI/ML Computational Science Associate",
+        "AI Engineering Intern Generative Models",
+        "ELK Engineer",
+        "Mis Analyst , fresher",
+        "Cloud Engineer",
+    ):
+        assert title_matches_allowed_role(title)[0] is True, title
+
+
+def test_e5r7_irrelevant_titles_still_rejected():
+    """Titles outside the configured interests must stay rejected."""
+    for title in (
+        "Associate Strategy & Transformation",
+        "Quality control associate",
+        "Graphic Designer",
+        "HR Executive",
+        "Sales Executive",
+        "Management Trainee",
+        "Quality Engineer",
+        "Data Entry Operator",
+    ):
+        assert title_matches_allowed_role(title)[0] is False, title
+
+
+def test_e5r7_unwanted_specializations_still_rejected_with_job_titles():
+    """Even with configured job_titles, unwanted specializations are rejected."""
+    for title in (
+        "Java Developer",
+        "Power Platform Developer",
+        "Graduate Engineer Trainee - Sales",
+        "PHP Developer",
+    ):
+        allowed, reason = title_matches_allowed_role(title, E5R7_CONFIGURED_JOB_TITLES)
+        assert allowed is False, title
+        assert (
+            "unwanted specialization" in reason.lower()
+            or "does not match" in reason.lower()
+        ), reason
+
+
+def test_e5r7_build_patterns_derives_cores_from_job_titles():
+    """Configured titles contribute exact phrases plus modifier-stripped cores."""
+    from backend.services.matching.engine import build_allowed_role_patterns
+
+    patterns = build_allowed_role_patterns(["Data Analyst Fresher", "Graduate Engineer Trainee"])
+    assert "data analyst fresher" in patterns
+    assert "data analyst" in patterns          # fresher stripped
+    assert "graduate engineer trainee" in patterns
+    assert "graduate engineer" in patterns     # trainee stripped
+
+
+def test_e5r7_job_titles_match_bare_core_variant():
+    """A configured 'X Fresher' title also matches a bare 'X' job title."""
+    allowed_titles = ["Data Analyst Fresher"]
+    assert title_matches_allowed_role("Data Analyst", allowed_titles)[0] is True
+
+
+def test_e5r7_it_scope_accepts_ai_ml_and_cloud_titles():
+    """IT keyword expansion accepts AI/ML and cloud titles with no industry."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    assert is_strict_it_job(Job(title="AI/ML Computational Science Associate")) is True
+    assert is_strict_it_job(Job(title="ELK Engineer")) is True
+    assert is_strict_it_job(Job(title="MIS Analyst")) is True
+    assert is_strict_it_job(Job(title="Marketing Manager")) is False

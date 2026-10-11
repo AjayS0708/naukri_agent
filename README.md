@@ -1,5 +1,57 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E5-R7: Native Apply Container Detection & Conversational Drawer Support
+
+**Status: E5-R7 IMPLEMENTED, TESTED (957 passed), AND LIVE-VALIDATED (surgical single-job apply). Job 114 (MIS Analyst, Arteria) confirmed APPLIED via native method with evidence.**
+
+**Root cause (proven from run-66 evidence + live DOM diagnostics):** Run 66 discovered 79 jobs, queued 4 candidates (jobs 114/112/68/35), but produced 0 applications. Live DOM inspection of job 114 after clicking native Apply showed the application surface is a **conversational right-side drawer** (`chatbot_Drawer chatbot_right`) with `.botMsg` question text, `input[type=radio].ssrc__radio` + `label[for=...]` choices, a hidden file-uploader `<form>`, a `[contenteditable=true]` composer, and a `div.sendMsg` save control (a DIV, not a button). The job page has **0 visible `<form>` elements and 0 `role="dialog"`**, so the legacy container selectors (`[role="dialog"]`, `.apply-drawer`, `.apply-modal`, `form`) never matched; `detect_application_questions()` returned `[]`; the runner classified the job `NEEDS_ATTENTION` ("no questions detected") and never submitted. The Apply button itself is `#job_header button#apply-button` inside wrapper `styles_jhc__apply-button-container__5Bqnb` (the wrapper class contains "apply", creating a false-positive risk for naive `[class*="apply"]` matching).
+
+**Fix (`backend/services/naukri/adapter.py`):**
+1. `_looks_like_application_form(container)` — validates a candidate container by rejecting `apply-button` class/id and requiring at least one visible interactive element (radio, non-hidden non-file input, textarea, select, `[contenteditable=true]`, `button[type=submit]`, `.sendMsg`, `.submit-btn`).
+2. `_get_visible_application_container(page)` — tries legacy selectors first, then `.chatbot_Drawer` / `[class*="chatbot_Drawer"]`, each gated by `_looks_like_application_form`.
+3. `is_conversational_apply(page)` — returns True when the visible container is a `chatbot_Drawer` (class check on the container element).
+4. `detect_application_questions()` — conversational branch now **gated on the container class containing `chatbot_Drawer`** so legacy forms / MagicMock test pages keep old behavior (prevents coroutine-in-dict garbage on non-awaitable mocks).
+5. `_detect_conversational_question(container)` — parses `.botMsg` text, radio `label[for=...]` choices, `[contenteditable=true]` composer; returns `{question, required, choices, type}`.
+6. `_normalize_choice(choice_text, expected_label)` — strips "N. " prefixes and whitespace for safe label comparison.
+7. `answer_conversational_question(page, question, answer)` — clicks the matching radio label or fills the composer.
+8. `_click_conversational_save(page)` — clicks `.sendMsg`, `.send .sendMsg`, or `#sendMsg .sendMsg` (DIV, not button).
+9. `submit_application()` — save-selector list extended with `.sendMsg` and `.send .sendMsg`.
+
+**Runner fix (`backend/services/applications/runner.py`):** after `FORM_OPENED`, calls `await self.adapter.is_conversational_apply(page)` and routes to `_complete_conversational_application()` (new path with `_CONVERSATIONAL_MAX_STEPS = 12` and `_answer_radio_via_ai` for AI-assisted choice selection).
+
+**Test fixes:** 4 FORM_OPENED tests in `test_application_runner.py` and 2 D6 tests in `test_autonomous_cycle.py` (`test_questionnaire_stops_with_needs_attention_no_retry`, `test_failure_of_candidate_1_allows_candidate_2`) gain `is_conversational_apply → False` patches so MagicMock pages route to the legacy form path. New `test_adapter_container.py` (6 tests) covers `_looks_like_application_form` (rejects apply-button wrapper, accepts drawer with radio, accepts legacy form) and `_get_visible_application_container` (legacy form wins, chatbot_Drawer matched when legacy absent, apply-button rejected).
+
+**Live validation (2026-10-11):** application row 64 (job 114, NEEDS_ATTENTION) deliberately reset to SKIPPED with audit reason `E5-R7 container-detection fix; prior attempt produced no submission...` (root-cause-justified reset, not a generic status wipe). Surgical single-job apply via `ApplicationRunner(session, state_manager, dry_run=False).run_applications([114], dry_run=False)` succeeded: new application row **82**, `status=APPLIED`, `applied_at=2026-10-11T05:00:15`, `application_method=NAUKRI_NATIVE`, `confirmation_evidence` contains `Applied to "Mis Analyst , fresher"` plus the full post-apply page text. Backend restarted (PID 31396) serving the fixed code; `/api/autonomous-cycle/status` returns 200 IDLE.
+
+**Tests:** full backend suite **957 passed, 0 failed** (baseline 954 + 3 previously failing D6/adapter tests now green).
+
+**Safety preserved:** `APPLIED` still requires positive confirmation evidence; external applications never clicked/submitted; jobs 87/120 (NEEDS_ATTENTION) untouched; jobs 23/85/59 APPLIED evidence intact; job 2 stays EXTERNAL; application limits not reset; no scheduler launched; no unlimited loop; no fabricated results; no blind retry of uncertain submissions.
+
+---
+
+## CHECKPOINT E5-R6: Native-URL Misclassification Recovery & Multi-Job Application Recovery
+
+**Status: E5-R6 IMPLEMENTED, TESTED, AND LIVE-VALIDATED. Reconciliation recovered 16 locked jobs; two controlled cycles (64, 65) ran safely end-to-end; 0 confirmed native applications because the entire current relevant fresher pool is external-apply-only on Naukri (verified live: no native Apply button exists on those pages).**
+
+**Root cause (proven from run-62/63 evidence):** the out-of-band run 62 (2026-10-10 17:07 IST, pre-E5-R5.4 backend) re-created 16 `EXTERNAL_APPLICATION` rows for the same relevant fresher jobs, this time with `external_url` grounded to each job's **own canonical Naukri job URL** (the E5-R4.1 fallback when no indicator-matched external CTA link exists) — the pre-R5.4 body-scan-first classifier misfired again. Run 63 on the fixed backend then selected 17 candidates but skipped all 17 with zero Apply clicks: the runner's unresolved-prior-attempt guard (`runner.py`, latest status `EXTERNAL_APPLICATION`/`NEEDS_ATTENTION` → "manual reset required") blocked every locked job before Apply-button detection ever ran. The E5-R5.3 signature-scoped reconcile affected 0 rows because these new rows do not carry the AmbitionBox page-chrome signature. A genuine external job (job 2, facebook.com) must not be converted.
+
+**Fix (`backend/services/applications/service.py`):** `reconcile_stale_externals()` gains a second, narrowly scoped, human-triggered rule (E5-R6): an `EXTERNAL_APPLICATION` row is recovered to `SKIPPED` only when all conditions verify — real linked job record; `external_url` equals that job's own canonical Naukri URL after safe normalization (`normalize_naukri_url_for_comparison`: whitespace/fragment/trailing-slash/http-vs-https/default-port equivalence only); Naukri `job-listings-` host/path; no `confirmation_evidence`/`applied_at`; not protected job ID 87/120. Audit reason `recovered_pre_r5_4_native_url_misclassification` is recorded, `needs_attention` cleared, history/timestamps/URL/method preserved, operation idempotent. Ambiguous rows (mismatched URL, non-Naukri host, missing job, submission evidence) are left unchanged and logged with the ineligibility reason. Rule 1 (E5-R5.3 AmbitionBox signature) is unchanged. The endpoint response now reports per-rule counts, IDs, and `remaining_external_ids`.
+
+**No other code changes were needed:** the duplicate/unresolved guards, safety gate (suspicious-only AI block), and candidacy were inspected and are correct — recovered rows re-enter normal relevance-first evaluation and are never auto-applied.
+
+**Second proven defect fixed (live evidence from run 64):** the candidacy query returned one row per historical SKIPPED application row instead of one per job (`candidates=31` for 18 real analyzed jobs), wasting runner guard-skips. Fixed with `.distinct()` on the candidacy select in `backend/services/autonomous_cycle/service.py`; run 65 verified `candidates=16` with each locked job processed exactly once (per-job log evidence).
+
+**Tests (17 new):** `backend/tests/test_reconcile_stale_externals.py` +14 (exact-match recovery, safe URL equivalence, genuine external redirect untouched, other-job Naukri URL untouched, non-job-listing path untouched, submission evidence blocks recovery, protected IDs 87/120 never reconciled, protected statuses untouched, rule-2 idempotency, distinct audit reason, URL normalization units, endpoint per-rule reporting); `backend/tests/test_autonomous_cycle_outcomes.py` +3 (multiple SKIPPED rows process once; SKIPPED+EXTERNAL appears once; EXTERNAL-only excluded). Focused: reconcile 21 passed, outcomes 11 passed; full backend suite **941 passed, 0 failed** (baseline 924 + 17).
+
+**Live validation (2026-10-10 evening):**
+- Backend restarted serving the E5-R6 source (detached start with surviving log capture).
+- `POST /api/applications/reconcile-stale-externals` invoked once: `recovered_count=16` (application IDs 33-48; jobs 8, 18, 20, 21, 45, 46, 47, 51, 52, 54, 55, 57, 80, 86, 99, 107), `affected_count=0` (legacy signature), `remaining_external_ids=[4]` (job 2, genuine facebook.com external). APPLIED (jobs 23/85/59 with evidence) and NEEDS_ATTENTION (jobs 7/15/87/120) verified unchanged.
+- Run 64 (`max_applications=2`): 79 discovered, 61 hard-filtered, 18 analyzed, 31 candidate rows (pre-dedup), 15 pages visited and truthfully classified `EXTERNAL_APPLICATION` (native-first detection found zero Apply buttons), 16 guard/gate skips, 0 applied, 0 failed. Read-only live diagnostics on jobs 18 and 54 confirmed the page layout: no `button#apply-button` anywhere in the DOM, "apply on company site" rendered in the job action bar, no external CTA link — these are genuine external-apply-only listings; `EXTERNAL` is the correct classification and no native application is possible.
+- Run 65 (`max_applications=2`): candidates 16 (dedup fix verified), all 15 locked jobs guard-skipped exactly once each (log-verified), job 58 blocked by the `suspicious` flag, 0 visits needed, 0 applied.
+- Stop condition met: no relevant, eligible native-capable jobs remain in the current live pool. The 15 external-apply jobs stay locked with `needs_attention=1` for human review; a future human-triggered reconcile invoke would safely re-release them for re-verification (human-triggered only, never automatic). Final DB: APPLIED 3, NEEDS_ATTENTION 4, EXTERNAL 16 (1 genuine + 15 external-apply), SKIPPED 35, APPLICATION_STARTED 5; 0 rows created after run 64. Capacity intact (0 applications today).
+
+---
+
 ## CHECKPOINT E5-R5.4: Native Apply Button Precedes External Body-Text Scan
 
 **Status: E5-R5.4 IMPLEMENTED, TESTED, AND VERIFIED (offline only). No live validation - no autonomous cycle, no browser, no Apply click, no backend restart.**

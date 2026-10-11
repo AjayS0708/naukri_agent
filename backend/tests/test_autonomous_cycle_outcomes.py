@@ -343,3 +343,98 @@ class TestBoundedErrorRecovery:
         assert mock_process.await_count == 1
         assert cycle.stop_reason == "Authentication required"
         assert cycle.applications_count == 0
+
+
+class TestCandidacyDistinctRows:
+    """E5-R6: candidacy query returns one row per job, not one per SKIPPED application row.
+
+    Run 64 evidence: candidates=31 for 18 real analyzed jobs - jobs with
+    several historical SKIPPED application rows appeared once per row via
+    the outer join, wasting runner guard-skips and inflating stats.
+    """
+
+    @pytest.mark.asyncio
+    async def test_job_with_multiple_skipped_rows_processed_once(
+        self, db_session, confirmed_profile, job_preferences
+    ):
+        from backend.models.application import Application
+
+        job = _make_analyzed_job(db_session, 0)
+        for n in range(3):
+            db_session.add(
+                Application(
+                    job_id=job.id,
+                    status="SKIPPED",
+                    skip_reason=f"historical skip {n}",
+                )
+            )
+        db_session.commit()
+        cycle = _make_cycle(db_session, [job], max_applications=2)
+
+        with patch.object(
+            cycle, "_process_single_job", new_callable=AsyncMock, return_value="SKIPPED"
+        ) as mock_process:
+            stats = await cycle._run_applications(
+                db_session, confirmed_profile, job_preferences
+            )
+
+        assert stats["candidates"] == 1
+        assert mock_process.await_count == 1
+        assert stats["skipped"] == 1
+
+    @pytest.mark.asyncio
+    async def test_job_with_skipped_and_external_rows_appears_once(
+        self, db_session, confirmed_profile, job_preferences
+    ):
+        from backend.models.application import Application
+
+        job = _make_analyzed_job(db_session, 0)
+        db_session.add(Application(job_id=job.id, status="SKIPPED", skip_reason="old skip"))
+        db_session.add(
+            Application(
+                job_id=job.id,
+                status="EXTERNAL_APPLICATION",
+                external_url=job.url,
+                needs_attention=True,
+            )
+        )
+        db_session.commit()
+        cycle = _make_cycle(db_session, [job], max_applications=2)
+
+        with patch.object(
+            cycle, "_process_single_job", new_callable=AsyncMock, return_value="SKIPPED"
+        ) as mock_process:
+            stats = await cycle._run_applications(
+                db_session, confirmed_profile, job_preferences
+            )
+
+        assert stats["candidates"] == 1
+        assert mock_process.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_job_with_only_external_rows_excluded(
+        self, db_session, confirmed_profile, job_preferences
+    ):
+        from backend.models.application import Application
+
+        job = _make_analyzed_job(db_session, 0)
+        db_session.add(
+            Application(
+                job_id=job.id,
+                status="EXTERNAL_APPLICATION",
+                external_url=job.url,
+                needs_attention=True,
+            )
+        )
+        db_session.commit()
+        cycle = _make_cycle(db_session, [job], max_applications=2)
+
+        with patch.object(
+            cycle, "_process_single_job", new_callable=AsyncMock, return_value="SKIPPED"
+        ) as mock_process:
+            stats = await cycle._run_applications(
+                db_session, confirmed_profile, job_preferences
+            )
+
+        assert stats["candidates"] == 0
+        assert mock_process.await_count == 0

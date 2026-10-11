@@ -2552,6 +2552,8 @@ class TestD6MultiApplication:
                    new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
              patch('backend.services.applications.runner.NaukriAdapter.start_application',
                    new_callable=AsyncMock, return_value=ApplicationStartResult.FORM_OPENED) as mock_start, \
+             patch('backend.services.applications.runner.NaukriAdapter.is_conversational_apply',
+                   new_callable=AsyncMock, return_value=False), \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions',
                    new_callable=AsyncMock,
                    return_value=[{"question": "Your experience?", "required": True}]):
@@ -2801,6 +2803,8 @@ class TestD6MultiApplication:
                    new_callable=AsyncMock, return_value="NAUKRI_NATIVE"), \
              patch('backend.services.applications.runner.NaukriAdapter.start_application',
                    new_callable=AsyncMock, side_effect=_mock_start_app), \
+             patch('backend.services.applications.runner.NaukriAdapter.is_conversational_apply',
+                   new_callable=AsyncMock, return_value=False), \
              patch('backend.services.applications.runner.NaukriAdapter.detect_application_questions',
                    new_callable=AsyncMock, side_effect=_mock_questions), \
              patch('backend.services.applications.runner.NaukriAdapter.detect_applied_state',
@@ -3595,3 +3599,105 @@ class TestFreshnessFirstOrdering:
         assert queued_job_ids == {fresh.id, medium.id}
         assert old.id not in queued_job_ids
         assert unknown.id not in queued_job_ids
+
+
+class TestStuckQueueRecovery:
+    """E5-R7: a reprocessable queue item with no analysis is retried, not dropped.
+
+    A prior transient Gemini failure ("returned None") leaves the queue item in
+    RETRY_PENDING with no analysis. The hard-filter loop must let it fall
+    through (so it is re-enqueued and retried this cycle) instead of silently
+    counting it as hard_filtered. Terminal items (FAILED/COMPLETED/NEEDS_ATTENTION)
+    are still skipped.
+    """
+
+    def _make_eligible_job(self, db: Session, external_id: str, title: str) -> Job:
+        job = Job(
+            platform="naukri",
+            external_job_id=external_id,
+            url=f"https://www.naukri.com/job/{external_id}",
+            title=title,
+            company=f"Corp {external_id}",
+            description="Engineering trainee role",
+            location="Bengaluru",
+            salary=None,
+            salary_min=None,
+            salary_max=None,
+            experience="0-1 Yrs",
+            employment_type="Full-time",
+            status="DISCOVERED",
+            discovered_at=datetime.now(UTC),
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        return job
+
+    def _make_run(self, db: Session, job: Job) -> DiscoveryRun:
+        run = DiscoveryRun(
+            status="COMPLETED", jobs_discovered=1, new_jobs=1, duplicate_jobs=0,
+            searches_attempted=1, errors=0,
+        )
+        db.add(run)
+        db.commit()
+        db_session_refresh = db.refresh(run)
+        run.current_run_job_ids = str(job.id)
+        db.commit()
+        return run
+
+    def test_reprocessable_stuck_queue_item_is_retried(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        from backend.models.ai_queue import AIQueueItem
+        from backend.services.autonomous_cycle import AutonomousCycle
+
+        job = self._make_eligible_job(db_session, "stuck_gat", "Graduate Engineer Trainee")
+
+        stuck = AIQueueItem(
+            job_id=job.id, status="RETRY_PENDING", attempt_count=1, max_attempts=3,
+            failure_reason="Gemini analysis returned None", queue_source="AUTONOMOUS_CYCLE",
+        )
+        db_session.add(stuck)
+        db_session.commit()
+        db_session.refresh(stuck)
+
+        run = self._make_run(db_session, job)
+
+        cycle = AutonomousCycle(max_applications=1, enable_cli_output=False)
+        cycle.current_discovery_run = run
+
+        stats = asyncio.run(
+            cycle._apply_hard_filters_and_enqueue(db_session, confirmed_profile, job_preferences)
+        )
+
+        # The stuck job must be re-queued for processing, not hard-filtered.
+        assert stuck.id in stats["enqueued_queue_item_ids"]
+        assert stats["queued"] >= 1
+
+    def test_terminal_queue_item_still_skipped(
+        self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
+    ):
+        from backend.models.ai_queue import AIQueueItem
+        from backend.services.autonomous_cycle import AutonomousCycle
+
+        job = self._make_eligible_job(db_session, "done_gat", "Graduate Engineer Trainee")
+
+        terminal = AIQueueItem(
+            job_id=job.id, status="FAILED", attempt_count=3, max_attempts=3,
+            queue_source="AUTONOMOUS_CYCLE",
+        )
+        db_session.add(terminal)
+        db_session.commit()
+        db_session.refresh(terminal)
+
+        run = self._make_run(db_session, job)
+
+        cycle = AutonomousCycle(max_applications=1, enable_cli_output=False)
+        cycle.current_discovery_run = run
+
+        stats = asyncio.run(
+            cycle._apply_hard_filters_and_enqueue(db_session, confirmed_profile, job_preferences)
+        )
+
+        # A terminal queue item is not re-queued.
+        assert terminal.id not in stats["enqueued_queue_item_ids"]

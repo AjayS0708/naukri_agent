@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -44,6 +45,55 @@ STALE_EXTERNAL_RECONCILE_SKIP_REASON = (
     "application target. No external application was opened, submitted, or "
     "confirmed; job released back to the normal candidate pipeline."
 )
+
+# E5-R6: second reconciliation rule for EXTERNAL_APPLICATION rows created by
+# the pre-E5-R5.4 body-scan-first classifier. Those rows recorded the job's
+# own canonical Naukri URL as the "external" destination because the external
+# URL grounding fell back to job.url when no indicator-matched external CTA
+# link existed. A genuine external redirect destination can never equal the
+# job's own Naukri URL, so an exact normalized equality with the linked
+# job's URL (on a Naukri job-listing host/path) proves misclassification.
+PRE_R5_4_NATIVE_URL_RECOVERY_TOKEN = (
+    "recovered_pre_r5_4_native_url_misclassification"
+)
+
+PRE_R5_4_NATIVE_URL_RECOVERY_SKIP_REASON = (
+    f"{PRE_R5_4_NATIVE_URL_RECOVERY_TOKEN}: EXTERNAL_APPLICATION external_url "
+    "matched the linked job's own canonical Naukri URL (pre-E5-R5.4 "
+    "body-scan-first misclassification). No external application was opened, "
+    "submitted, or confirmed; job released back to the normal candidate "
+    "pipeline for relevance-first evaluation."
+)
+
+# Defensive belt beyond the status filter: the operating instruction forbids
+# reconciling these job IDs in any state. Their live rows are NEEDS_ATTENTION
+# (already protected by the EXTERNAL_APPLICATION-only status filter), but the
+# explicit ID guard protects against any future state drift.
+PROTECTED_RECONCILE_JOB_IDS = {87, 120}
+
+
+def normalize_naukri_url_for_comparison(url: Optional[str]) -> Optional[str]:
+    """
+    Safe normalization of equivalent URL forms for reconciliation matching.
+
+    Trims whitespace, lowercases the host, treats http/https as equivalent,
+    drops the fragment and default ports, and strips a trailing slash from
+    the path. Returns None when the URL is missing or unparseable so callers
+    treat the row as ambiguous rather than matching it.
+    """
+    if not url or not url.strip():
+        return None
+    try:
+        parts = urlsplit(url.strip())
+        host = (parts.hostname or "").lower()
+        if not host:
+            return None
+        port = parts.port
+        netloc = f"{host}:{port}" if port is not None and port not in (80, 443) else host
+        path = parts.path.rstrip("/")
+        return urlunsplit(("https", netloc, path, parts.query, ""))
+    except ValueError:
+        return None
 
 
 class SafetyGateError(Exception):
@@ -182,7 +232,9 @@ class ApplicationService:
         # are already caught by title_matches_allowed_role.
         if job.title:
             from backend.services.matching.engine import title_matches_allowed_role
-            role_allowed, role_reason = title_matches_allowed_role(job.title)
+            role_allowed, role_reason = title_matches_allowed_role(
+                job.title, getattr(preference, "job_titles", None)
+            )
             if not role_allowed:
                 return False, f"Job title '{job.title}' not in configured search scope: {role_reason}"
         
@@ -273,17 +325,29 @@ class ApplicationService:
 
     def reconcile_stale_externals(self) -> dict:
         """
-        Release jobs locked by the proven-false page-chrome external URL (E5-R5.3).
+        Release jobs locked by proven-false external classifications.
 
-        Reclassifies only EXTERNAL_APPLICATION rows whose external_url exactly
-        equals STALE_EXTERNAL_PAGE_CHROME_URL to SKIPPED, recording
-        STALE_EXTERNAL_RECONCILE_SKIP_REASON as the audit trail and clearing
-        needs_attention. Returns the affected application IDs, job IDs, count,
-        and the signature used. Idempotent: a second call matches nothing.
-        Never modifies APPLIED, SUBMITTED, NEEDS_ATTENTION, FAILED, or
-        already-SKIPPED rows, never deletes records, and is never invoked
-        automatically by the autonomous cycle.
+        Rule 1 (E5-R5.3, unchanged): reclassifies only EXTERNAL_APPLICATION
+        rows whose external_url exactly equals STALE_EXTERNAL_PAGE_CHROME_URL
+        to SKIPPED, recording STALE_EXTERNAL_RECONCILE_SKIP_REASON.
+
+        Rule 2 (E5-R6): reclassifies EXTERNAL_APPLICATION rows whose
+        external_url matches the linked job's own canonical Naukri URL after
+        safe normalization (see normalize_naukri_url_for_comparison) on a
+        Naukri job-listing host/path, recording
+        PRE_R5_4_NATIVE_URL_RECOVERY_SKIP_REASON. A genuine external
+        redirect destination can never equal the job's own Naukri URL.
+        Ambiguous rows (missing job, unparseable URL, non-Naukri host, non
+        job-listing path, submission evidence, protected job IDs) are left
+        unchanged and logged with the ineligibility reason.
+
+        Both rules are idempotent, clear needs_attention on recovered rows,
+        preserve history/timestamps, never delete records, never modify
+        APPLIED, SUBMITTED, NEEDS_ATTENTION, FAILED, or already-SKIPPED rows,
+        and are never invoked automatically by the autonomous cycle.
+        Returns exact per-rule counts and affected IDs.
         """
+        # Rule 1: legacy page-chrome signature (E5-R5.3)
         stmt = select(Application).where(
             Application.status == ApplicationStatus.EXTERNAL_APPLICATION.value,
             Application.external_url == STALE_EXTERNAL_PAGE_CHROME_URL,
@@ -298,6 +362,43 @@ class ApplicationService:
             application_ids.append(application.id)
             job_ids.append(application.job_id)
         if applications:
+            # Make rule-1 reclassifications visible to rule 2's query even on
+            # sessions with autoflush disabled, so recovered rows are never
+            # reconsidered as remaining EXTERNAL_APPLICATION rows.
+            self.session.flush()
+
+        # Rule 2: pre-R5.4 native-URL misclassification recovery (E5-R6)
+        recovered_application_ids: list[int] = []
+        recovered_job_ids: list[int] = []
+        remaining_external_ids: list[int] = []
+        external_stmt = (
+            select(Application)
+            .where(Application.status == ApplicationStatus.EXTERNAL_APPLICATION.value)
+            .order_by(Application.id)
+        )
+        for application in self.session.execute(external_stmt).scalars().all():
+            if application.status != ApplicationStatus.EXTERNAL_APPLICATION.value:
+                # Already reclassified by rule 1 in this call.
+                continue
+            ineligibility = self._native_url_recovery_ineligibility_reason(application)
+            if ineligibility is not None:
+                remaining_external_ids.append(application.id)
+                logger.info(
+                    "reconcile_native_url_unchanged",
+                    extra={
+                        "application_id": application.id,
+                        "job_id": application.job_id,
+                        "reason": ineligibility,
+                    },
+                )
+                continue
+            application.status = ApplicationStatus.SKIPPED.value
+            application.skip_reason = PRE_R5_4_NATIVE_URL_RECOVERY_SKIP_REASON
+            application.needs_attention = False
+            recovered_application_ids.append(application.id)
+            recovered_job_ids.append(application.job_id)
+
+        if applications or recovered_application_ids:
             self.session.commit()
             logger.info(
                 "reconciled_stale_externals",
@@ -305,6 +406,9 @@ class ApplicationService:
                     "affected_count": len(applications),
                     "application_ids": application_ids,
                     "job_ids": job_ids,
+                    "recovered_count": len(recovered_application_ids),
+                    "recovered_application_ids": recovered_application_ids,
+                    "recovered_job_ids": recovered_job_ids,
                 },
             )
         return {
@@ -312,7 +416,43 @@ class ApplicationService:
             "application_ids": application_ids,
             "job_ids": job_ids,
             "signature": STALE_EXTERNAL_PAGE_CHROME_URL,
+            "recovered_count": len(recovered_application_ids),
+            "recovered_application_ids": recovered_application_ids,
+            "recovered_job_ids": recovered_job_ids,
+            "remaining_external_ids": remaining_external_ids,
         }
+
+    def _native_url_recovery_ineligibility_reason(
+        self, application: Application
+    ) -> Optional[str]:
+        """
+        Return why an EXTERNAL_APPLICATION row is not eligible for E5-R6
+        native-URL recovery, or None when it is eligible. Every condition is
+        verified against the linked job record; ambiguity never matches.
+        """
+        if application.job_id in PROTECTED_RECONCILE_JOB_IDS:
+            return "protected_job_id"
+        if application.confirmation_evidence is not None:
+            return "submission_evidence_present"
+        if application.applied_at is not None:
+            return "applied_at_present"
+        job = self.session.get(Job, application.job_id)
+        if job is None:
+            return "missing_job_record"
+        external_norm = normalize_naukri_url_for_comparison(application.external_url)
+        if external_norm is None:
+            return "unparseable_external_url"
+        job_norm = normalize_naukri_url_for_comparison(job.url)
+        if job_norm is None:
+            return "unparseable_job_url"
+        if external_norm != job_norm:
+            return "external_url_not_job_canonical_url"
+        host = urlsplit(external_norm).hostname or ""
+        if host != "naukri.com" and not host.endswith(".naukri.com"):
+            return "non_naukri_host"
+        if not urlsplit(external_norm).path.startswith("/job-listings-"):
+            return "non_job_listing_path"
+        return None
 
     def get_application_history(self, limit: int = 100) -> list[ApplicationSchema]:
         """Get application history."""

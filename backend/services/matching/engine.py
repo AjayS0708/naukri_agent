@@ -30,9 +30,18 @@ DEFAULT_IT_KEYWORDS = (
     "software", "developer", "engineer", "data", "devops", "cloud",
     "qa", "test", "python", "sql", "backend", "frontend", "full stack",
     "machine learning", "analytics", "security",
+    # E5-R7: honor configured AI/ML, BI, and cloud families. Multi-word only
+    # (no bare "ai"/"ml"/"bi") to avoid substring false positives such as
+    # "ai" in "available" or "mis" in "permission".
+    "artificial intelligence", "deep learning", "computer vision",
+    "computational science", "nlp", "power bi", "business intelligence",
+    "site reliability", "sre", "mis analyst",
 )
 
-# Allowed role families for deterministic title targeting
+# Built-in allowed role families (default fallback used when a caller does not
+# supply the user's configured job_titles). Kept for backward compatibility; the
+# runtime source of truth is preference.job_titles, which extends these
+# families via build_allowed_role_patterns().
 ALLOWED_ROLE_FAMILIES = {
     "data": ["data analyst", "data engineer", "data analytic", "data science", "power bi"],
     "software": ["software engineer", "software developer", "developer", "software development engineer", "software development"],
@@ -40,6 +49,34 @@ ALLOWED_ROLE_FAMILIES = {
     "python": ["python developer"],
     "qa": ["qa", "quality assurance"],
     "sql": ["sql developer"],
+}
+
+# Curated fresher/entry-level expansions the user explicitly requested. These
+# extend (never narrow) the built-in families so relevant configured titles
+# (Graduate Engineer Trainee, Graduate Trainee, Apprentice, AI/ML, Cloud
+# Engineering, BI, Data Science/Engineering) are not rejected by a stale
+# hardcoded list. Matching stays phrase-based (no bare generic tokens) so
+# unrelated titles are still rejected deterministically.
+CURATED_ROLE_FAMILIES = {
+    "graduate_trainee": [
+        "graduate engineer trainee", "graduate trainee", "graduate engineer",
+        "post graduate engineer", "campus hiring", "campus hire",
+    ],
+    "apprentice": ["apprentice", "apprenticeship"],
+    "ai_ml": [
+        "ai/ml", "ai engineer", "ai engineering", "machine learning",
+        "deep learning", "artificial intelligence", "computational science",
+        "computer vision", "nlp", "ml engineer", "ai and",
+    ],
+    "cloud": ["cloud engineer", "cloud", "site reliability", "sre"],
+    "data_ext": [
+        "elk", "mis analyst", "mis executive", "business analytics",
+        "business intelligence", "bi analyst", "bi developer",
+    ],
+    "software_ext": [
+        "solution engineer", "application developer", "full stack",
+        "backend developer", "frontend developer",
+    ],
 }
 
 # Explicitly rejected specializations (title-level exclusions)
@@ -50,34 +87,83 @@ UNWANTED_SPECIALIZATIONS = [
     "civil", "sales", "marketing", "hr", "operations",
 ]
 
+# Modifiers stripped from configured job_titles when deriving generic role
+# cores (so "Data Analyst Fresher" also matches "Data Analyst").
+_TITLE_MODIFIER_TOKENS = (
+    "fresher", "junior", "senior", "associate", "trainee", "intern",
+    "entry level", "entry-level",
+)
+
+
+def _normalize_title(title: str) -> str:
+    return " ".join((title or "").lower().split())
+
+
+def _job_title_cores(allowed_titles: Optional[list] = None) -> set[str]:
+    """Exact normalized configured titles plus modifier-stripped cores."""
+    cores: set[str] = set()
+    for raw in allowed_titles or []:
+        norm = _normalize_title(str(raw))
+        if not norm:
+            continue
+        cores.add(norm)
+        core = norm
+        for modifier in _TITLE_MODIFIER_TOKENS:
+            core = core.replace(modifier, " ")
+        core = _normalize_title(core)
+        if core:
+            cores.add(core)
+    return cores
+
+
+def build_allowed_role_patterns(job_titles: Optional[list] = None) -> list[str]:
+    """Merge built-in families, curated fresher expansions, and the user's
+    configured job_titles into one de-duplicated, longest-first phrase list."""
+    patterns: set[str] = set()
+    for families in (ALLOWED_ROLE_FAMILIES, CURATED_ROLE_FAMILIES):
+        for keywords in families.values():
+            patterns.update(k for k in keywords if k)
+    patterns.update(_job_title_cores(job_titles))
+    return sorted(patterns, key=len, reverse=True)
+
 
 def _contains_keyword(title: str, keywords: list[str]) -> bool:
     title_lower = (title or "").lower()
     return any(keyword.lower() in title_lower for keyword in keywords)
 
 
-def title_matches_allowed_role(title: str) -> tuple[bool, str]:
+def title_matches_allowed_role(
+    title: str, allowed_titles: Optional[list] = None
+) -> tuple[bool, str]:
     """
     Deterministic role/title targeting.
 
     Returns (allowed, reason) where:
-    - allowed: True if title matches an allowed role family
+    - allowed: True if title matches an allowed role phrase
     - reason: Explanation if rejected
 
-    Rejects explicit unwanted specializations regardless of role family match.
+    Explicit unwanted specializations are rejected first regardless of family
+    match. Otherwise the title must match one of the allowed role phrases from
+    the built-in families, curated fresher expansions, and (when provided) the
+    user's configured job_titles. The reason preserves the historical
+    "Title matches allowed role family: <family>" format.
     """
-    title_lower = (title or "").lower()
+    title_lower = _normalize_title(title)
 
-    # First check for explicit unwanted specializations
     for unwanted in UNWANTED_SPECIALIZATIONS:
         if unwanted in title_lower:
             return False, f"Title contains unwanted specialization: {unwanted}"
 
-    # Check if title matches allowed role families
-    for family, keywords in ALLOWED_ROLE_FAMILIES.items():
-        for keyword in keywords:
-            if keyword in title_lower:
-                return True, f"Title matches allowed role family: {family}"
+    for families in (ALLOWED_ROLE_FAMILIES, CURATED_ROLE_FAMILIES):
+        for family, keywords in families.items():
+            for keyword in keywords:
+                if keyword and keyword in title_lower:
+                    return True, f"Title matches allowed role family: {family}"
+
+    if allowed_titles:
+        for core in _job_title_cores(allowed_titles):
+            if core and core in title_lower:
+                return True, "Title matches allowed role family: configured_title"
 
     return False, "Title does not match any allowed role family"
 
@@ -150,7 +236,9 @@ class MatchEngine:
         matched_rules.append("DUPLICATE_CHECK")
 
         # 3. Role/Title Targeting Check
-        role_allowed, role_reason = title_matches_allowed_role(job.title)
+        role_allowed, role_reason = title_matches_allowed_role(
+            job.title, getattr(preference, "job_titles", None)
+        )
         if not role_allowed:
             return MatchDecision(
                 decision=MatchDecisionEnum.SKIP,

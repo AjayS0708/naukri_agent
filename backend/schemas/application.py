@@ -136,7 +136,14 @@ class LimitCheckResponse(BaseModel):
 
 class ReconcileStaleExternalsResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    # Rule 1 (E5-R5.3): exact page-chrome signature matches.
     affected_count: int
     application_ids: list[int]
     job_ids: list[int]
     signature: str
+    # Rule 2 (E5-R6): pre-R5.4 native-URL misclassification recovery.
+    recovered_count: int = 0
+    recovered_application_ids: list[int] = Field(default_factory=list)
+    recovered_job_ids: list[int] = Field(default_factory=list)
+    # EXTERNAL_APPLICATION rows intentionally left unchanged (ambiguous or genuine).
+    remaining_external_ids: list[int] = Field(default_factory=list)
