@@ -431,6 +431,7 @@ class AutonomousCycle:
         max_jobs: Optional[int] = None,
         max_cards: int = 150,
         enable_cli_output: bool = True,
+        run_token: Optional[str] = None,
     ):
         # E5-R10: max_applications is accepted for API compatibility but is
         # NOT enforced as an application-count cap. Runs process every
@@ -441,6 +442,7 @@ class AutonomousCycle:
         self.max_jobs = max_jobs
         self.max_cards = max_cards
         self.enable_cli_output = enable_cli_output
+        self.run_token = run_token
         self.state_manager = AgentStateManager()
         self.tracker = DecisionTracker()
         self.applications_count = 0
@@ -453,6 +455,31 @@ class AutonomousCycle:
         if self.enable_cli_output:
             print(message)
 
+    def _cancellation_requested(self) -> bool:
+        """E5-R15: True when a Stop was requested for this run token."""
+        if not self.run_token:
+            return False
+        try:
+            from backend.services.autonomous_cycle.coordinator import coordinator
+
+            return coordinator.is_cancellation_requested(self.run_token)
+        except Exception as exc:
+            logger.warning(f"Cancellation check failed (continuing run): {exc}")
+            return False
+
+    def _check_cancellation(self, boundary: str) -> bool:
+        """Stop at a safe boundary when the user requested cancellation.
+
+        Returns True if the run should stop. Never starts a new application
+        after cancellation is requested (checked before each job).
+        """
+        if not self._cancellation_requested():
+            return False
+        self.stop_reason = f"Cancellation requested at {boundary}"
+        self.stop_is_normal = True
+        self._print(f"\nCancellation requested; stopping at {boundary}")
+        return True
+
     def _terminal_outcome(self) -> tuple[int, str]:
         """Map the recorded stop reason to the documented terminal contract.
 
@@ -460,7 +487,10 @@ class AutonomousCycle:
         completion, non-zero on AUTH/SECURITY/critical stop." E5-R10 removed
         application-count limits; a cycle that exhausts the eligible queue or
         stops on an explicit stop_is_normal reason completes with exit 0.
+        E5-R15: user cancellation is reported as CANCELLED (never COMPLETED).
         """
+        if self.stop_reason and "cancellation requested" in self.stop_reason.lower():
+            return 0, "CANCELLED"
         if not self.stop_reason or self.stop_is_normal:
             return 0, "COMPLETED"
         reason = self.stop_reason.upper()
@@ -498,6 +528,15 @@ class AutonomousCycle:
             self._print(f"Job titles: {', '.join(preferences.job_titles or [])}")
             self._print(f"Locations: {', '.join(preferences.locations or [])}")
 
+            if self._check_cancellation("start of cycle"):
+                exit_code, terminal_status = self._terminal_outcome()
+                return {
+                    "exit_code": exit_code,
+                    "run_id": None,
+                    "status": terminal_status,
+                    "stats": {"stop_reason": self.stop_reason},
+                }
+
             # Step 1: Discovery
             self._print("\n[1/5] Running discovery...")
             discovery_service = DiscoveryService(self.state_manager, max_cards=self.max_cards)
@@ -520,6 +559,15 @@ class AutonomousCycle:
                 self._print("ERROR: No discovery run record found")
                 return {"exit_code": 3, "run_id": None, "status": "FAILED", "stats": {}}
 
+            # E5-R15: surface discovery run id on the control row for Stop/status.
+            if self.run_token:
+                try:
+                    from backend.services.autonomous_cycle.coordinator import coordinator
+
+                    coordinator.set_discovery_run_id(self.run_token, self.current_discovery_run.id)
+                except Exception as exc:
+                    logger.warning(f"Failed to attach discovery_run_id to control row: {exc}")
+
             # Check if discovery actually found any jobs in this run
             if self.current_discovery_run.jobs_discovered == 0:
                 self._print(f"ERROR: Discovery found 0 jobs in current run (status: {self.current_discovery_run.status})")
@@ -534,6 +582,15 @@ class AutonomousCycle:
                 }
 
             self._print(f"Discovery run completed: {self.current_discovery_run.jobs_discovered} jobs discovered (status: {self.current_discovery_run.status})")
+
+            if self._check_cancellation("after discovery"):
+                exit_code, terminal_status = self._terminal_outcome()
+                return {
+                    "exit_code": exit_code,
+                    "run_id": self.current_discovery_run.id if self.current_discovery_run else None,
+                    "status": terminal_status,
+                    "stats": {"stop_reason": self.stop_reason},
+                }
 
             # Step 2: Hard filters and enqueue
             self._print("\n[2/5] Applying hard filters and enqueuing...")
@@ -591,6 +648,15 @@ class AutonomousCycle:
                     "run_id": self.current_discovery_run.id,
                     "status": "COMPLETED",
                     "stats": {**enqueue_stats, **ai_stats}
+                }
+
+            if self._check_cancellation("before applications"):
+                exit_code, terminal_status = self._terminal_outcome()
+                return {
+                    "exit_code": exit_code,
+                    "run_id": self.current_discovery_run.id,
+                    "status": terminal_status,
+                    "stats": {**enqueue_stats, **ai_stats, "stop_reason": self.stop_reason},
                 }
 
             # Step 4: Run applications (E5-R10: no count cap)
@@ -863,12 +929,20 @@ class AutonomousCycle:
             "errors": [],
         }
 
-        stmt = select(Job).where(
-            Job.id.in_(select(JobAnalysisModel.job_id))
+        # E5-R12: Include jobs without AI analysis that pass deterministic filters
+        # as fallback candidates. This prevents blocking native jobs when Gemini quota
+        # is exhausted. Jobs without analysis get a default match_score of 50.
+        # E5-R13: Restrict to NAUKRI_NATIVE jobs only for this recovery path.
+        # EXTERNAL, AMBIGUOUS, and NULL application_mode jobs are excluded to prevent
+        # external applications during native-only recovery.
+        stmt = select(Job).outerjoin(
+            JobAnalysisModel, Job.id == JobAnalysisModel.job_id
         ).outerjoin(
             Application, Application.job_id == Job.id
         ).where(
             (Application.id == None) | (Application.status == ApplicationStatus.SKIPPED.value)
+        ).where(
+            Job.application_mode == 'NAUKRI_NATIVE'
         ).distinct()
 
         if self.current_discovery_run and self.current_discovery_run.current_run_job_ids:
@@ -922,6 +996,10 @@ class AutonomousCycle:
         consecutive_errors = 0
 
         for job in eligible_jobs:
+            # E5-R15: never begin a new application after Stop is requested.
+            if self._check_cancellation(f"before job {job.id}"):
+                stats["stop_reason"] = self.stop_reason
+                return stats
             try:
                 result = await self._process_single_job(db, job, profile, preferences)
 
@@ -981,26 +1059,76 @@ class AutonomousCycle:
         self, db: Session, job: Job, profile: Profile, preferences: JobPreference
     ) -> str:
         """Process a single job through the application flow."""
+        # E5-R12: Fallback path for jobs without AI analysis
+        # If AI analysis is missing but job passes deterministic filters,
+        # allow it to proceed with a conservative default analysis.
         analysis_model = db.execute(
             select(JobAnalysisModel).where(JobAnalysisModel.job_id == job.id)
         ).scalars().first()
 
         if not analysis_model:
-            return "SKIPPED"
-
-        job_analysis = JobAnalysis(
-            match_score=analysis_model.match_score,
-            role_match=analysis_model.role_match,
-            skill_match=analysis_model.skill_match,
-            experience_match=analysis_model.experience_match,
-            location_match=analysis_model.location_match,
-            salary_match=analysis_model.salary_match,
-            job_quality=analysis_model.job_quality,
-            duplicate_probability=analysis_model.duplicate_probability,
-            suspicious=analysis_model.suspicious,
-            recommendation=analysis_model.recommendation,
-            short_reason=analysis_model.short_reason
-        )
+            logger.info(f"Job {job.id} has no AI analysis, using deterministic fallback")
+            
+            # Run deterministic checks only
+            match_engine = MatchEngine(db)
+            deterministic_decision = match_engine.evaluate_job_deterministic(job, profile, preferences)
+            
+            if deterministic_decision.decision.value != "APPLY":
+                self.tracker.add_decision(
+                    job.id, job.company, job.title, "N/A", False, False, False,
+                    "NO_ANALYSIS", deterministic_decision.reason, "SKIPPED"
+                )
+                return "SKIPPED"
+            
+            # Create and persist conservative default analysis for fallback path
+            # This ensures the ApplicationRunner will find it in the database
+            analysis_model = JobAnalysisModel(
+                job_id=job.id,
+                match_score=50,  # Conservative default score
+                role_match=True,
+                skill_match=True,
+                experience_match=True,
+                location_match=True,
+                salary_match=True,
+                job_quality="GOOD",
+                duplicate_probability=0.0,
+                suspicious=False,
+                recommendation="APPLY",
+                short_reason="Deterministic filter pass (no AI analysis)",
+                model="deterministic_fallback",
+                prompt_version="n/a"
+            )
+            db.add(analysis_model)
+            db.commit()
+            db.refresh(analysis_model)
+            
+            job_analysis = JobAnalysis(
+                match_score=analysis_model.match_score,
+                role_match=analysis_model.role_match,
+                skill_match=analysis_model.skill_match,
+                experience_match=analysis_model.experience_match,
+                location_match=analysis_model.location_match,
+                salary_match=analysis_model.salary_match,
+                job_quality=analysis_model.job_quality,
+                duplicate_probability=analysis_model.duplicate_probability,
+                suspicious=analysis_model.suspicious,
+                recommendation=analysis_model.recommendation,
+                short_reason=analysis_model.short_reason
+            )
+        else:
+            job_analysis = JobAnalysis(
+                match_score=analysis_model.match_score,
+                role_match=analysis_model.role_match,
+                skill_match=analysis_model.skill_match,
+                experience_match=analysis_model.experience_match,
+                location_match=analysis_model.location_match,
+                salary_match=analysis_model.salary_match,
+                job_quality=analysis_model.job_quality,
+                duplicate_probability=analysis_model.duplicate_probability,
+                suspicious=analysis_model.suspicious,
+                recommendation=analysis_model.recommendation,
+                short_reason=analysis_model.short_reason
+            )
 
         application_service = ApplicationService(db)
         allowed, reason = application_service.run_final_safety_gate(
@@ -1010,14 +1138,14 @@ class AutonomousCycle:
         if not allowed:
             self.tracker.add_decision(
                 job.id, job.company, job.title, "N/A", False, False, False,
-                analysis_model.recommendation or "N/A", reason, "SKIPPED"
+                job_analysis.recommendation, reason, "SKIPPED"
             )
             return "SKIPPED"
 
         if application_service.check_duplicate_application(job):
             self.tracker.add_decision(
                 job.id, job.company, job.title, "N/A", False, False, False,
-                analysis_model.recommendation or "N/A", "Duplicate", "SKIPPED"
+                job_analysis.recommendation, "Duplicate", "SKIPPED"
             )
             return "SKIPPED"
 
@@ -1042,7 +1170,7 @@ class AutonomousCycle:
             logger.warning("Job %s produced no application outcome: %s", job.id, reason)
             self.tracker.add_decision(
                 job.id, job.company, job.title, "UNKNOWN", False, False, False,
-                analysis_model.recommendation or "N/A", "PASSED", "ERROR"
+                job_analysis.recommendation, "PASSED", "ERROR"
             )
             return "ERROR"
 
@@ -1069,7 +1197,7 @@ class AutonomousCycle:
 
         self.tracker.add_decision(
             job.id, job.company, job.title, app_type, True, True, True,
-            analysis_model.recommendation or "N/A", "PASSED", outcome
+            job_analysis.recommendation, "PASSED", outcome
         )
 
         if app_results.get("applied", 0) > 0:

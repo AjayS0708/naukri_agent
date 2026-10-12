@@ -85,6 +85,7 @@ UNWANTED_SPECIALIZATIONS = [
     "platform engineer", "salesforce", "sap", "servicenow",
     "embedded", "firmware", "hardware", "electrical", "mechanical",
     "civil", "sales", "marketing", "hr", "operations",
+    "production", "manufacturing", "automobile",
 ]
 
 # Modifiers stripped from configured job_titles when deriving generic role
@@ -173,15 +174,92 @@ def is_strict_it_job(job: Job, industries: list[str] | None = None,
     allowed_industries = industries or list(DEFAULT_IT_INDUSTRIES)
     allowed_keywords = keywords or list(DEFAULT_IT_KEYWORDS)
 
-    # Industry field is preferred but not mandatory if title contains IT keywords
-    # If industry is present, it must match IT industries
-    # If industry is missing, allow job if title contains IT keywords
+    # E5-R14: Explicitly reject non-IT role categories first.
+    # This prevents manufacturing/production roles from passing just because
+    # their title contains "Engineer", "Trainee", or "AI".
+    # Handle role_category whether it's a clean string or list representation.
+    non_it_role_categories = [
+        "production", "manufacturing", "mechanical", "automobile",
+        "civil", "electrical equipment", "industrial automation",
+        "iron & steel", "auto components", "defence & aerospace",
+        "electronic components / semiconductors", "engineering & construction"
+    ]
+    if job.role_category:
+        role_cat_str = str(job.role_category).strip().lower()
+        for non_it in non_it_role_categories:
+            if non_it in role_cat_str:
+                return False
+
+    # E5-R13: Consider role_category and department in addition to industry.
+    # IT roles exist in non-IT industries (e.g., Data Science in Pharma).
+    # Allow job if ANY of industry, role_category, or department matches IT scope.
+    # Use precise matching to avoid false positives (e.g., "Engineering" in "Manufacturing & Engineering").
+    it_scope_match = False
+    industry_match = False
+
+    # Check industry - this is the strongest indicator
     if job.industry:
         industry_lower = job.industry.strip().lower()
-        if not any(value.lower() in industry_lower for value in allowed_industries):
-            return False
+        for industry in allowed_industries:
+            # Require the full IT industry name to be present as a separate word/phrase
+            # to avoid substring matches like "Engineering" matching "Manufacturing & Engineering"
+            if f" {industry.lower()} " in f" {industry_lower} " or industry_lower.startswith(industry.lower()) or industry_lower.endswith(industry.lower()):
+                it_scope_match = True
+                industry_match = True
+                break
 
-    # Title must contain IT keyword (always required)
+    # Check role_category - only specific IT-related role categories
+    # Allow "Data Science & Analytics", "DevOps/Cloud", "Software Product", etc.
+    # Reject "Production, Manufacturing & Engineering", "Sales", etc.
+    # Only check role_category if industry didn't match (to prevent false positives in non-IT industries)
+    # E5-R14 continuation: Allow role_category match if industry is None/missing OR if title has IT keywords
+    # This allows Data Science in Pharma (E5-R13) while preventing generic roles in non-IT industries
+    if not it_scope_match and job.role_category:
+        role_cat_str = str(job.role_category).strip().lower()
+        # Specific IT role categories that are genuinely IT
+        it_role_categories = [
+            "data science & analytics", "analytics & bi", "devops/cloud",
+            "it services & consulting", "software product", "engineering - software & qa",
+            "it & information security", "quality assurance / testing"
+        ]
+        for it_cat in it_role_categories:
+            if it_cat in role_cat_str:
+                # If industry is None/missing, allow role_category match (Job 229 case)
+                # If industry is non-IT, only allow if title has IT keywords (E5-R13 logic)
+                if not job.industry:
+                    it_scope_match = True
+                    break
+                elif _contains_keyword(job.title, allowed_keywords):
+                    it_scope_match = True
+                    break
+
+    # Check department - only if industry didn't match
+    # Only check department if industry didn't match (to prevent false positives in non-IT industries)
+    # E5-R14 continuation: Only check department if industry is None/missing
+    # Department check requires exact match with industry name (e.g., "Data Science & Analytics" in department)
+    # Not substring match (e.g., "Analytics" should not match "Analytics & BI")
+    if not it_scope_match and job.department and not job.industry:
+        dept_lower = job.department.strip().lower()
+        for industry in allowed_industries:
+            # Require exact match, not substring match
+            if dept_lower == industry.lower():
+                it_scope_match = True
+                break
+
+    # If none of the structural fields match, require title to contain IT keywords
+    # This handles jobs with missing or non-IT structural fields but IT-relevant titles
+    if not it_scope_match:
+        return _contains_keyword(job.title, allowed_keywords)
+
+    # If structural field matched, require title to contain IT keywords
+    # This prevents false positives from generic roles in IT companies
+    # (e.g., "Manager" in an IT company when the role is actually HR or Sales)
+    # E5-R14 continuation: Exception: if industry matched (strongest indicator),
+    # we don't require title keywords. This allows roles like "Apprentice - Trainee"
+    # in "Software Product" industry to pass.
+    if industry_match:
+        return True
+
     return _contains_keyword(job.title, allowed_keywords)
 
 

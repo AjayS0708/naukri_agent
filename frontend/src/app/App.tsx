@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal, RefreshCw, Play, AlertTriangle } from "lucide-react";
-import { getDashboardSummary, getHealth, getNeedsAttention, getNotifications, getRecentApplications, startAutonomousCycle, getAutonomousCycleStatus } from "../services/api";
+import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal, RefreshCw, Play, AlertTriangle, Square } from "lucide-react";
+import { getDashboardSummary, getHealth, getNeedsAttention, getNotifications, getRecentApplications, startAutonomousCycle, getAutonomousCycleStatus, stopAutonomousCycle } from "../services/api";
 import type { DashboardSummary, HealthResponse, NeedsAttentionItem, Notification, ProfileResponse, RecentApplicationItem, AutonomousCycleStatusResponse } from "../types/api";
 import { ProfileWorkspace } from "../components/ProfileWorkspace";
 import { AIStatus } from "../components/AIStatus";
@@ -63,7 +63,9 @@ export function App() {
   const [cycleLoading, setCycleLoading] = useState(false);
   const [showRunConfirmation, setShowRunConfirmation] = useState(false);
   const [startCycleLoading, setStartCycleLoading] = useState(false);
+  const [stopCycleLoading, setStopCycleLoading] = useState(false);
   const [cycleConflict, setCycleConflict] = useState(false);
+  const cycleRequestInFlight = startCycleLoading || stopCycleLoading;
 
   useEffect(() => {
     getHealth().then(setHealth).catch(() => setFailed(true));
@@ -182,8 +184,19 @@ export function App() {
     ]).finally(() => setIsRefreshing(false));
   };
 
-  // Autonomous cycle handlers (E3)
+  // Autonomous cycle handlers (E3 / E5-R15)
+  const refreshCycleStatus = async () => {
+    try {
+      const data = await getAutonomousCycleStatus();
+      setCycleStatus(data);
+      return data;
+    } catch {
+      return null;
+    }
+  };
+
   const handleStartCycle = async () => {
+    if (cycleRequestInFlight) return;
     setStartCycleLoading(true);
     setCycleConflict(false);
 
@@ -192,7 +205,17 @@ try {
       setCycleStatus({
         active_state: "RUNNING",
         lock_held: true,
-        active_run: { status: "RUNNING", run_id: result.run_id, started_at: null, completed_at: null, max_applications: result.max_applications, stats: {}, error: null },
+        active_run: {
+          status: "RUNNING",
+          run_id: result.run_id,
+          run_token: result.run_token ?? null,
+          started_at: null,
+          completed_at: null,
+          max_applications: result.max_applications,
+          stats: {},
+          error: null,
+          cancel_requested: false,
+        },
         last_run: cycleStatus?.last_run ?? null,
       });
       setShowRunConfirmation(false);
@@ -200,16 +223,30 @@ try {
       if (error?.status === 409) {
         setCycleConflict(true);
         // Refresh status to get current run info
-        getAutonomousCycleStatus()
-          .then((data) => setCycleStatus(data))
-          .catch(() => {});
+        await refreshCycleStatus();
       }
     } finally {
       setStartCycleLoading(false);
     }
   };
 
+  const handleStopCycle = async () => {
+    if (cycleRequestInFlight || !isCycleRunning) return;
+    setStopCycleLoading(true);
+    try {
+      const runToken = cycleStatus?.active_run?.run_token ?? undefined;
+      await stopAutonomousCycle({ run_token: runToken ?? null });
+      await refreshCycleStatus();
+    } catch {
+      // Best-effort: still refresh so the UI reflects backend state.
+      await refreshCycleStatus();
+    } finally {
+      setStopCycleLoading(false);
+    }
+  };
+
   const handleConfirmRunCycle = () => {
+    if (cycleRequestInFlight || isCycleRunning) return;
     setShowRunConfirmation(true);
   };
 
@@ -317,15 +354,17 @@ try {
 
             <section id="agent-control"><AgentControl /></section>
 
-            {/* Autonomous Cycle Control (E3) */}
+            {/* Autonomous Cycle Control (E3 / E5-R15) */}
             <section className="status-panel">
               <div>
                 <p className="eyebrow">AUTONOMOUS CYCLE</p>
-                <strong className={`agent-state ${(isCycleRunning ? "RUNNING" : "IDLE").toLowerCase()}`}>
-                  {isCycleRunning ? "Running" : "Idle"}
+                <strong className={`agent-state ${(isCycleRunning ? (cycleStatus?.active_run?.status === "CANCELLING" ? "PAUSED" : "RUNNING") : "IDLE").toLowerCase()}`}>
+                  {isCycleRunning ? (cycleStatus?.active_run?.status === "CANCELLING" ? "Stopping…" : "Running") : "Idle"}
                 </strong>
-                {isCycleRunning && <p>Discovery and application in progress...</p>}
+                {isCycleRunning && cycleStatus?.active_run?.status !== "CANCELLING" && <p>Discovery and application in progress...</p>}
+                {isCycleRunning && cycleStatus?.active_run?.status === "CANCELLING" && <p>Cancellation requested. Finishing the current safe step...</p>}
                 {!isCycleRunning && lastCycle?.status === "COMPLETED" && <p>Last cycle completed successfully.</p>}
+                {!isCycleRunning && lastCycle?.status === "CANCELLED" && <p>Last cycle was cancelled.</p>}
                 {!isCycleRunning && lastCycle?.status === "FAILED" && <p className="error-text">Last cycle failed. Check logs for details.</p>}
                 {cycleConflict && <p className="error-text">An autonomous cycle is already running.</p>}
               </div>
@@ -333,16 +372,27 @@ try {
                 {!isCycleRunning && !cycleConflict && (
                   <button
                     onClick={handleConfirmRunCycle}
-                    disabled={startCycleLoading || isCycleRunning}
+                    disabled={cycleRequestInFlight || isCycleRunning}
                     className="btn btn-primary"
                   >
                     <Play size={16} />
                     {startCycleLoading ? "Starting..." : "Run Autonomous Cycle"}
                   </button>
                 )}
+                {isCycleRunning && (
+                  <button
+                    onClick={handleStopCycle}
+                    disabled={cycleRequestInFlight || cycleStatus?.active_run?.status === "CANCELLING"}
+                    className="btn btn-danger"
+                    aria-label="Stop autonomous cycle"
+                  >
+                    <Square size={16} />
+                    {stopCycleLoading || cycleStatus?.active_run?.status === "CANCELLING" ? "Stopping..." : "Stop"}
+                  </button>
+                )}
                 {cycleConflict && (
                   <button
-                    onClick={() => getAutonomousCycleStatus().then((data) => setCycleStatus(data)).catch(() => {})}
+                    onClick={() => refreshCycleStatus()}
                     className="btn btn-secondary"
                   >
                     Refresh Status

@@ -733,12 +733,13 @@ class TestD62BoundedGeminiEvaluation:
 
         match_engine = MatchEngine(db_session)
 
-        # Create a job that will fail deterministic checks (non-IT industry, but IT keyword in title)
+        # E5-R13: structural fields must fail AND the title must lack IT
+        # keywords for the job to be deterministically rejected.
         non_it_job = Job(
             platform="naukri",
             external_job_id="nonit123",
             url="https://www.naukri.com/job/nonit",
-            title="Software Engineer",  # IT keyword in title to pass title check
+            title="Marketing Manager",  # No IT keyword in title
             company="Healthcare Corp",
             description="Healthcare role",
             location="Bengaluru",
@@ -751,7 +752,7 @@ class TestD62BoundedGeminiEvaluation:
             status="DISCOVERED",
             discovered_at=datetime.now(UTC),
             last_seen=datetime.now(UTC),
-            source="Software Engineer"
+            source="Marketing Manager"
         )
         db_session.add(non_it_job)
         db_session.commit()
@@ -760,9 +761,9 @@ class TestD62BoundedGeminiEvaluation:
         # Use deterministic-only evaluation
         match_decision = match_engine.evaluate_job_deterministic(non_it_job, confirmed_profile, job_preferences)
 
-        # Should fail deterministic checks
+        # Should fail deterministic checks (role targeting or IT gate)
         assert match_decision.decision.value != "APPLY"
-        assert "IT_SCOPE" in match_decision.failed_rules
+        assert match_decision.failed_rules, "Deterministic rejection must record a failed rule"
 
         # Gemini should never be called for this job (verified by deterministic-only method)
 
@@ -1287,8 +1288,12 @@ class TestC2ITGateMissingIndustryFix:
         result = is_strict_it_job(job)
         assert result is False, "Marketing Manager should fail IT gate (no IT keywords)"
 
-    def test_software_engineer_explicit_non_it_industry_fails(self):
-        """Software Engineer with explicitly non-IT industry should fail IT gate."""
+    def test_software_engineer_explicit_non_it_industry_passes_via_title(self):
+        """E5-R13: IT title in a non-IT industry still passes the IT gate.
+
+        Non-IT industry alone no longer fails a job whose title carries IT
+        keywords (e.g., Data Science roles inside Pharma/Healthcare).
+        """
         from backend.services.matching.engine import is_strict_it_job
 
         job = Job(
@@ -1299,7 +1304,21 @@ class TestC2ITGateMissingIndustryFix:
         )
 
         result = is_strict_it_job(job)
-        assert result is False, "Software Engineer with non-IT industry should fail IT gate"
+        assert result is True, "Software Engineer with IT keyword should pass even in non-IT industry"
+
+    def test_non_it_title_non_it_industry_fails(self):
+        """Non-IT title in a non-IT industry must fail the IT gate."""
+        from backend.services.matching.engine import is_strict_it_job
+
+        job = Job(
+            title="Quality Inspector",
+            industry="Manufacturing",
+            department=None,
+            role_category=None
+        )
+
+        result = is_strict_it_job(job)
+        assert result is False, "Quality Inspector in Manufacturing should fail IT gate"
 
     def test_software_engineer_allowed_it_industry_passes(self):
         """Software Engineer with allowed IT industry should pass IT gate."""
@@ -2004,23 +2023,28 @@ class TestRoleVocabularyExpansion:
     def test_software_engineer_with_non_it_industry_fails_it_gate(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference
     ):
-        """Test that 'Software Engineer' with explicit non-IT industry fails IT gate."""
+        """E5-R13: non-IT industry + non-IT title fails; IT title may still pass.
+
+        Explicit non-IT industry alone no longer rejects an IT-titled role
+        (Data Science in Pharma, etc.). A non-IT title with a non-IT industry
+        must still fail the IT gate.
+        """
         from backend.services.matching.engine import title_matches_allowed_role, is_strict_it_job
         from backend.models.job import Job
 
-        # Role targeting should pass
+        # Role targeting should pass for a generic SWE title
         role_allowed, role_reason = title_matches_allowed_role("Software Engineer")
         assert role_allowed is True
 
-        # But IT gate should fail with non-IT industry
+        # Non-IT title + non-IT industry: IT gate must fail
         job = Job(
-            title="Software Engineer",
+            title="Talent Acquisition Specialist",
             industry="Recruitment / Staffing",
             department=None,
             role_category=None
         )
         it_gate_result = is_strict_it_job(job)
-        assert it_gate_result is False, "Non-IT industry should cause IT gate failure"
+        assert it_gate_result is False, "Non-IT title in non-IT industry should fail IT gate"
 
 
 # =============================================================================
@@ -2079,6 +2103,7 @@ class TestD6MultiApplication:
             discovered_at=datetime.now(UTC),
             last_seen=datetime.now(UTC),
             source=title,
+            application_mode="NAUKRI_NATIVE",
         )
         db.add(job)
         db.commit()
@@ -2416,6 +2441,7 @@ class TestApplicationOutcomeReporting:
             discovered_at=datetime.now(UTC),
             last_seen=datetime.now(UTC),
             source=title,
+            application_mode="NAUKRI_NATIVE",
         )
         db.add(job)
         db.commit()

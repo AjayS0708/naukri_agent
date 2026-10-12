@@ -69,6 +69,35 @@ NATIVE_WITH_PROSE_HTML = """<!doctype html>
 </body></html>
 """
 
+# E5-R14: Conversational form with radio buttons
+CONVERSATIONAL_RADIO_HTML = """<!doctype html>
+<html><body>
+  <div class="chatbot_Drawer" id="application_drawer">
+    <div class="question">Do you have experience in Data Cleaning and EDA?</div>
+    <div class="options">
+      <label><input type="radio" name="exp" value="yes" id="radio_yes">Yes</label>
+      <label><input type="radio" name="exp" value="no" id="radio_no">No</label>
+    </div>
+    <div class="send sendMsg">Save</div>
+  </div>
+</body></html>
+"""
+
+# E5-R14: Conversational form with dropdown
+CONVERSATIONAL_DROPDOWN_HTML = """<!doctype html>
+<html><body>
+  <div class="chatbot_Drawer" id="application_drawer">
+    <div class="question">What is your highest education?</div>
+    <select name="education">
+      <option value="bachelor">Bachelor's Degree</option>
+      <option value="master">Master's Degree</option>
+      <option value="phd">PhD</option>
+    </select>
+    <div class="send sendMsg">Save</div>
+  </div>
+</body></html>
+"""
+
 
 async def _abort_all_requests(route):
     await route.abort()
@@ -255,6 +284,56 @@ class TestSyntheticControlledPage:
         assert str(path).startswith(str(tmp_path))
         assert Path(path).exists()
         assert Path(path).stat().st_size > 0
+
+    @pytest.mark.asyncio
+    async def test_conversational_radio_selection(self, offline_browser):
+        """E5-R14: Test radio button selection in conversational form."""
+        context, adapter = offline_browser
+        page = await context.new_page()
+        await page.set_content(CONVERSATIONAL_RADIO_HTML)
+
+        # Get the container and test selection logic directly
+        container = await adapter._get_visible_application_container(page)
+        assert container is not None
+
+        # Find radio buttons
+        radios = await container.query_selector_all('input[type="radio"]')
+        assert len(radios) == 2
+
+        # Click the "Yes" radio via its label
+        radio_yes = await container.query_selector("#radio_yes")
+        label_yes = await container.query_selector('label[for="radio_yes"]')
+        
+        if label_yes and await label_yes.is_visible():
+            await label_yes.click()
+        else:
+            await radio_yes.check()
+        
+        # Verify the radio was checked
+        is_checked = await radio_yes.is_checked()
+        assert is_checked is True
+
+    @pytest.mark.asyncio
+    async def test_conversational_dropdown_selection(self, offline_browser):
+        """E5-R14: Test dropdown selection in conversational form."""
+        context, adapter = offline_browser
+        page = await context.new_page()
+        await page.set_content(CONVERSATIONAL_DROPDOWN_HTML)
+
+        # Get the container
+        container = await adapter._get_visible_application_container(page)
+        assert container is not None
+
+        # Find dropdown
+        select = await container.query_selector("select[name='education']")
+        assert select is not None
+
+        # Select "Bachelor's Degree"
+        await select.select_option(value="bachelor")
+
+        # Verify the dropdown was selected
+        value = await select.input_value()
+        assert value == "bachelor"
 
     @pytest.mark.asyncio
     async def test_popup_observer_records_presence_and_absence(

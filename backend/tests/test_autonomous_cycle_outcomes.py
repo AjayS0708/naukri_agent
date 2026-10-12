@@ -95,6 +95,8 @@ def _make_analyzed_job(db_session: Session, index: int) -> Job:
         experience="0-2 years",
         employment_type="Full-time",
         status="DISCOVERED",
+        # E5-R13: recovery apply path only includes NAUKRI_NATIVE jobs.
+        application_mode="NAUKRI_NATIVE",
     )
     db_session.add(job)
     db_session.commit()

@@ -37,7 +37,11 @@ def test_missing_experience_requires_entry_level_title(preference):
 
 def test_it_scope_is_deterministic():
     assert is_strict_it_job(Job(title="Data Analyst", industry="IT Services & Consulting"))
-    assert not is_strict_it_job(Job(title="Data Analyst", industry="Hospital & Health Care"))
+    # E5-R13: IT titles in non-IT industries are allowed (e.g., Data Analyst
+    # inside Hospital & Health Care) because the title carries an IT keyword.
+    assert is_strict_it_job(Job(title="Data Analyst", industry="Hospital & Health Care"))
+    # A non-IT title in a non-IT industry still fails.
+    assert not is_strict_it_job(Job(title="Ward Manager", industry="Hospital & Health Care"))
     # D5 deliberately relaxed the C2 metadata requirement: when industry metadata
     # is absent, an IT title keyword qualifies the job (locked by
     # TestC2ITGateMissingIndustryFix in test_autonomous_cycle.py). "data" is an IT

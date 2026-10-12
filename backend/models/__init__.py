@@ -9,5 +9,6 @@ from backend.models.ai_queue import AIQueueItem
 from backend.models.feedback import JobFeedback, DecisionQualityRecord
 from backend.models.worker import Worker
 from backend.models.notification import Notification
+from backend.models.cycle_run import CycleRunControl
 
-__all__ = ["Profile", "Resume", "AIUsage", "JobAnalysisModel", "Job", "JobPreference", "MatchResult", "DiscoveryRun", "Application", "ApplicationAnswer", "SchedulerConfig", "AIQueueItem", "JobFeedback", "DecisionQualityRecord", "Worker", "Notification"]
+__all__ = ["Profile", "Resume", "AIUsage", "JobAnalysisModel", "Job", "JobPreference", "MatchResult", "DiscoveryRun", "Application", "ApplicationAnswer", "SchedulerConfig", "AIQueueItem", "JobFeedback", "DecisionQualityRecord", "Worker", "Notification", "CycleRunControl"]

@@ -98,9 +98,23 @@ export interface AutonomousCycleStartRequest {
 
 export interface AutonomousCycleStartResponse {
   run_id: number | null;
+  run_token?: string | null;
   status: string;
   max_applications: number | null;
   message: string;
+}
+
+export interface AutonomousCycleStopRequest {
+  run_token?: string | null;
+}
+
+export interface AutonomousCycleStopResponse {
+  cancel_requested: boolean;
+  active_state: string;
+  message: string;
+  run_id: number | null;
+  run_token: string | null;
+  status: string | null;
 }
 
 export interface AutonomousCycleStatusResponse {
@@ -112,12 +126,14 @@ export interface AutonomousCycleStatusResponse {
 
 export interface AutonomousCycleRun {
   run_id: number | null;
-  status: "RUNNING" | "COMPLETED" | "FAILED";
+  run_token?: string | null;
+  status: "RUNNING" | "CANCELLING" | "COMPLETED" | "FAILED" | "CANCELLED";
   started_at: string | null;
   completed_at: string | null;
   max_applications: number | null;
   stats: Record<string, unknown>;
   error: string | null;
+  cancel_requested?: boolean;
 }
 
 // ── Applications List types (Drill-down) ─────────────────────────────

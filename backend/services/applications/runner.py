@@ -548,6 +548,27 @@ class ApplicationRunner:
         question_lower = question.lower()
         profile_data = profile.data if isinstance(profile.data, dict) else {}
 
+        # E5-R14: Handle specific screening questions based on profile skills/projects
+        # Data Cleaning/EDA question - check for relevant skills and projects
+        if "data cleaning" in question_lower or "eda" in question_lower or "exploratory data analysis" in question_lower:
+            skills = profile_data.get("skills", [])
+            projects = profile_data.get("projects", [])
+            
+            # Check for data cleaning/EDA skills
+            relevant_skills = [s for s in skills if any(term in s.lower() for term in ["pandas", "numpy", "data", "analysis", "cleaning"])]
+            
+            # Check projects for data cleaning work
+            has_data_project = False
+            for project in projects:
+                if isinstance(project, dict):
+                    desc = project.get("description", "").lower()
+                    if "clean" in desc or "process" in desc or "data" in desc:
+                        has_data_project = True
+                        break
+            
+            if relevant_skills or has_data_project:
+                return "Yes"
+
         # Common factual questions
         if "experience" in question_lower or "years" in question_lower:
             exp_count = compute_profile_experience_years(profile_data.get("experience", []))

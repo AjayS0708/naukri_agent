@@ -11,6 +11,7 @@ from backend.services.platform_adapter import JobPlatformAdapter
 from backend.core.logging import get_logger
 from backend.schemas.application import ApplicationStartResult
 from backend.core.config import get_settings
+from backend.services.browser_session_lock import BrowserSessionLock
 
 logger = get_logger(__name__)
 
@@ -88,10 +89,26 @@ class NaukriAdapter(JobPlatformAdapter):
         self.browser: BrowserContext = None
         self.browser_type = browser_type.lower()
         self.last_startup_error: Optional[str] = None
+        self._session_lock: Optional[BrowserSessionLock] = None
 
     async def start_session(self) -> bool:
         try:
             self.last_startup_error = None
+            # E5-R15 Goal C: exclusive claim on the persistent profile so two
+            # agent processes never open the same Chrome user-data directory.
+            self._session_lock = BrowserSessionLock(USER_DATA_DIR)
+            if not self._session_lock.try_acquire():
+                self.last_startup_error = self._session_lock.conflict_message()
+                logger.error(
+                    "browser_session_profile_in_use",
+                    extra={
+                        "user_data_dir": USER_DATA_DIR,
+                        "owner_pid": self._session_lock.owner_pid(),
+                    },
+                )
+                self._session_lock = None
+                return False
+
             self.playwright = await async_playwright().start()
 
             # Select browser channel based on configuration
@@ -121,13 +138,21 @@ class NaukriAdapter(JobPlatformAdapter):
             if self.playwright:
                 await self.playwright.stop()
                 self.playwright = None
+            if self._session_lock is not None:
+                self._session_lock.release()
+                self._session_lock = None
             return False
 
     async def stop_session(self):
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        try:
+            if self.browser:
+                await self.browser.close()
+            if self.playwright:
+                await self.playwright.stop()
+        finally:
+            if self._session_lock is not None:
+                self._session_lock.release()
+                self._session_lock = None
 
     async def _check_security(self, page: Page):
         """Detect boundaries where agent needs to stop safely per PRD.
@@ -1307,10 +1332,9 @@ class NaukriAdapter(JobPlatformAdapter):
     async def answer_conversational_question(self, page: Page, answer: str) -> bool:
         """Answer the active conversational question and click Save.
 
-        Handles both radio-group questions (clicks the matching option) and
-        text questions (fills the contenteditable composer), then clicks the
-        drawer's Save control. Returns True only when an answer surface was
-        found and Save was clicked.
+        E5-R14: Handles radio-group questions, dropdowns, and text questions.
+        Verifies the selected state before clicking Save. Returns True only when
+        an answer surface was found, selected, and Save was clicked.
         """
         container = await self._get_visible_application_container(page)
         if container is None:
@@ -1320,14 +1344,17 @@ class NaukriAdapter(JobPlatformAdapter):
         target = self._normalize_choice(answer)
         answered = False
 
+        # Try radio buttons first
         radios = await container.query_selector_all('input[type="radio"]')
         if radios:
             best = None
+            best_label = None
             best_score = -1
             for radio in radios:
                 radio_id = await radio.get_attribute("id")
                 value = (await radio.get_attribute("value") or "").strip()
                 label_text = value
+                label = None
                 if radio_id:
                     label = await container.query_selector(f'label[for="{radio_id}"]')
                     if label is not None:
@@ -1341,23 +1368,63 @@ class NaukriAdapter(JobPlatformAdapter):
                 if score > best_score:
                     best_score = score
                     best = radio
+                    best_label = label
             if best is not None and best_score >= 0:
                 try:
-                    await best.check()
+                    # E5-R14: Click the label instead of just checking the radio
+                    # This ensures the UI state updates properly
+                    if best_label and await best_label.is_visible():
+                        await best_label.click()
+                        logger.info("Conversational radio label clicked (score=%d) for answer=%r", best_score, answer)
+                    else:
+                        await best.check()
+                        logger.info("Conversational radio checked (score=%d) for answer=%r", best_score, answer)
+                    
+                    # E5-R14: Verify the radio is actually checked
+                    await page.wait_for_timeout(200)
+                    is_checked = await best.is_checked()
+                    if not is_checked:
+                        logger.warning("Radio selection did not update checked state, retrying with click")
+                        await best.click()
+                        await page.wait_for_timeout(200)
+                        is_checked = await best.is_checked()
+                        if not is_checked:
+                            logger.warning("Radio still not checked after retry")
+                    
                     answered = True
-                    logger.info(
-                        "Conversational radio selected (score=%d) for answer=%r",
-                        best_score, answer,
-                    )
                 except Exception as exc:
                     logger.warning("Failed to select conversational radio: %s", exc)
-        else:
+
+        # Try dropdowns (select elements)
+        if not answered:
+            selects = await container.query_selector_all('select')
+            if selects:
+                for select in selects:
+                    options = await select.query_selector_all('option')
+                    for option in options:
+                        option_text = await option.inner_text()
+                        norm = self._normalize_choice(option_text)
+                        if norm and (norm == target or norm in target or target in norm):
+                            try:
+                                await select.select_option(value=await option.get_attribute("value"))
+                                logger.info("Conversational dropdown selected for answer=%r", answer)
+                                answered = True
+                                await page.wait_for_timeout(200)
+                                break
+                            except Exception as exc:
+                                logger.warning("Failed to select dropdown option: %s", exc)
+                    if answered:
+                        break
+
+        # Try text input (contenteditable)
+        if not answered:
             composer = await container.query_selector('[contenteditable="true"]')
             if composer is not None and await composer.is_visible():
                 try:
                     await composer.fill(answer)
-                    answered = True
                     logger.info("Conversational text answer filled for %r", answer)
+                    answered = True
+                    await page.wait_for_timeout(200)
                 except Exception as exc:
                     logger.warning("Failed to fill conversational composer: %s", exc)
 
@@ -1369,6 +1436,26 @@ class NaukriAdapter(JobPlatformAdapter):
 
     async def _click_conversational_save(self, page: Page) -> bool:
         """Click the conversational drawer's Save control (a div, not a button)."""
+        # E5-R13: Dismiss any blocking overlays (e.g., chatbot overlay)
+        # that intercept pointer events before clicking Save
+        # E5-R14: Exclude the application drawer itself (chatbot_Drawer) from dismissal
+        for overlay_selector in (".chatbot_Overlay",):
+            overlay = await page.query_selector(overlay_selector)
+            if overlay and await overlay.is_visible():
+                try:
+                    # Try to click close button first
+                    close_btn = await overlay.query_selector(".close, [class*='close'], button")
+                    if close_btn and await close_btn.is_visible():
+                        await close_btn.click()
+                        logger.info("Clicked close button on overlay: %s", overlay_selector)
+                        await page.wait_for_timeout(500)
+                    else:
+                        # Fallback: hide the overlay via JS
+                        await page.evaluate(f'() => {{ const el = document.querySelector("{overlay_selector}"); if(el) el.style.display = "none"; }}')
+                        logger.info("Dismissed blocking overlay via JS: %s", overlay_selector)
+                except Exception as exc:
+                    logger.warning("Failed to dismiss overlay %s: %s", overlay_selector, exc)
+
         for selector in (".sendMsg", ".send .sendMsg", "#sendMsg .sendMsg"):
             el = await page.query_selector(selector)
             if el is not None and await el.is_visible():

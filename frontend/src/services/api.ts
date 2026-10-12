@@ -1,4 +1,4 @@
-import type { ApplicationsListResponse, AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, DashboardSummary, HealthResponse, JobsListResponse, NeedsAttentionResponse, NotificationHistoryResponse, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse } from "../types/api";
+import type { ApplicationsListResponse, AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, AutonomousCycleStopRequest, AutonomousCycleStopResponse, DashboardSummary, HealthResponse, JobsListResponse, NeedsAttentionResponse, NotificationHistoryResponse, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse } from "../types/api";
 
 const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -94,6 +94,13 @@ export const startAutonomousCycle = (request: AutonomousCycleStartRequest) =>
 
 export const getAutonomousCycleStatus = () =>
   apiRequest<AutonomousCycleStatusResponse>("/autonomous-cycle/status");
+
+export const stopAutonomousCycle = (request: AutonomousCycleStopRequest = {}) =>
+  apiRequest<AutonomousCycleStopResponse>("/autonomous-cycle/stop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
 
 // ── Drill-down endpoints (Checkpoint E5) ─────────────────────────────
 export const getApplicationsList = (status: string | null = null, limit = 50, offset = 0) => {

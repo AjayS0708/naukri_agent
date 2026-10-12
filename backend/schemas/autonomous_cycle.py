@@ -28,9 +28,32 @@ class AutonomousCycleStartResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run_id: Optional[int] = None
+    run_token: Optional[str] = None
     status: str
     max_applications: Optional[int] = None
     message: str
+
+
+class AutonomousCycleStopRequest(BaseModel):
+    """Request to stop the active autonomous cycle (E5-R15)."""
+    model_config = ConfigDict(extra="forbid")
+
+    run_token: Optional[str] = Field(
+        default=None,
+        description="Optional token from start; stops the active run only if it matches.",
+    )
+
+
+class AutonomousCycleStopResponse(BaseModel):
+    """Response after requesting stop (idempotent)."""
+    model_config = ConfigDict(extra="forbid")
+
+    cancel_requested: bool
+    active_state: str
+    message: str
+    run_id: Optional[int] = None
+    run_token: Optional[str] = None
+    status: Optional[str] = None
 
 
 class AutonomousCycleStatusResponse(BaseModel):
@@ -48,9 +71,11 @@ class AutonomousCycleRunResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run_id: Optional[int] = None
+    run_token: Optional[str] = None
     status: str
     max_applications: Optional[int] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     stats: dict = Field(default_factory=dict)
     error: Optional[str] = None
+    cancel_requested: bool = False

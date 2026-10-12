@@ -320,12 +320,13 @@ def test_it_filter_with_valid_metadata():
     assert is_strict_it_job(job) is True
 
 def test_it_filter_with_non_it_industry_even_with_it_role():
-    """Job with non-IT industry should fail IT filter even with IT role category."""
+    """Job with non-IT industry should fail IT filter even with IT role category if title lacks IT keywords."""
     from backend.services.matching.engine import is_strict_it_job
     from backend.models.job import Job
 
+    # This job has IT-sounding role_category but no IT keywords in title (just "Fresher")
     job = Job(
-        title="Software Engineer Fresher",
+        title="Fresher",
         industry="Travel & Tourism",
         department="Engineering - Software & QA",
         role_category="Software Engineer"
@@ -361,30 +362,118 @@ def test_it_filter_with_missing_metadata_no_it_keywords():
     assert is_strict_it_job(job) is False
 
 def test_it_filter_with_non_it_industry():
-    """Job with non-IT industry should fail IT filter."""
+    """Job with non-IT industry but IT keywords in title should pass IT filter."""
     from backend.services.matching.engine import is_strict_it_job
     from backend.models.job import Job
 
+    # This job has IT keywords in title ("Data Analyst"), so it passes
+    # This is correct - Healthcare is non-IT but the role is clearly IT
     job = Job(
         title="Data Analyst Fresher",
         industry="Healthcare",
         department="Analytics",
         role_category="Data Analyst"
     )
-    assert is_strict_it_job(job) is False
+    assert is_strict_it_job(job) is True
 
 def test_it_filter_with_financial_services_industry():
-    """Job with Financial Services industry should fail IT filter."""
+    """Job with Financial Services industry should fail IT filter unless title has IT keywords."""
     from backend.services.matching.engine import is_strict_it_job
     from backend.models.job import Job
 
+    # This job has IT keywords in title ("Software Engineer"), so it passes
+    # This is correct - Financial Services is non-IT but the role is clearly IT
     job = Job(
         title="Software Engineer Fresher",
         industry="Financial Services",
         department="Engineering - Software & QA",
         role_category="Software Engineer"
     )
+    assert is_strict_it_job(job) is True
+
+def test_it_filter_non_it_industry_non_it_title_with_it_role():
+    """Job with non-IT industry, non-IT title, but IT role_category should fail."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    # This job has IT role_category but non-IT title in non-IT industry
+    job = Job(
+        title="Manager",
+        industry="Financial Services",
+        department="Engineering - Software & QA",
+        role_category="Engineering - Software & QA"
+    )
     assert is_strict_it_job(job) is False
+
+def test_it_filter_reject_manufacturing_role_category():
+    """E5-R14: Job with manufacturing role_category should fail even with IT-sounding title."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    # Job 188 case: AI Specialist - Trainee in Management Consulting with Production, Manufacturing & Engineering role_category
+    job = Job(
+        title="AI Specialist - Trainee",
+        industry="Management Consulting",
+        department="Production, Manufacturing & Engineering",
+        role_category="['Production', 'Manufacturing & Engineering']"
+    )
+    assert is_strict_it_job(job) is False
+
+def test_it_filter_reject_production_role_category():
+    """E5-R14: Job with production role_category should fail even with IT-sounding title."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    # Job 269 case: Production Engineer in Electrical Equipment
+    job = Job(
+        title="Production Engineer",
+        industry="Electrical Equipment",
+        department=None,
+        role_category="['Production', 'Manufacturing & Engineering']"
+    )
+    assert is_strict_it_job(job) is False
+
+def test_it_filter_reject_automobile_role_category():
+    """E5-R14: Job with automobile role_category should fail even with IT-sounding title."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    job = Job(
+        title="Graduate Engineer Trainee",
+        industry="Auto Components",
+        department=None,
+        role_category="['Production', 'Manufacturing & Engineering']"
+    )
+    assert is_strict_it_job(job) is False
+
+def test_it_filter_allow_data_science_in_pharma():
+    """E5-R13: Job with Data Science role_category in non-IT industry should pass if title has IT keywords."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    # Job 229 case: AI Engineer in Pharmaceutical & Life Sciences with Data Science & Analytics role_category
+    job = Job(
+        title="Artificial Intelligence Engineer",
+        industry="Pharmaceutical & Life Sciences",
+        department=None,
+        role_category="Data Science & Analytics"
+    )
+    assert is_strict_it_job(job) is True
+
+def test_it_scope_structural_field_match():
+    """E5-R14 continuation: Job with matching IT structural field should pass IT scope even without title keywords."""
+    from backend.services.matching.engine import is_strict_it_job
+    from backend.models.job import Job
+
+    # Job 105 case: Apprentice - Trainee in Software Product with Engineering - Software & QA role_category
+    # This should pass because industry and role_category match IT scope
+    job = Job(
+        title="Apprentice - Trainee",
+        industry="Software Product",
+        department=None,
+        role_category="Engineering - Software & QA"
+    )
+    assert is_strict_it_job(job) is True
 
 
 # ── Experience Rule Tests ───────────────────────────────────────────────

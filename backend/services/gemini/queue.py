@@ -465,20 +465,43 @@ class AIQueueService:
     
     def _calculate_priority(self, job: Job, priority_reason: Optional[str]) -> int:
         """
-        Calculate deterministic priority for a job.
+        Calculate deterministic priority for a job (E5-R12).
         
         Priority factors (higher = higher priority):
-        - Jobs discovered earlier (lower priority)
+        - Interest tier (P1 analytics > P2 DE/ML > P3 grad > other)
+        - Application mode (NAUKRI_NATIVE > AMBIGUOUS > EXTERNAL)
         - Jobs with complete descriptions (higher priority)
-        - Jobs from preferred sources (higher priority)
+        - Jobs discovered more recently (higher priority)
         
         Returns priority value (0-100).
+        
+        E5-R12: Align with application runner's candidate prioritization so
+        NAUKRI_NATIVE jobs and high-interest roles are analyzed first when quota
+        is constrained. This prevents spending scarce Gemini quota on low-value
+        external jobs while relevant native jobs remain unprocessed.
         """
-        priority = 50  # Base priority
+        # Import locally to avoid circular dependency
+        from backend.services.autonomous_cycle.service import (
+            interest_priority_rank,
+            application_mode_rank
+        )
+        
+        # Base priority from interest tier (0-3, inverted for priority score)
+        # P1 (rank 0) gets highest priority
+        interest_rank = interest_priority_rank(job)
+        priority = 40 - (interest_rank * 10)  # P1=40, P2=30, P3=20, Other=10
+        
+        # Boost for NAUKRI_NATIVE application mode
+        mode_rank = application_mode_rank(job)
+        if mode_rank == 0:  # NAUKRI_NATIVE
+            priority += 20
+        elif mode_rank == 1:  # AMBIGUOUS
+            priority += 10
+        # EXTERNAL (rank 2) gets no boost
         
         # Boost for complete description
         if job.description and len(job.description) > 200:
-            priority += 20
+            priority += 10
         
         # Boost for recent discovery (within last 24 hours)
         if job.discovered_at:
@@ -490,14 +513,10 @@ class AIQueueService:
                 
                 hours_since_discovery = (utc_now() - job_discovered).total_seconds() / 3600
                 if hours_since_discovery < 24:
-                    priority += 15
+                    priority += 5
             except (AttributeError, TypeError):
                 # Skip datetime calculation if there's an issue
                 pass
-        
-        # Boost for known job title matches
-        if job.title and any(keyword in job.title.lower() for keyword in ["python", "data", "machine learning", "ai", "engineer"]):
-            priority += 10
         
         # Ensure priority is within bounds
         return max(0, min(100, priority))
