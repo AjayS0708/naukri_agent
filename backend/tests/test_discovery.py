@@ -946,3 +946,63 @@ async def test_rediscovery_backfills_null_application_mode_only(
     assert already_native.application_mode == "NAUKRI_NATIVE"
     # Only the NULL-mode job should trigger a details visit.
     assert mock_adapter.fetch_job_details.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_discovery_stop_via_cycle_cancel_check(
+    state_manager, mock_db_session, mock_adapter
+):
+    """E5-R16: Stop reaches discovery through the cycle's cancel_check.
+
+    The autonomous cycle holds its own DiscoveryService instance, so the
+    service-level /api/discovery/stop flag never reaches it. The injected
+    cancel_check is the only path that makes Stop work during discovery.
+    """
+    fixed_now = datetime(2026, 3, 19, 12, 30, tzinfo=UTC)
+
+    with patch("backend.services.discovery.service.utc_now", return_value=fixed_now):
+        service = DiscoveryService(state_manager, cancel_check=lambda: True)
+        service.adapter = mock_adapter
+
+        mock_preferences = MagicMock(spec=JobPreference)
+        mock_preferences.job_titles = ["Developer"]
+        mock_preferences.locations = []
+        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+            mock_preferences
+        ]
+
+        await service.run_discovery(mock_db_session)
+
+    assert service.current_run.status == "STOPPED"
+    assert service.current_run.error_message == "Stopped by user."
+    assert service.current_run.searches_attempted == 0
+    assert service.current_run.jobs_discovered == 0
+    assert service.current_run.completed_at == fixed_now
+    assert state_manager.current_state == AgentState.IDLE
+
+
+@pytest.mark.asyncio
+async def test_discovery_cancel_check_is_silent_when_not_requested(
+    state_manager, mock_db_session, mock_adapter
+):
+    """A cancel_check that reports no cancellation must not stop discovery."""
+    calls = {"count": 0}
+
+    def no_cancel():
+        calls["count"] += 1
+        return False
+
+    service = DiscoveryService(state_manager, cancel_check=no_cancel)
+    service.adapter = mock_adapter
+
+    mock_preferences = MagicMock(spec=JobPreference)
+    mock_preferences.job_titles = ["Developer"]
+    mock_preferences.locations = []
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
+        mock_preferences
+    ]
+
+    await service.run_discovery(mock_db_session)
+
+    assert calls["count"] > 0
+    assert service.current_run.status != "STOPPED"

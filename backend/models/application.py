@@ -40,6 +40,12 @@ class Application(Base):
     # Additional metadata
     needs_attention: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     is_dry_run: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    # E5-R16: true only for rows created by read-only Naukri application-history
+    # reconciliation. Distinguishes an observed submission from a repaired local
+    # record without altering either.
+    reconciled_from_history: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="0"
+    )
     
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

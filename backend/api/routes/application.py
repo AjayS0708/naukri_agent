@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from backend.database.database import get_session
+from backend.schemas.agent import AgentState
 from backend.schemas.application import (
     ApplicationSchema, ApplicationCreate, ApplicationUpdate,
     ApplicationStartRequest, ApplicationStartResponse, ApplicationHistoryResponse,
-    ReconcileStaleExternalsResponse
+    ReconcileStaleExternalsResponse, ReconcileHistoryResponse
 )
 from backend.services.applications import ApplicationService, ApplicationRunner
 from backend.services.agent_state import AgentStateManager
@@ -96,6 +97,69 @@ async def reconcile_stale_externals(db: Session = Depends(get_session)):
     return ReconcileStaleExternalsResponse(**result)
 
 
+@router.post("/reconcile-history", response_model=ReconcileHistoryResponse)
+async def reconcile_history(db: Session = Depends(get_session)):
+    """Read-only reconciliation of local records against Naukri history.
+
+    E5-R16: opens the existing persistent browser profile, reads the
+    authenticated applied-jobs page and compares it with local rows. It never
+    clicks Apply, never submits, withdraws or modifies a Naukri application,
+    and never deletes a local record. Refuses while an autonomous cycle holds
+    the browser profile, and reports LOGIN_REQUIRED without reading anything
+    when the session is not authenticated.
+    """
+    from backend.core.config import get_settings
+    from backend.services.autonomous_cycle.coordinator import coordinator
+    from backend.services.naukri.adapter import NaukriAdapter
+
+    snapshot = coordinator.snapshot(db=db)
+    if snapshot.get("active_state") == "RUNNING":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "AUTONOMOUS_CYCLE_RUNNING",
+                "message": "Wait for the active autonomous cycle to finish",
+            },
+        )
+
+    service = ApplicationService(db)
+    settings = get_settings()
+    adapter = NaukriAdapter(browser_type=settings.browser_type)
+    started = await adapter.start_session()
+    if not started:
+        return ReconcileHistoryResponse(
+            status="SESSION_UNAVAILABLE",
+            message=adapter.last_startup_error or "Browser session could not start",
+        )
+    try:
+        auth = await adapter.check_session_authenticated()
+        if auth.get("authenticated") is False:
+            return ReconcileHistoryResponse(
+                status="LOGIN_REQUIRED",
+                message=(
+                    "Naukri session is not authenticated; sign in manually in "
+                    "the agent browser and retry. No history was read."
+                ),
+            )
+        try:
+            entries = await adapter.fetch_application_history()
+        except Exception as exc:
+            if "login required" in str(exc).lower():
+                return ReconcileHistoryResponse(
+                    status="LOGIN_REQUIRED",
+                    message="Naukri session is not authenticated; no history was read.",
+                )
+            logger.exception("naukri_history_read_failed")
+            return ReconcileHistoryResponse(
+                status="FAILED",
+                message=f"History read failed: {type(exc).__name__}",
+            )
+        result = service.reconcile_from_history(entries)
+        return ReconcileHistoryResponse(status="OK", **result)
+    finally:
+        await adapter.stop_session()
+
+
 @router.get("/{application_id}", response_model=ApplicationSchema)
 async def get_application(application_id: int, db: Session = Depends(get_session)):
     """Get an application by ID."""
@@ -130,6 +194,11 @@ async def run_applications(
     Start the application runner for a list of job IDs.
     This runs in the background.
     """
+    if _state_manager.current_state == AgentState.AUTH_REQUIRED:
+        # E5-R16: the previous run stopped on a logged-out session. Once the
+        # operator has signed in again, the retry starts from a clean state.
+        _state_manager.transition_to(AgentState.STOPPED)
+        _state_manager.transition_to(AgentState.IDLE)
     if _state_manager.current_state.value != "IDLE":
         raise HTTPException(
             status_code=400,

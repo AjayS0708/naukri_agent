@@ -127,7 +127,7 @@ export interface AutonomousCycleStatusResponse {
 export interface AutonomousCycleRun {
   run_id: number | null;
   run_token?: string | null;
-  status: "RUNNING" | "CANCELLING" | "COMPLETED" | "FAILED" | "CANCELLED";
+  status: "RUNNING" | "CANCELLING" | "COMPLETED" | "FAILED" | "CANCELLED" | "LOGIN_REQUIRED";
   started_at: string | null;
   completed_at: string | null;
   max_applications: number | null;

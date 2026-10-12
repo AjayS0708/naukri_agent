@@ -2542,10 +2542,11 @@ class TestApplicationOutcomeReporting:
         cycle.stop_reason = "Security challenge encountered"
         assert cycle._terminal_outcome() == (2, "FAILED")
 
-    def test_auth_stop_is_failure(self):
+    def test_auth_stop_is_login_required(self):
+        """E5-R16: a logged-out session is LOGIN_REQUIRED, never COMPLETED."""
         cycle = self._make_cycle()
         cycle.stop_reason = "Authentication required"
-        assert cycle._terminal_outcome() == (2, "FAILED")
+        assert cycle._terminal_outcome() == (2, "LOGIN_REQUIRED")
 
     def test_unclassified_stop_is_failure(self):
         cycle = self._make_cycle()

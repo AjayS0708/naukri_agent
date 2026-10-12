@@ -230,7 +230,9 @@ class CycleCoordinator:
             self.ensure_row(db)
             row = db.get(CycleRunControl, CONTROL_ROW_ID)
             terminal_status = result.get("status", "FAILED")
-            if terminal_status not in {"COMPLETED", "FAILED", "CANCELLED"}:
+            # LOGIN_REQUIRED (E5-R16) is a legitimate terminal state: the run
+            # stopped because the Naukri session needs a manual sign-in.
+            if terminal_status not in {"COMPLETED", "FAILED", "CANCELLED", "LOGIN_REQUIRED"}:
                 terminal_status = "FAILED"
             payload = {
                 "run_id": result.get("run_id"),

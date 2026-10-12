@@ -215,6 +215,20 @@ class NaukriAdapter(JobPlatformAdapter):
         if re.search(r'\bsign\s+in\b', visible_lower):
             raise Exception("Naukri login required")
 
+        # E5-R16: a logged-out session renders "Login"/"Register" controls
+        # instead of an account menu, and never carries an explicit
+        # "sign in" phrase. Detect that state directly so an expired session
+        # halts the workflow instead of silently changing how jobs are read.
+        try:
+            login_state = await self.detect_login_state(page)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(f"login state check skipped: {exc}")
+            login_state = {"authenticated": None}
+        if login_state.get("authenticated") is False:
+            raise Exception(
+                f"Naukri login required ({login_state.get('evidence', 'unknown')})"
+            )
+
         # Blocked access indicators
         blocked_indicators = [
             "access denied",
@@ -227,6 +241,150 @@ class NaukriAdapter(JobPlatformAdapter):
         for indicator in blocked_indicators:
             if indicator in visible_lower:
                 raise Exception(f"Access Blocked: {indicator}")
+
+    # E5-R16: authentication markers. Detection is read-only (URL + visible
+    # header controls); no click, no form fill, no navigation.
+    _LOGIN_PATH_MARKERS = ("/login", "/signin", "/sign-in", "/signup", "/sign-up")
+    _LOGGED_OUT_LINK_HREF_MARKERS = ("/login", "/signin", "/sign-in", "signup", "/register")
+    _LOGGED_OUT_LINK_TEXT_RE = re.compile(r"^\s*(login|log\s*in|sign\s*in|register|sign\s*up)\s*$", re.I)
+    _LOGGED_IN_LINK_HREF_MARKERS = ("/logout", "/signout", "/sign-out", "mn-jobs", "/profile", "job-seekers")
+    _LOGGED_IN_LINK_TEXT_RE = re.compile(
+        r"^\s*(logout|log\s*out|sign\s*out|my\s*profile|view\s*profile|edit\s*profile)\s*$", re.I
+    )
+
+    @staticmethod
+    def _is_naukri_control_href(href: str) -> bool:
+        """True when an href could carry a Naukri account control.
+
+        Third-party links on the homepage (for example ambitionbox
+        ``/profiles/...`` pages) must never be read as signed-in evidence, so
+        absolute hrefs are accepted only on a Naukri host. Relative and empty
+        hrefs are same-page controls and are accepted.
+        """
+        if not href:
+            return True
+        if href.startswith(("#", "/", "?")):
+            return True
+        try:
+            host = (urllib.parse.urlsplit(href).hostname or "").lower()
+        except ValueError:
+            return False
+        return host == "naukri.com" or host.endswith(".naukri.com")
+
+    async def detect_login_state(self, page: Page) -> Dict[str, Any]:
+        """Detect whether the Naukri session on ``page`` is authenticated.
+
+        Read-only: inspects the current URL and visible header controls. Never
+        clicks, never navigates, never reads a password or cookie.
+
+        Returns ``{"authenticated": True|False|None, "evidence": str}`` where
+        ``None`` means the page carried no decisive marker (unknown), which is
+        deliberately distinct from "logged out".
+        """
+        url = (page.url or "").lower()
+        try:
+            if any(marker in url for marker in self._LOGIN_PATH_MARKERS):
+                return {"authenticated": False, "evidence": "login_url"}
+
+            markers = await page.evaluate(
+                """() => {
+                    const links = [];
+                    const walker = document.querySelectorAll('a[href], button');
+                    for (const el of walker) {
+                        if (!el.offsetParent && el.tagName !== 'BUTTON') continue;
+                        const text = (el.innerText || el.textContent || '').trim();
+                        if (!text || text.length > 40) continue;
+                        links.push({text: text, href: el.getAttribute('href') || ''});
+                    }
+                    return links.slice(0, 400);
+                }"""
+            )
+        except Exception as exc:  # pragma: no cover - defensive DOM failure
+            logger.debug(f"login state marker read failed: {exc}")
+            return {"authenticated": None, "evidence": "marker_read_failed"}
+
+        logged_in = False
+        logged_out = False
+        out_evidence = ""
+        in_evidence = ""
+        for marker in markers or []:
+            href = (marker.get("href") or "").lower().strip()
+            text = (marker.get("text") or "").strip()
+            # Exact text match is required. The href marker is additionally
+            # required when the control carries a destination, so prose that
+            # merely says "Login" is never treated as session evidence; a
+            # control with no destination (menu button) is still decisive.
+            if not logged_out and self._LOGGED_OUT_LINK_TEXT_RE.match(text) and (
+                any(m in href for m in self._LOGGED_OUT_LINK_HREF_MARKERS)
+                or not href
+                or href == "#"
+            ):
+                logged_out = True
+                out_evidence = f"logged_out_control:{text}"
+            if not logged_in and self._is_naukri_control_href(href) and (
+                any(m in href for m in self._LOGGED_IN_LINK_HREF_MARKERS)
+                or self._LOGGED_IN_LINK_TEXT_RE.match(text)
+            ):
+                logged_in = True
+                in_evidence = f"logged_in_control:{text}"
+
+        # A visible logged-out control is decisive: Naukri only renders
+        # "Login"/"Register" when there is no session. It therefore wins any
+        # tie with weaker account-shaped links (nav anchors can exist on both
+        # signed-in and signed-out pages), keeping the gate conservative.
+        if logged_out:
+            return {"authenticated": False, "evidence": out_evidence}
+        if logged_in:
+            return {"authenticated": True, "evidence": in_evidence}
+        return {"authenticated": None, "evidence": "no_marker"}
+
+    async def require_authenticated_session(self, page: Page) -> None:
+        """Raise when the page is definitively logged out (E5-R16).
+
+        Unknown state is not an error: classification and navigation stay
+        evidence-driven, and an interactive login wall is surfaced by the
+        existing ``_check_security`` path.
+        """
+        state = await self.detect_login_state(page)
+        if state.get("authenticated") is False:
+            raise Exception(
+                f"Naukri login required ({state.get('evidence', 'unknown')})"
+            )
+
+    async def check_session_authenticated(self) -> Dict[str, Any]:
+        """Probe the persistent profile's Naukri session (read-only).
+
+        Opens the Naukri homepage in the already-authenticated persistent
+        profile, reads the login state and closes the page. Used to gate the
+        application workflow before any job page is opened.
+        """
+        if not self.browser:
+            return {"authenticated": None, "evidence": "no_browser"}
+        page = None
+        try:
+            page = await self.browser.new_page()
+            await page.goto("https://www.naukri.com/", wait_until="domcontentloaded", timeout=45000)
+            await asyncio.sleep(2)
+            try:
+                await self._check_security(page)
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "login required" in msg:
+                    return {"authenticated": False, "evidence": "security_check"}
+                raise
+            return await self.detect_login_state(page)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "login required" in msg:
+                return {"authenticated": False, "evidence": "security_check"}
+            logger.warning(f"session authentication probe failed: {exc}")
+            return {"authenticated": None, "evidence": f"probe_failed:{type(exc).__name__}"}
+        finally:
+            if page is not None:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
 
     async def recheck_security_after_manual_intervention(self, page: Page, wait_seconds: int = 5) -> bool:
         """
@@ -935,7 +1093,26 @@ class NaukriAdapter(JobPlatformAdapter):
         body-scan runs only when no native control is visible, preserving
         genuine external-CTA detection (which never renders a native Apply
         button).
+
+        E5-R16: authentication state and application mode are separate
+        concerns. A logged-out page renders neither an Apply control nor a
+        trustworthy destination surface, so it resolves to AMBIGUOUS — never
+        EXTERNAL. EXTERNAL requires positive destination evidence from a page
+        that was actually readable.
         """
+        try:
+            login_state = await self.detect_login_state(page)
+        except Exception:  # pragma: no cover - defensive
+            login_state = {"authenticated": None}
+        if login_state.get("authenticated") is False:
+            logger.info(
+                "Application type unresolved: session is logged out "
+                "(evidence: %s, page: %s)",
+                login_state.get("evidence"),
+                page.url,
+            )
+            return "AMBIGUOUS"
+
         apply_button, _ = await self._find_scoped_apply_button(page)
         if apply_button is not None:
             return "NAUKRI_NATIVE"
@@ -1680,6 +1857,194 @@ class NaukriAdapter(JobPlatformAdapter):
         except Exception as e:
             logger.warning(f"Error confirming submission: {e}")
             return False
+
+    # E5-R16: read-only application-history review. The authenticated
+    # "Application History | Mynaukri" surface (linked from the Jobs menu as
+    # "Application status") is the only page that lists submitted applies.
+    applied_jobs_history_url = "https://www.naukri.com/myapply/historypage"
+    _HISTORY_DATE_RE = re.compile(
+        r"(?:applied(?:\s+on)?\s+)?(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}|\d{1,2}\s+[A-Za-z]{3,9}|\d{4}-\d{2}-\d{2})",
+        re.IGNORECASE,
+    )
+    # Naukri renders relative wording ("Application sent 2 weeks ago") rather
+    # than absolute dates, so the absolute regex alone never matches.
+    _HISTORY_RELATIVE_RE = re.compile(
+        r"\b(today|yesterday|(\d{1,4})\s*(?:day|days|week|weeks|month|months|year|years)\s+ago)\b",
+        re.IGNORECASE,
+    )
+    # Cards are virtualised inside a scroll box: read what is rendered, scroll,
+    # and stop when the rendered set stops growing. Nothing is clicked.
+    _HISTORY_CARDS_JS = """() => {
+        const out = [];
+        for (const c of document.querySelectorAll('.jdTupleContainer')) {
+            const titleEl = c.querySelector('.jdTitle');
+            const companyEl = c.querySelector('.company');
+            const statusEl = c.querySelector('.apply-status .title');
+            const lastEl = c.querySelector('.lastActivityDate');
+            const html = c.innerHTML || '';
+            const idMatch = html.match(/jobId=(\\d{8,})/) || html.match(/job-listings-[a-z0-9-]*(\\d{10,})/);
+            const link = c.querySelector('a[href*="/job-listings-"]');
+            out.push({
+                title: ((titleEl && (titleEl.getAttribute('title') || titleEl.innerText)) || '').trim(),
+                company: ((companyEl && (companyEl.getAttribute('title') || companyEl.innerText)) || '').trim(),
+                status_text: ((statusEl && statusEl.innerText) || '').trim(),
+                date_text: ((lastEl && lastEl.innerText) || '').trim(),
+                external_job_id: idMatch ? idMatch[1] : null,
+                url: link ? (link.href || null) : null,
+            });
+        }
+        return out;
+    }"""
+    _HISTORY_SCROLL_JS = """() => {
+        const box = document.querySelector('.jdTuplesContainer');
+        const target = box || document.scrollingElement || document.documentElement;
+        const before = target.scrollTop;
+        if (box) {
+            box.scrollTop = box.scrollHeight;
+        }
+        window.scrollTo(0, document.body.scrollHeight);
+        return {
+            before: before,
+            after: target.scrollTop,
+            height: target.scrollHeight,
+        };
+    }"""
+
+    async def fetch_application_history(
+        self, *, url: Optional[str] = None, max_pages: int = 25
+    ) -> List[Dict[str, Any]]:
+        """Read the authenticated Naukri application history (read-only).
+
+        Opens ``/myapply/historypage`` in the existing persistent profile and
+        reads the rendered application cards, scrolling the list to load more
+        until the rendered set stops growing (bounded by ``max_pages`` scroll
+        rounds). It never clicks a card, never opens a job, never submits,
+        withdraws or modifies an application.
+
+        Each entry carries ``title``, ``company``, ``status_text``,
+        ``date_text``, ``external_job_id`` (Naukri's numeric job id, when the
+        card exposes it) and ``url`` (usually absent: the cards are not links).
+
+        Raises when the session is logged out so callers surface
+        LOGIN_REQUIRED instead of reconciling against an empty/garbage view.
+        """
+        if not self.browser:
+            raise Exception("Browser session not started")
+
+        history_url = url or self.applied_jobs_history_url
+        page = await self.browser.new_page()
+        try:
+            await page.goto(history_url, wait_until="domcontentloaded", timeout=45000)
+            await asyncio.sleep(4)
+            await self._check_security(page)
+            login_state = await self.detect_login_state(page)
+            if login_state.get("authenticated") is False:
+                raise Exception(
+                    f"Naukri login required ({login_state.get('evidence', 'unknown')})"
+                )
+
+            entries: List[Dict[str, Any]] = []
+            seen: set[tuple] = set()
+            previous_count = -1
+            stagnant_rounds = 0
+
+            for round_index in range(max_pages):
+                raw = await page.evaluate(self._HISTORY_CARDS_JS)
+                for card in raw or []:
+                    title = (card.get("title") or "").strip()
+                    if not title:
+                        continue
+                    company = (card.get("company") or "").strip()
+                    external_job_id = str(card.get("external_job_id") or "").strip() or None
+                    key = (title.lower(), company.lower(), external_job_id or "")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    status_text = (card.get("status_text") or "").strip() or None
+                    date_text = (card.get("date_text") or "").strip() or None
+                    entries.append(
+                        {
+                            "url": (card.get("url") or "").strip() or None,
+                            "external_job_id": external_job_id,
+                            "title": title,
+                            "company": company or None,
+                            "status_text": status_text,
+                            "date_text": date_text,
+                            "applied_at": self._parse_history_date(status_text or ""),
+                        }
+                    )
+
+                if len(entries) == previous_count:
+                    stagnant_rounds += 1
+                    if stagnant_rounds >= 2:
+                        break
+                else:
+                    stagnant_rounds = 0
+                previous_count = len(entries)
+
+                try:
+                    await page.evaluate(self._HISTORY_SCROLL_JS)
+                except Exception as exc:
+                    logger.warning(f"History scroll failed: {exc}")
+                    break
+                await asyncio.sleep(2)
+                if round_index < max_pages - 1:
+                    await self._check_security(page)
+
+            logger.info(
+                "naukri_application_history_read",
+                extra={"entries": len(entries), "scroll_rounds": max_pages},
+            )
+            return entries
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    def _parse_history_date(self, text: str) -> Optional[datetime]:
+        """Best-effort parse of a history entry's date. Never fabricates one.
+
+        Handles both absolute dates and Naukri's relative wording ("Application
+        sent today", "Application sent 2 weeks ago"). Only the card's own status
+        line is parsed, never the recruiter-activity line.
+        """
+        if not text:
+            return None
+        match = self._HISTORY_DATE_RE.search(text)
+        if match:
+            token = match.group(1).strip()
+            for fmt in ("%Y-%m-%d", "%d %b %Y", "%d %B %Y", "%d %b", "%d %B"):
+                try:
+                    parsed = datetime.strptime(token, fmt)
+                except ValueError:
+                    continue
+                year = parsed.year if "%Y" in fmt else datetime.now(UTC).year
+                try:
+                    return datetime(year, parsed.month, parsed.day, tzinfo=UTC)
+                except ValueError:
+                    return None
+
+        relative = self._HISTORY_RELATIVE_RE.search(text)
+        if not relative:
+            return None
+        word = relative.group(1).lower()
+        now = datetime.now(UTC)
+        if word == "today":
+            return now
+        if word == "yesterday":
+            return now - timedelta(days=1)
+        amount = int(relative.group(2))
+        lowered = word
+        if "day" in lowered:
+            delta = timedelta(days=amount)
+        elif "week" in lowered:
+            delta = timedelta(weeks=amount)
+        elif "month" in lowered:
+            delta = timedelta(days=30 * amount)
+        else:
+            delta = timedelta(days=365 * amount)
+        return now - delta
 
     async def get_external_redirect_url(self, page: Page) -> str | None:
         """

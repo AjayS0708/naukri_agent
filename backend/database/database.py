@@ -101,6 +101,19 @@ def initialize_database() -> None:
                 )
             )
 
+    # Migration 3: reconciled_from_history column (E5-R16)
+    # Marks rows repaired from a read-only Naukri application-history review.
+    if "reconciled_from_history" not in {
+        column["name"] for column in inspect(engine).get_columns("applications")
+    }:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE applications "
+                    "ADD COLUMN reconciled_from_history BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+            )
+
     job_columns = {column["name"] for column in inspect(engine).get_columns("jobs")}
     preference_columns = {column["name"] for column in inspect(engine).get_columns("job_preferences")}
     with engine.begin() as connection:

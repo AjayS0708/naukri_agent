@@ -89,6 +89,7 @@ class ApplicationRunner:
             "external": 0,
             "failed": 0,
             "errors": 0,
+            "auth_required": 0,
             "dry_run": 0,
             "dry_run_mode": dry_run
         }
@@ -143,6 +144,11 @@ class ApplicationRunner:
                         stats["failed"] += 1
                     elif result == "ERROR":
                         stats["errors"] += 1
+                    elif result == "AUTH_REQUIRED":
+                        # E5-R16: logged-out session — halt immediately; the
+                        # caller surfaces LOGIN_REQUIRED to the dashboard.
+                        stats["auth_required"] += 1
+                        break
                     elif result == "DRY_RUN_COMPLETE":
                         stats["dry_run"] += 1
 
@@ -159,9 +165,12 @@ class ApplicationRunner:
                     ):
                         break
 
-            # Return to IDLE
-            self.state_manager.transition_to(AgentState.STOPPED)
-            self.state_manager.transition_to(AgentState.IDLE)
+            # Return to IDLE, except after a logged-out session (E5-R16):
+            # AUTH_REQUIRED stays visible so the operator sees why the workflow
+            # stopped instead of an unexplained idle state.
+            if self.state_manager.current_state != AgentState.AUTH_REQUIRED:
+                self.state_manager.transition_to(AgentState.STOPPED)
+                self.state_manager.transition_to(AgentState.IDLE)
 
         except Exception as e:
             logger.error(f"Application runner failed: {e}", exc_info=True)
@@ -269,25 +278,52 @@ class ApplicationRunner:
                 return "SECURITY_REQUIRED"
 
             # Phase 10: Detect application type BEFORE creating APPLICATION_STARTED
+            # E5-R16: authentication state is checked first and kept separate
+            # from application mode. A logged-out session must stop this job
+            # without producing an application record of any kind.
+            login_state = await self.adapter.detect_login_state(page)
+            if login_state.get("authenticated") is False:
+                logger.warning(
+                    "Naukri session logged out for job %s (evidence: %s); "
+                    "stopping application processing",
+                    job_id,
+                    login_state.get("evidence"),
+                )
+                self.state_manager.transition_to(AgentState.AUTH_REQUIRED)
+                return "AUTH_REQUIRED"
+
             app_type = await self.adapter.detect_application_type(page)
 
             if app_type == "EXTERNAL":
                 external_url = await self.adapter.get_external_redirect_url(page)
+                if not external_url:
+                    # E5-R16: no positive destination evidence. The page is
+                    # not provably external (a logged-out or incomplete page
+                    # is not evidence either), so this is unresolved.
+                    logger.warning(
+                        "Job %s classified EXTERNAL without destination "
+                        "evidence; recording unresolved instead",
+                        job_id,
+                    )
+                    self.application_service.record_application_failure(
+                        job, "Application destination unresolved (no external link evidence)"
+                    )
+                    return "NEEDS_ATTENTION"
                 self.application_service.record_external_application(
                     job,
-                    external_url or job.url,
+                    external_url,
                     "external - needs review",
                     is_dry_run=self.dry_run,
                 )
                 self._notify_safely(
                     lambda: NotificationService(self.session).external_application(
-                        job.title, external_url or job.url
+                        job.title, external_url
                     )
                 )
                 logger.info(
                     "Job %s requires external application (external_url=%s)",
                     job_id,
-                    external_url or job.url,
+                    external_url,
                 )
                 return "EXTERNAL"
 
@@ -298,15 +334,35 @@ class ApplicationRunner:
             # Phase 10: Re-classify immediately before the click (non-dry-run only)
             if not self.dry_run:
                 recheck_type = await self.adapter.detect_application_type(page)
-                if recheck_type != "NAUKRI_NATIVE":
-                    logger.warning("Application type changed before Apply click: %s", recheck_type)
-                    self.application_service.record_external_application(
-                        job,
-                        job.url,
-                        "external - needs review",
-                        is_dry_run=False,
+                if recheck_type == "EXTERNAL":
+                    external_url = await self.adapter.get_external_redirect_url(page)
+                    if external_url:
+                        logger.warning(
+                            "Application type changed before Apply click: %s",
+                            recheck_type,
+                        )
+                        self.application_service.record_external_application(
+                            job,
+                            external_url,
+                            "external - needs review",
+                            is_dry_run=False,
+                        )
+                        return "EXTERNAL"
+                    logger.warning(
+                        "Re-check reported EXTERNAL for job %s without "
+                        "destination evidence; not recording EXTERNAL",
+                        job_id,
                     )
-                    return "EXTERNAL"
+                elif recheck_type != "NAUKRI_NATIVE":
+                    # E5-R16: AMBIGUOUS (e.g. Apply hidden while logged out)
+                    # is NOT evidence of an external destination. Never record
+                    # an external application for an unresolved re-check.
+                    logger.warning(
+                        "Application type changed before Apply click: %s "
+                        "(unresolved; no external record created)",
+                        recheck_type,
+                    )
+                    return "NEEDS_ATTENTION"
 
             # Phase 10: Create APPLICATION_STARTED only after classification is confirmed
             application = self.application_service.create_application(
@@ -513,7 +569,10 @@ class ApplicationRunner:
                 return "FAILED"
 
             if "login" in error_msg or "auth" in error_msg:
-                self.application_service.record_application_failure(
+                # E5-R16: a session-level failure says nothing about this job.
+                # Resolve an attempt row if one is already open; otherwise
+                # create no application record at all.
+                self.application_service.resolve_open_attempt(
                     job, "Authentication required"
                 )
                 self.state_manager.transition_to(AgentState.AUTH_REQUIRED)
@@ -522,7 +581,7 @@ class ApplicationRunner:
                         "Authentication required during application processing"
                     )
                 )
-                return "FAILED"
+                return "AUTH_REQUIRED"
 
             logger.error(f"Error processing job {job_id}: {e}", exc_info=True)
             self.application_service.record_application_failure(

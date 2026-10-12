@@ -494,6 +494,10 @@ class AutonomousCycle:
         if not self.stop_reason or self.stop_is_normal:
             return 0, "COMPLETED"
         reason = self.stop_reason.upper()
+        # E5-R16: a logged-out session is an authentication state the user
+        # must resolve; it is reported distinctly, never as COMPLETED.
+        if "AUTHENTICATION" in reason or "LOGIN" in reason:
+            return 2, "LOGIN_REQUIRED"
         if "AUTH" in reason or "SECURITY" in reason:
             return 2, "FAILED"
         return 3, "FAILED"
@@ -537,12 +541,47 @@ class AutonomousCycle:
                     "stats": {"stop_reason": self.stop_reason},
                 }
 
+            # E5-R16: attempts interrupted by a crash/process kill before the
+            # confirmation write are surfaced as unresolved (never APPLIED)
+            # before any new attempt is made for those jobs.
+            try:
+                from backend.services.applications.service import ApplicationService
+
+                interrupted = ApplicationService(db).reconcile_interrupted_attempts()
+                if interrupted.get("reconciled_count"):
+                    self._print(
+                        f"  Unresolved interrupted attempts marked for review: "
+                        f"{interrupted['reconciled_count']}"
+                    )
+            except Exception as exc:
+                logger.warning(f"Interrupted-attempt reconciliation failed: {exc}")
+
             # Step 1: Discovery
             self._print("\n[1/5] Running discovery...")
-            discovery_service = DiscoveryService(self.state_manager, max_cards=self.max_cards)
+            discovery_service = DiscoveryService(
+                self.state_manager,
+                max_cards=self.max_cards,
+                # E5-R16: cooperative cancellation inside the long discovery
+                # pass so Stop takes effect at the next card/search boundary
+                # rather than only after discovery finishes.
+                cancel_check=self._cancellation_requested,
+            )
             await discovery_service.run_discovery(db)
 
-            if self.state_manager.current_state in (AgentState.AUTH_REQUIRED, AgentState.SECURITY_REQUIRED):
+            if self.state_manager.current_state == AgentState.AUTH_REQUIRED:
+                # E5-R16: the session is logged out. This is an authentication
+                # state, not a run failure and never an application-mode
+                # classification. Surface it explicitly so the dashboard can
+                # ask the user to sign in manually.
+                self._print("STOP: Discovery paused - LOGIN_REQUIRED (Naukri session is logged out)")
+                return {
+                    "exit_code": 2,
+                    "run_id": None,
+                    "status": "LOGIN_REQUIRED",
+                    "stats": {"reason": "Naukri session is not authenticated"},
+                }
+
+            if self.state_manager.current_state == AgentState.SECURITY_REQUIRED:
                 self._print(f"ERROR: Discovery stopped - {self.state_manager.current_state.value}")
                 return {"exit_code": 2, "run_id": None, "status": "FAILED", "stats": {}}
 
@@ -658,6 +697,33 @@ class AutonomousCycle:
                     "status": terminal_status,
                     "stats": {**enqueue_stats, **ai_stats, "stop_reason": self.stop_reason},
                 }
+
+            # E5-R16: authentication gate. The Naukri login state is detected
+            # from the persistent profile before a single job page is opened
+            # for application processing. A logged-out session stops the
+            # workflow with LOGIN_REQUIRED instead of misreading job pages.
+            login_state = await self._probe_login_state()
+            if login_state.get("authenticated") is False:
+                self.stop_reason = "Authentication required"
+                self.stop_is_normal = False
+                self._print(
+                    "STOP: LOGIN_REQUIRED - Naukri session is not authenticated "
+                    f"(evidence: {login_state.get('evidence')}). "
+                    "Sign in manually in the agent browser, then run again."
+                )
+                return {
+                    "exit_code": 2,
+                    "run_id": self.current_discovery_run.id,
+                    "status": "LOGIN_REQUIRED",
+                    "stats": {
+                        **enqueue_stats,
+                        **ai_stats,
+                        "reason": "Naukri session is not authenticated",
+                        "evidence": login_state.get("evidence"),
+                    },
+                }
+            if login_state.get("authenticated") is True:
+                self._print("Naukri session authenticated; starting applications")
 
             # Step 4: Run applications (E5-R10: no count cap)
             self._print("\n[4/5] Running applications...")
@@ -873,6 +939,28 @@ class AutonomousCycle:
         stats["enqueued_queue_item_ids"] = enqueued_queue_item_ids
         return stats
 
+    async def _probe_login_state(self) -> dict:
+        """Read-only Naukri login probe (E5-R16).
+
+        Reuses the existing persistent browser profile: no credential is read,
+        printed or stored, and nothing is clicked or submitted.
+        """
+        from backend.core.config import get_settings
+        from backend.services.naukri.adapter import NaukriAdapter
+
+        settings = get_settings()
+        adapter = NaukriAdapter(browser_type=settings.browser_type)
+        started = await adapter.start_session()
+        if not started:
+            return {
+                "authenticated": None,
+                "evidence": adapter.last_startup_error or "session_start_failed",
+            }
+        try:
+            return await adapter.check_session_authenticated()
+        finally:
+            await adapter.stop_session()
+
     async def _process_ai_queue(self, db: Session, profile: Profile, enqueued_queue_item_ids: list[int]) -> dict:
         """Process AI queue items enqueued by this autonomous cycle only."""
         stats = {"processed": 0, "completed": 0, "quota_blocked": 0, "errors": []}
@@ -883,6 +971,11 @@ class AutonomousCycle:
         profile_context = str(profile.data) if profile and profile.data else ""
 
         for queue_item_id in enqueued_queue_item_ids:
+            # E5-R16: Stop must interrupt the AI-queue step too, not only the
+            # application loop.
+            if self._check_cancellation(f"before AI queue item {queue_item_id}"):
+                stats["stop_reason"] = self.stop_reason
+                break
             try:
                 from backend.models.ai_queue import AIQueueItem
                 queue_item = db.execute(
@@ -1002,6 +1095,16 @@ class AutonomousCycle:
                 return stats
             try:
                 result = await self._process_single_job(db, job, profile, preferences)
+
+                # E5-R16: an AUTH/SECURITY blocker observed while processing a
+                # job stops the whole run — it must not be counted as an
+                # ordinary per-job failure and then retried on the next job.
+                if self.state_manager.current_state == AgentState.AUTH_REQUIRED:
+                    self.stop_reason = "Authentication required"
+                    return stats
+                if self.state_manager.current_state == AgentState.SECURITY_REQUIRED:
+                    self.stop_reason = "Security challenge encountered"
+                    return stats
 
                 if result == "APPLIED":
                     stats["applied"] += 1
@@ -1152,6 +1255,11 @@ class AutonomousCycle:
         runner = ApplicationRunner(db, self.state_manager, dry_run=self.dry_run)
         app_results = await runner.run_applications([job.id], dry_run=self.dry_run)
 
+        # E5-R16: a logged-out session is an authentication outcome, not an
+        # error and not an application-mode decision.
+        if app_results.get("auth_required", 0) > 0:
+            return "AUTH_REQUIRED"
+
         # The runner only reports a real per-job outcome when it actually
         # inspected this job. A browser-session startup failure returns zeroed
         # stats and an unusable agent state returns {"error": ...}; neither is a
@@ -1163,6 +1271,7 @@ class AutonomousCycle:
             "needs_attention",
             "skipped",
             "failed",
+            "auth_required",
             "dry_run",
         )
         if app_results.get("error") or not any(app_results.get(k, 0) for k in reported_outcomes):

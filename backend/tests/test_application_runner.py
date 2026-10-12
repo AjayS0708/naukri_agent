@@ -606,3 +606,109 @@ class TestApplicationRunner:
             # CRITICAL: submit_application() MUST be called in normal mode
             mock_submit.assert_called_once()
             pass
+
+    # -- E5-R16: login-aware classification and record integrity ----------
+
+    @pytest.mark.asyncio
+    async def test_runner_logged_out_session_stops_without_any_record(
+        self,
+        application_runner: ApplicationRunner,
+        eligible_job: Job,
+        confirmed_profile: Profile,
+        job_preferences: JobPreference,
+        db_session: Session,
+    ):
+        """E5-R16: a logged-out page stops the job and creates no row.
+
+        Login state and application mode are separate concerns: a session that
+        is not authenticated must never reach classification, so it can never
+        be recorded as EXTERNAL, APPLIED or any other application status.
+        """
+        with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
+             patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_login_state', new_callable=AsyncMock, return_value={"authenticated": False, "evidence": "logged_out_control:Login"}), \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock) as mock_detect:
+
+            mock_page = MagicMock()
+            mock_page.close = AsyncMock()
+            mock_open_page.return_value = JobPageResult(page=mock_page, security_required=False)
+
+            stats = await application_runner.run_applications([eligible_job.id])
+
+        assert stats["auth_required"] == 1
+        assert stats["applied"] == 0
+        assert stats["external"] == 0
+        mock_detect.assert_not_awaited()
+        rows = db_session.execute(
+            select(Application).where(Application.job_id == eligible_job.id)
+        ).scalars().all()
+        assert rows == []
+        assert application_runner.state_manager.current_state == AgentState.AUTH_REQUIRED
+
+    @pytest.mark.asyncio
+    async def test_runner_external_without_destination_evidence_is_unresolved(
+        self,
+        application_runner: ApplicationRunner,
+        eligible_job: Job,
+        confirmed_profile: Profile,
+        job_preferences: JobPreference,
+        db_session: Session,
+    ):
+        """E5-R16: EXTERNAL requires a positive external destination URL."""
+        with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
+             patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_login_state', new_callable=AsyncMock, return_value={"authenticated": True, "evidence": "no_marker"}), \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, return_value="EXTERNAL"), \
+             patch('backend.services.applications.runner.NaukriAdapter.get_external_redirect_url', new_callable=AsyncMock, return_value=None):
+
+            mock_page = MagicMock()
+            mock_page.close = AsyncMock()
+            mock_open_page.return_value = JobPageResult(page=mock_page, security_required=False)
+
+            stats = await application_runner.run_applications([eligible_job.id])
+
+        assert stats["external"] == 0
+        assert stats["needs_attention"] == 1
+        rows = db_session.execute(
+            select(Application).where(Application.job_id == eligible_job.id)
+        ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].status == ApplicationStatus.NEEDS_ATTENTION.value
+        assert rows[0].external_url is None
+
+    @pytest.mark.asyncio
+    async def test_runner_recheck_ambiguous_records_no_external(
+        self,
+        application_runner: ApplicationRunner,
+        eligible_job: Job,
+        confirmed_profile: Profile,
+        job_preferences: JobPreference,
+        db_session: Session,
+    ):
+        """E5-R16: an unresolved pre-click re-check is never EXTERNAL.
+
+        This is the historical bug: a logged-out page renders the Apply button
+        hidden (AMBIGUOUS) and the re-check path recorded the job's own Naukri
+        URL as an external application.
+        """
+        with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
+             patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
+             patch('backend.services.applications.runner.NaukriAdapter.open_job_page', new_callable=AsyncMock) as mock_open_page, \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_login_state', new_callable=AsyncMock, return_value={"authenticated": True, "evidence": "no_marker"}), \
+             patch('backend.services.applications.runner.NaukriAdapter.detect_application_type', new_callable=AsyncMock, side_effect=["NAUKRI_NATIVE", "AMBIGUOUS"]), \
+             patch('backend.services.applications.runner.NaukriAdapter.get_external_redirect_url', new_callable=AsyncMock, return_value="https://www.naukri.com/job123"):
+
+            mock_page = MagicMock()
+            mock_page.close = AsyncMock()
+            mock_open_page.return_value = JobPageResult(page=mock_page, security_required=False)
+
+            stats = await application_runner.run_applications([eligible_job.id])
+
+        assert stats["external"] == 0
+        assert stats["needs_attention"] == 1
+        rows = db_session.execute(
+            select(Application).where(Application.job_id == eligible_job.id)
+        ).scalars().all()
+        assert rows == [], "an unresolved re-check must not create any row"

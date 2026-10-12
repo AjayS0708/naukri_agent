@@ -273,6 +273,8 @@ try {
   const activeCycle = cycleStatus?.active_run ?? null;
   const lastCycle = cycleStatus?.last_run ?? null;
   const isCycleRunning = cycleStatus?.active_state === "RUNNING";
+  // E5-R16: the run halted because the Naukri session is not authenticated.
+  const cycleLoginRequired = lastCycle?.status === "LOGIN_REQUIRED";
 
   return <main className="app-shell">
     <a href="#main-content" className="skip-to-content">Skip to main content</a>
@@ -354,15 +356,21 @@ try {
 
             <section id="agent-control"><AgentControl /></section>
 
-            {/* Autonomous Cycle Control (E3 / E5-R15) */}
+            {/* Autonomous Cycle Control (E3 / E5-R15 / E5-R16) */}
             <section className="status-panel">
               <div>
                 <p className="eyebrow">AUTONOMOUS CYCLE</p>
-                <strong className={`agent-state ${(isCycleRunning ? (cycleStatus?.active_run?.status === "CANCELLING" ? "PAUSED" : "RUNNING") : "IDLE").toLowerCase()}`}>
-                  {isCycleRunning ? (cycleStatus?.active_run?.status === "CANCELLING" ? "Stopping…" : "Running") : "Idle"}
+                <strong className={`agent-state ${(isCycleRunning ? (cycleStatus?.active_run?.status === "CANCELLING" ? "PAUSED" : "RUNNING") : cycleLoginRequired ? "AUTH_REQUIRED" : "IDLE").toLowerCase()}`}>
+                  {isCycleRunning ? (cycleStatus?.active_run?.status === "CANCELLING" ? "Stopping…" : "Running") : cycleLoginRequired ? "Login required" : "Idle"}
                 </strong>
                 {isCycleRunning && cycleStatus?.active_run?.status !== "CANCELLING" && <p>Discovery and application in progress...</p>}
                 {isCycleRunning && cycleStatus?.active_run?.status === "CANCELLING" && <p>Cancellation requested. Finishing the current safe step...</p>}
+                {!isCycleRunning && cycleLoginRequired && (
+                  <p className="warning-text">
+                    Naukri session is signed out. Applications were not started. Sign in manually in the agent
+                    browser, then run the cycle again.
+                  </p>
+                )}
                 {!isCycleRunning && lastCycle?.status === "COMPLETED" && <p>Last cycle completed successfully.</p>}
                 {!isCycleRunning && lastCycle?.status === "CANCELLED" && <p>Last cycle was cancelled.</p>}
                 {!isCycleRunning && lastCycle?.status === "FAILED" && <p className="error-text">Last cycle failed. Check logs for details.</p>}

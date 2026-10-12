@@ -62,6 +62,8 @@ class ApplicationSchema(BaseModel):
     external_url: str | None = None
     needs_attention: bool = False
     is_dry_run: bool = False
+    # E5-R16: row was repaired from a read-only Naukri history review.
+    reconciled_from_history: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -119,3 +121,21 @@ class ReconcileStaleExternalsResponse(BaseModel):
     recovered_job_ids: list[int] = Field(default_factory=list)
     # EXTERNAL_APPLICATION rows intentionally left unchanged (ambiguous or genuine).
     remaining_external_ids: list[int] = Field(default_factory=list)
+
+
+class ReconcileHistoryResponse(BaseModel):
+    """Report of a read-only Naukri application-history reconciliation (E5-R16)."""
+    model_config = ConfigDict(extra="forbid")
+
+    # LOGIN_REQUIRED when the session is not authenticated; no data was read.
+    status: str
+    message: str = ""
+    history_entries: int = 0
+    confirmed_local_job_ids: list[int] = Field(default_factory=list)
+    reconciled_count: int = 0
+    reconciled_application_ids: list[int] = Field(default_factory=list)
+    reconciled_job_ids: list[int] = Field(default_factory=list)
+    local_applied_without_history_evidence: list[int] = Field(default_factory=list)
+    ambiguous: list[str] = Field(default_factory=list)
+    unmatched: list[str] = Field(default_factory=list)
+    protected_job_ids: list[int] = Field(default_factory=list)

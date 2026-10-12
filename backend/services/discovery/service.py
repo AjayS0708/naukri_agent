@@ -28,7 +28,12 @@ DISCOVERY_STATUS_SECURITY_REQUIRED = "SECURITY_REQUIRED"
 
 
 class DiscoveryService:
-    def __init__(self, state_manager: AgentStateManager, max_cards: int = 150):
+    def __init__(
+        self,
+        state_manager: AgentStateManager,
+        max_cards: int = 150,
+        cancel_check: Optional[Any] = None,
+    ):
         self.state_manager = state_manager
         settings = get_settings()
         self.adapter = NaukriAdapter(browser_type=settings.browser_type)
@@ -37,6 +42,26 @@ class DiscoveryService:
         self._stop_requested = False
         self.max_cards = max_cards
         self.current_run_job_ids: set[int] = set()  # Track job IDs from current run
+        # E5-R16: optional cooperative cancellation hook. The autonomous cycle
+        # passes its run-token cancellation check so a Stop request interrupts
+        # discovery at the next safe boundary instead of only after the whole
+        # search/enrichment pass finishes.
+        self.cancel_check = cancel_check
+
+    def _should_stop(self) -> bool:
+        """True when discovery must stop: explicit stop or external cancel."""
+        if self._stop_requested:
+            return True
+        if self.cancel_check is None:
+            return False
+        try:
+            if bool(self.cancel_check()):
+                self._stop_requested = True
+                logger.info("discovery_cancelled_by_run_stop")
+                return True
+        except Exception as exc:
+            logger.warning(f"discovery cancellation check failed (continuing): {exc}")
+        return False
 
     @property
     def is_running(self) -> bool:
@@ -99,7 +124,7 @@ class DiscoveryService:
                 self.state_manager.transition_to(AgentState.CRITICAL_ERROR)
                 return
 
-            if self._stop_requested:
+            if self._should_stop():
                 self._abort_before_search(db, "Stopped by user.")
                 return
 
@@ -136,7 +161,7 @@ class DiscoveryService:
             self.state_manager.transition_to(AgentState.SEARCHING)
 
             for term in search_terms:
-                if self._stop_requested:
+                if self._should_stop():
                     break
 
                 if not filtering_entered:
@@ -144,7 +169,7 @@ class DiscoveryService:
                     filtering_entered = True
 
                 for location in search_locations:
-                    if self._stop_requested:
+                    if self._should_stop():
                         break
 
                     self.current_search = (
@@ -160,7 +185,7 @@ class DiscoveryService:
                     try:
                         location_locations: list[str] = [] if location is None else [location]
                         async for job_data in self.adapter.search_jobs(term, location_locations):
-                            if self._stop_requested:
+                            if self._should_stop():
                                 break
 
                             term_yielded_any = True
@@ -265,7 +290,7 @@ class DiscoveryService:
                             # Browser context will be cleaned up when session is stopped
                             return
 
-            if self._stop_requested:
+            if self._should_stop():
                 self._finalize_run(db, DISCOVERY_STATUS_STOPPED, None)
             else:
                 self._finalize_run(db, DISCOVERY_STATUS_COMPLETED, None)

@@ -71,6 +71,10 @@ PRE_R5_4_NATIVE_URL_RECOVERY_SKIP_REASON = (
 # explicit ID guard protects against any future state drift.
 PROTECTED_RECONCILE_JOB_IDS = {87, 120}
 
+# E5-R16: read-only Naukri history reconciliation additionally never writes to
+# these job IDs in any state (81, 114 extend the E5-R5/R6 protected pair).
+PROTECTED_HISTORY_JOB_IDS = {81, 87, 114, 120}
+
 
 def normalize_naukri_url_for_comparison(url: Optional[str]) -> Optional[str]:
     """
@@ -109,18 +113,56 @@ class ApplicationService:
     
     def __init__(self, session: Session):
         self.session = session
-    
-    def create_application(self, create: ApplicationCreate) -> ApplicationSchema:
-        """Create a new application record."""
-        application = Application(
-            job_id=create.job_id,
-            status=create.status.value,
-            application_method=create.application_method.value if create.application_method else None,
-            is_dry_run=create.is_dry_run
+
+    # E5-R16: statuses that describe an *open* attempt for a job — an attempt
+    # that was started but never reached a terminal state. Exactly one open
+    # attempt may exist per job so a crash between the browser submission and
+    # the database write can be resumed/reconciled instead of duplicated.
+    OPEN_ATTEMPT_STATUSES = (
+        ApplicationStatus.DISCOVERED.value,
+        ApplicationStatus.PRE_APPLY.value,
+        ApplicationStatus.APPLICATION_STARTED.value,
+    )
+
+    def _find_open_attempt(self, job_id: int) -> Optional[Application]:
+        """Return the newest unfinished attempt row for a job, if any."""
+        stmt = (
+            select(Application)
+            .where(Application.job_id == job_id)
+            .where(Application.status.in_(self.OPEN_ATTEMPT_STATUSES))
+            .order_by(Application.id.desc())
         )
-        self.session.add(application)
+        return self.session.execute(stmt).scalars().first()
+
+    def create_application(self, create: ApplicationCreate) -> ApplicationSchema:
+        """Create (or resume) an application attempt record.
+
+        E5-R16 idempotency: a job may only have one open attempt. Repeated
+        calls for the same job reuse the unfinished row instead of inserting
+        a duplicate, giving every attempt a stable identifier.
+        """
+        application = self._find_open_attempt(create.job_id)
+        created = application is None
+        if application is None:
+            application = Application(
+                job_id=create.job_id,
+                status=create.status.value,
+                application_method=create.application_method.value if create.application_method else None,
+                is_dry_run=create.is_dry_run
+            )
+            self.session.add(application)
+        else:
+            application.status = create.status.value
+            if create.application_method is not None:
+                application.application_method = create.application_method.value
+            application.is_dry_run = create.is_dry_run
         self.session.commit()
         self.session.refresh(application)
+        if not created:
+            logger.debug(
+                "application_attempt_reused",
+                extra={"application_id": application.id, "job_id": create.job_id},
+            )
         return self._to_schema(application)
     
     def get_application(self, application_id: int) -> Optional[ApplicationSchema]:
@@ -272,17 +314,30 @@ class ApplicationService:
         Record an external application redirect.
         Does NOT submit the external application.
         """
-        application = Application(
-            job_id=job.id,
-            status=ApplicationStatus.EXTERNAL_APPLICATION.value,
-            application_method=ApplicationMethod.EXTERNAL.value,
-            external_url=external_url,
-            skip_reason=reason,
-            needs_attention=True,
-            is_dry_run=is_dry_run,
-            started_at=datetime.now(UTC)
-        )
-        self.session.add(application)
+        # E5-R16: reuse an unfinished attempt row for this job rather than
+        # stacking a second record for the same attempt.
+        application = self._find_open_attempt(job.id)
+        if application is None:
+            application = Application(
+                job_id=job.id,
+                status=ApplicationStatus.EXTERNAL_APPLICATION.value,
+                application_method=ApplicationMethod.EXTERNAL.value,
+                external_url=external_url,
+                skip_reason=reason,
+                needs_attention=True,
+                is_dry_run=is_dry_run,
+                started_at=datetime.now(UTC)
+            )
+            self.session.add(application)
+        else:
+            application.status = ApplicationStatus.EXTERNAL_APPLICATION.value
+            application.application_method = ApplicationMethod.EXTERNAL.value
+            application.external_url = external_url
+            application.skip_reason = reason
+            application.needs_attention = True
+            application.is_dry_run = is_dry_run
+            if application.started_at is None:
+                application.started_at = datetime.now(UTC)
         self.session.commit()
         self.session.refresh(application)
         return self._to_schema(application)
@@ -294,24 +349,75 @@ class ApplicationService:
         needs_attention: bool = True
     ) -> ApplicationSchema:
         """Record an application failure."""
-        application = Application(
-            job_id=job.id,
-            status=ApplicationStatus.NEEDS_ATTENTION.value if needs_attention else ApplicationStatus.SKIPPED.value,
-            failure_reason=failure_reason,
-            needs_attention=needs_attention,
-            started_at=datetime.now(UTC)
+        application = self._find_open_attempt(job.id)
+        status = (
+            ApplicationStatus.NEEDS_ATTENTION.value
+            if needs_attention
+            else ApplicationStatus.SKIPPED.value
         )
-        self.session.add(application)
+        if application is None:
+            application = Application(
+                job_id=job.id,
+                status=status,
+                failure_reason=failure_reason,
+                needs_attention=needs_attention,
+                started_at=datetime.now(UTC)
+            )
+            self.session.add(application)
+        else:
+            application.status = status
+            application.failure_reason = failure_reason
+            application.needs_attention = needs_attention
+            if application.started_at is None:
+                application.started_at = datetime.now(UTC)
         self.session.commit()
         self.session.refresh(application)
         return self._to_schema(application)
-    
+
+    def resolve_open_attempt(
+        self, job: Job, failure_reason: str
+    ) -> Optional[ApplicationSchema]:
+        """Resolve an existing unfinished attempt; create nothing new.
+
+        E5-R16: a session-level failure (logged out mid-flow) is not evidence
+        about a job, so when no attempt row exists this returns None and the
+        job is left without any application record.
+        """
+        application = self._find_open_attempt(job.id)
+        if application is None:
+            return None
+        application.status = ApplicationStatus.NEEDS_ATTENTION.value
+        application.failure_reason = failure_reason
+        application.needs_attention = True
+        if application.started_at is None:
+            application.started_at = datetime.now(UTC)
+        self.session.commit()
+        self.session.refresh(application)
+        return self._to_schema(application)
+
     def record_application_skip(
         self,
         job: Job,
         skip_reason: str
     ) -> ApplicationSchema:
-        """Record a skipped application."""
+        """Record a skipped application.
+
+        E5-R16: an identical repeat skip for the same job updates the existing
+        SKIPPED row instead of appending a duplicate record.
+        """
+        stmt = (
+            select(Application)
+            .where(Application.job_id == job.id)
+            .where(Application.status == ApplicationStatus.SKIPPED.value)
+            .order_by(Application.id.desc())
+        )
+        latest_skip = self.session.execute(stmt).scalars().first()
+        if latest_skip is not None and (latest_skip.skip_reason or "") == skip_reason:
+            latest_skip.updated_at = datetime.now(UTC)
+            self.session.commit()
+            self.session.refresh(latest_skip)
+            return self._to_schema(latest_skip)
+
         application = Application(
             job_id=job.id,
             status=ApplicationStatus.SKIPPED.value,
@@ -454,6 +560,245 @@ class ApplicationService:
             return "non_job_listing_path"
         return None
 
+    def reconcile_interrupted_attempts(self) -> dict:
+        """Resolve attempts that never reached a terminal state (E5-R16).
+
+        A crash (or a hard process kill) between the browser submission and
+        the database write leaves a row stuck in APPLICATION_STARTED. Such a
+        row is *unresolved*, never APPLIED: no submission is inferred without
+        positive confirmation evidence. The row is moved to NEEDS_ATTENTION so
+        it is visible for review and cannot silently double-submit.
+
+        Idempotent, additive-only, and never touches APPLIED/SUBMITTED rows.
+        """
+        stmt = (
+            select(Application)
+            .where(Application.status == ApplicationStatus.APPLICATION_STARTED.value)
+            .order_by(Application.id)
+        )
+        applications = list(self.session.execute(stmt).scalars().all())
+        reconciled_ids: list[int] = []
+        job_ids: list[int] = []
+        for application in applications:
+            application.status = ApplicationStatus.NEEDS_ATTENTION.value
+            application.needs_attention = True
+            application.failure_reason = (
+                "Interrupted before submission confirmation; verify against "
+                "Naukri application history before any retry"
+            )
+            reconciled_ids.append(application.id)
+            job_ids.append(application.job_id)
+        if applications:
+            self.session.commit()
+            logger.info(
+                "reconciled_interrupted_attempts",
+                extra={"count": len(applications), "application_ids": reconciled_ids},
+            )
+        return {
+            "reconciled_count": len(reconciled_ids),
+            "application_ids": reconciled_ids,
+            "job_ids": job_ids,
+        }
+
+    @staticmethod
+    def _normalize_title(value: Optional[str]) -> str:
+        return " ".join((value or "").split()).lower()
+
+    @staticmethod
+    def _text_compatible(left: str, right: str) -> bool:
+        """Loose equality for Naukri card labels vs stored job fields.
+
+        Cards render decorated titles/companies ("Immediate openings For ...",
+        "... Pvt Ltd"), so exact equality would reject true matches while a
+        pure contains-check would accept unrelated labels.
+        """
+        if not left or not right:
+            return True
+        if left == right or left in right or right in left:
+            return True
+        left_tokens, right_tokens = set(left.split()), set(right.split())
+        if not left_tokens or not right_tokens:
+            return False
+        overlap = len(left_tokens & right_tokens) / min(len(left_tokens), len(right_tokens))
+        return overlap >= 0.5
+
+    def reconcile_from_history(self, history_entries: list[dict]) -> dict:
+        """Reconcile verified Naukri application history against local rows.
+
+        ``history_entries`` must come from a read-only inspection of the
+        authenticated Naukri applied-jobs page — never from an Apply click,
+        never from inference.
+
+        Rules:
+        * a local APPLIED/SUBMITTED row matching a history entry is reported
+          as confirmed and left untouched;
+        * a history entry with no local applied row creates ONE new APPLIED
+          row (idempotent on re-run), marked as reconciled from history with
+          the original timestamp preserved when available;
+        * a local applied row absent from history is reported only — it is
+          never deleted or downgraded;
+        * entries that cannot be matched reliably are reported as ambiguous.
+
+        Protected job IDs are reported but never written to.
+        """
+        jobs = list(self.session.execute(select(Job)).scalars().all())
+        by_url: dict[str, list[Job]] = {}
+        by_title_company: dict[tuple[str, str], list[Job]] = {}
+        by_external_id: dict[str, list[Job]] = {}
+        for job in jobs:
+            norm = normalize_naukri_url_for_comparison(job.url)
+            if norm:
+                by_url.setdefault(norm, []).append(job)
+            key = (self._normalize_title(job.title), self._normalize_title(job.company))
+            if key[0]:
+                by_title_company.setdefault(key, []).append(job)
+            external_id = str(job.external_job_id or "").strip()
+            if external_id:
+                by_external_id.setdefault(external_id, []).append(job)
+
+        applications = list(self.session.execute(select(Application)).scalars().all())
+        applied_by_job: dict[int, list[Application]] = {}
+        for application in applications:
+            if application.status in (
+                ApplicationStatus.APPLIED.value,
+                ApplicationStatus.SUBMITTED.value,
+            ):
+                applied_by_job.setdefault(application.job_id, []).append(application)
+
+        confirmed: list[int] = []
+        reconciled_application_ids: list[int] = []
+        reconciled_job_ids: list[int] = []
+        ambiguous: list[str] = []
+        unmatched: list[str] = []
+        protected: list[int] = []
+
+        for entry in history_entries or []:
+            url = (entry.get("url") or "").strip()
+            external_job_id = str(entry.get("external_job_id") or "").strip()
+            entry_title = self._normalize_title(entry.get("title"))
+            entry_company = self._normalize_title(entry.get("company"))
+            label = (
+                url
+                or (f"naukri_job_id:{external_job_id}" if external_job_id else "")
+                or str(entry.get("title") or "unknown")
+            )
+
+            candidates: list[Job] = []
+            id_key_rejected = False
+
+            # 1. Naukri's numeric job id is the most precise key the history
+            #    card exposes; the card's title/company must not contradict it.
+            #    When the card carries an id we do not know locally, the entry
+            #    is not fuzzy-matched onto some other job — it is reported.
+            if external_job_id:
+                id_matches = by_external_id.get(external_job_id, [])
+                if not id_matches:
+                    unmatched.append(label)
+                    continue
+                if len(id_matches) == 1:
+                    job = id_matches[0]
+                    if self._text_compatible(
+                        entry_title, self._normalize_title(job.title)
+                    ) and self._text_compatible(
+                        entry_company, self._normalize_title(job.company or "")
+                    ):
+                        candidates = [job]
+                    else:
+                        id_key_rejected = True
+                elif len(id_matches) > 1:
+                    id_key_rejected = True
+
+            # 2. Canonical Naukri URL, when the card renders a link.
+            if not candidates and not id_key_rejected and url:
+                norm = normalize_naukri_url_for_comparison(url)
+                if norm:
+                    candidates = list(by_url.get(norm, []))
+
+            # 3. Title + company (exact key first, then loose compatibility).
+            if not candidates and not id_key_rejected and entry_title and entry_company:
+                candidates = list(by_title_company.get((entry_title, entry_company), []))
+                if not candidates:
+                    candidates = [
+                        job
+                        for job in jobs
+                        if self._text_compatible(
+                            entry_title, self._normalize_title(job.title)
+                        )
+                        and self._text_compatible(
+                            entry_company, self._normalize_title(job.company or "")
+                        )
+                    ]
+
+            if id_key_rejected:
+                ambiguous.append(label)
+                continue
+            if not candidates:
+                unmatched.append(label)
+                continue
+            if len(candidates) > 1:
+                ambiguous.append(label)
+                continue
+
+            job = candidates[0]
+            if job.id in PROTECTED_HISTORY_JOB_IDS:
+                if job.id not in applied_by_job:
+                    protected.append(job.id)
+                continue
+            if job.id in applied_by_job:
+                confirmed.append(job.id)
+                continue
+
+            applied_at = entry.get("applied_at")
+            if isinstance(applied_at, str):
+                applied_at = None
+            source = label
+            application = Application(
+                job_id=job.id,
+                status=ApplicationStatus.APPLIED.value,
+                application_method=ApplicationMethod.NAUKRI_NATIVE.value,
+                applied_at=applied_at,
+                started_at=applied_at,
+                confirmation_evidence=f"reconciled_from_naukri_history:{source}",
+                reconciled_from_history=True,
+                needs_attention=False,
+                is_dry_run=False,
+            )
+            self.session.add(application)
+            self.session.flush()
+            applied_by_job.setdefault(job.id, []).append(application)
+            reconciled_application_ids.append(application.id)
+            reconciled_job_ids.append(job.id)
+
+        local_without_history = sorted(
+            job_id
+            for job_id in applied_by_job
+            if job_id not in set(confirmed) and job_id not in set(reconciled_job_ids)
+        )
+
+        if reconciled_application_ids:
+            self.session.commit()
+            logger.info(
+                "reconciled_from_naukri_history",
+                extra={
+                    "reconciled_count": len(reconciled_application_ids),
+                    "job_ids": reconciled_job_ids,
+                },
+            )
+        else:
+            self.session.commit()
+
+        return {
+            "history_entries": len(history_entries or []),
+            "confirmed_local_job_ids": confirmed,
+            "reconciled_count": len(reconciled_application_ids),
+            "reconciled_application_ids": reconciled_application_ids,
+            "reconciled_job_ids": reconciled_job_ids,
+            "local_applied_without_history_evidence": local_without_history,
+            "ambiguous": ambiguous,
+            "unmatched": unmatched,
+            "protected_job_ids": sorted(set(protected)),
+        }
+
     def get_application_history(self, limit: int = 100) -> list[ApplicationSchema]:
         """Get application history."""
         stmt = select(Application).order_by(Application.created_at.desc()).limit(limit)
@@ -475,6 +820,9 @@ class ApplicationService:
             external_url=application.external_url,
             needs_attention=application.needs_attention,
             is_dry_run=application.is_dry_run,
+            reconciled_from_history=bool(
+                getattr(application, "reconciled_from_history", False)
+            ),
             created_at=application.created_at,
             updated_at=application.updated_at
         )

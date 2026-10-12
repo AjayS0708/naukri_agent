@@ -14,13 +14,15 @@ def test_terminal_outcome_cancelled_is_not_completed() -> None:
     assert status != "COMPLETED"
 
 
-def test_terminal_outcome_auth_still_failed() -> None:
+def test_terminal_outcome_auth_is_login_required_not_completed() -> None:
+    """E5-R16: a logged-out session is LOGIN_REQUIRED, never COMPLETED/FAILED."""
     cycle = AutonomousCycle(enable_cli_output=False)
     cycle.stop_reason = "Authentication required"
     cycle.stop_is_normal = False
     code, status = cycle._terminal_outcome()
     assert code == 2
-    assert status == "FAILED"
+    assert status == "LOGIN_REQUIRED"
+    assert status != "COMPLETED"
 
 
 def test_check_cancellation_no_token_never_stops() -> None:
