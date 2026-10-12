@@ -1006,3 +1006,70 @@ async def test_discovery_cancel_check_is_silent_when_not_requested(
 
     assert calls["count"] > 0
     assert service.current_run.status != "STOPPED"
+
+
+# -- E5-R17: irrelevant jobs are never persisted ---------------------------
+
+def test_e5r17_discovery_drops_irrelevant_jobs():
+    """Sales, voice/support and manufacturing postings are not persisted."""
+    from types import SimpleNamespace
+
+    service = DiscoveryService.__new__(DiscoveryService)
+    service.adapter = SimpleNamespace(platform_name="naukri")
+
+    sales = service._build_job(
+        {
+            "title": "Sales Executive",
+            "company": "Acme Sales Pvt Ltd",
+            "url": "http://naukri.com/job/e5r17-sales",
+            "external_job_id": "e5r17-sales",
+            "description": "Generate leads and achieve monthly sales target.",
+            "role_category": "Sales & Business Development",
+        },
+        "Data Analyst Fresher",
+    )
+    assert sales is None
+
+    support = service._build_job(
+        {
+            "title": "Associate Software Engineer",
+            "company": "Acme Support Pvt Ltd",
+            "url": "http://naukri.com/job/e5r17-support",
+            "external_job_id": "e5r17-support",
+            "description": (
+                "Willing to work in helpdesk call taking profile. "
+                "Handle voice process calls and L1 technical support queries."
+            ),
+        },
+        "Software Engineer Fresher",
+    )
+    assert support is None
+
+    manufacturing = service._build_job(
+        {
+            "title": "Graduate Engineer Trainee",
+            "company": "Acme Auto Pvt Ltd",
+            "url": "http://naukri.com/job/e5r17-manufacturing",
+            "external_job_id": "e5r17-manufacturing",
+            "description": "Work on the assembly line in the production floor.",
+            "role_category": "['Production', 'Manufacturing & Engineering']",
+        },
+        "Graduate Engineer Trainee",
+    )
+    assert manufacturing is None
+
+    data = service._build_job(
+        {
+            "title": "Data Analyst",
+            "company": "Acme Data Pvt Ltd",
+            "url": "http://naukri.com/job/e5r17-data",
+            "external_job_id": "e5r17-data",
+            "description": "Build dashboards using SQL, Python and Power BI.",
+            "location": "Bengaluru",
+            "application_mode": "NAUKRI_NATIVE",
+        },
+        "Data Analyst Fresher",
+    )
+    assert data is not None
+    assert data.title == "Data Analyst"
+    assert data.application_mode == "NAUKRI_NATIVE"

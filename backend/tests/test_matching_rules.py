@@ -6,7 +6,7 @@ from backend.services.matching.normalizer import (
     is_employment_type_allowed,
     compute_profile_experience_years,
 )
-from backend.services.matching.engine import title_matches_allowed_role
+from backend.services.matching.engine import title_matches_allowed_role, job_relevance_check
 
 def test_location_normalization():
     assert normalize_location("Bengaluru") == "bengaluru"
@@ -660,3 +660,234 @@ def test_e5r7_it_scope_accepts_ai_ml_and_cloud_titles():
     assert is_strict_it_job(Job(title="ELK Engineer")) is True
     assert is_strict_it_job(Job(title="MIS Analyst")) is True
     assert is_strict_it_job(Job(title="Marketing Manager")) is False
+
+
+# -- E5-R17: shared irrelevant-role rejection ------------------------------
+#
+# The production filter must reject sales / sales-manager / manufacturing /
+# BPO-voice / unrelated-support jobs before they enter the application queue,
+# and must keep accepting genuinely relevant data roles.
+
+def test_e5r17_relevant_data_analyst_role_accepted():
+    """A genuine data/analytics job passes the shared relevance gate."""
+    ok, reason = job_relevance_check(
+        "Data Analyst",
+        E5R7_CONFIGURED_JOB_TITLES,
+        role_category="['Data Science & Analytics']",
+        department="Engineering - Software & QA",
+        description=(
+            "Build and maintain dashboards using SQL, Python and Power BI. "
+            "Perform data analysis and data quality checks."
+        ),
+    )
+    assert ok is True, reason
+
+
+def test_e5r17_sales_titles_rejected():
+    """Sales / sales-manager / B2B sales titles are rejected."""
+    for title in ("Sales Manager", "Sales Executive", "Account Manager - B2B Sales"):
+        ok, reason = job_relevance_check(title, E5R7_CONFIGURED_JOB_TITLES)
+        assert ok is False, title
+        assert "sales" in reason.lower(), reason
+
+
+def test_e5r17_manufacturing_titles_rejected():
+    """Manufacturing / production engineering titles are rejected."""
+    for title in ("Production Engineer", "Manufacturing Engineer Trainee"):
+        ok, reason = job_relevance_check(title, E5R7_CONFIGURED_JOB_TITLES)
+        assert ok is False, title
+        assert ("production" in reason.lower()) or ("manufacturing" in reason.lower()), reason
+
+
+def test_e5r17_technical_title_over_voice_support_jd_rejected():
+    """A technical-sounding title over a helpdesk/voice-process JD is rejected.
+
+    Regression for the E5-R17 leak: a "Associate Software Engineer" opening
+    whose JD is L1 support / voice process passed the title-only filter and
+    was submitted as a real application.
+    """
+    ok, reason = job_relevance_check(
+        "Associate Software Engineer",
+        E5R7_CONFIGURED_JOB_TITLES,
+        description=(
+            "Good communication skills and basic computer knowledge. "
+            "Willing to work in helpdesk call taking profile. "
+            "Handle voice process calls and resolve L1 technical support queries."
+        ),
+    )
+    assert ok is False
+    assert "responsibilities" in reason.lower(), reason
+
+
+def test_e5r17_single_loose_phrase_still_accepted():
+    """One loose excluded phrase in an otherwise technical JD does not reject."""
+    ok, reason = job_relevance_check(
+        "Data Engineer",
+        E5R7_CONFIGURED_JOB_TITLES,
+        description=(
+            "Build ETL pipelines in Python. The CRM module is the lead "
+            "generation engine used by the sales users."
+        ),
+    )
+    assert ok is True, reason
+
+
+def test_e5r17_excluded_role_scope_rejected_without_technical_jd():
+    """A sales-scoped posting without technical responsibilities is rejected."""
+    ok, reason = job_relevance_check(
+        "Data Analyst",
+        E5R7_CONFIGURED_JOB_TITLES,
+        role_category="Sales & Business Development",
+        description="Interact with customers and manage client queries.",
+    )
+    assert ok is False
+    assert "scope" in reason.lower(), reason
+
+
+def test_e5r17_data_jd_under_non_technical_scope_rescued():
+    """A real analytics JD filed under a non-technical department is kept."""
+    ok, reason = job_relevance_check(
+        "MIS Analyst",
+        E5R7_CONFIGURED_JOB_TITLES,
+        role_category="['Customer Success', 'Service & Operations']",
+        description=(
+            "Maintain data quality and perform data analysis. "
+            "Build MIS reports in Excel."
+        ),
+    )
+    assert ok is True, reason
+
+
+def test_e5r17_deterministic_check_accepts_data_analyst_job(db):
+    """End-to-end deterministic filter accepts a relevant data job."""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from backend.models.job import Job
+    from backend.services.matching.engine import MatchEngine
+
+    preference = SimpleNamespace(
+        job_titles=E5R7_CONFIGURED_JOB_TITLES,
+        locations=["Bengaluru", "Remote"],
+        max_required_experience_years=0,
+        it_industry_allowlist=None,
+        it_keyword_list=None,
+        min_salary_lpa=4.0,
+        employment_types=["Full Time", "Internship", "Contract"],
+    )
+    profile = SimpleNamespace(confirmed=True, data={})
+    now = datetime.now(UTC)
+    job = Job(
+        platform="naukri",
+        external_job_id="e5r17-data-analyst",
+        url="https://www.naukri.com/job/e5r17-data-analyst",
+        title="Data Analyst",
+        company="Test Corp",
+        description="Build dashboards using SQL, Python and Power BI.",
+        location="Bengaluru",
+        salary="5-7 LPA",
+        salary_min=5.0,
+        salary_max=7.0,
+        experience="0-2 Yrs",
+        employment_type="Full Time",
+        status="DISCOVERED",
+        discovered_at=now,
+        last_seen=now,
+        source="Data Analyst Fresher",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    decision = MatchEngine(db).evaluate_job_deterministic(job, profile, preference)
+    assert decision.decision.value == "APPLY", decision.reason
+
+
+def test_e5r17_deterministic_check_rejects_voice_support_job(db):
+    """End-to-end deterministic filter rejects a voice/helpdesk JD."""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from backend.models.job import Job
+    from backend.services.matching.engine import MatchEngine
+
+    preference = SimpleNamespace(
+        job_titles=E5R7_CONFIGURED_JOB_TITLES,
+        locations=["Bengaluru", "Remote"],
+        max_required_experience_years=0,
+        it_industry_allowlist=None,
+        it_keyword_list=None,
+        min_salary_lpa=4.0,
+        employment_types=["Full Time", "Internship", "Contract"],
+    )
+    profile = SimpleNamespace(confirmed=True, data={})
+    now = datetime.now(UTC)
+    job = Job(
+        platform="naukri",
+        external_job_id="e5r17-voice-support",
+        url="https://www.naukri.com/job/e5r17-voice-support",
+        title="Associate Software Engineer",
+        company="Test Corp",
+        description=(
+            "Willing to work in helpdesk call taking profile. "
+            "Handle voice process calls and L1 technical support queries."
+        ),
+        location="Bengaluru",
+        experience="0-2 Yrs",
+        employment_type="Full Time",
+        status="DISCOVERED",
+        discovered_at=now,
+        last_seen=now,
+        source="Software Engineer Fresher",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    decision = MatchEngine(db).evaluate_job_deterministic(job, profile, preference)
+    assert decision.decision.value == "SKIP"
+    assert "responsibilities" in decision.reason.lower(), decision.reason
+    assert decision.skip_reason.value == "OUTSIDE_SEARCH_SCOPE"
+
+
+def test_e5r17_deterministic_check_rejects_disallowed_location(db):
+    """The shared deterministic filter also enforces the configured locations."""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from backend.models.job import Job
+    from backend.services.matching.engine import MatchEngine
+
+    preference = SimpleNamespace(
+        job_titles=E5R7_CONFIGURED_JOB_TITLES,
+        locations=["Bengaluru", "Remote"],
+        max_required_experience_years=0,
+        it_industry_allowlist=None,
+        it_keyword_list=None,
+        min_salary_lpa=4.0,
+        employment_types=["Full Time", "Internship", "Contract"],
+    )
+    profile = SimpleNamespace(confirmed=True, data={})
+    now = datetime.now(UTC)
+    job = Job(
+        platform="naukri",
+        external_job_id="e5r17-wrong-location",
+        url="https://www.naukri.com/job/e5r17-wrong-location",
+        title="Data Analyst",
+        company="Test Corp",
+        description="Build dashboards using SQL and Power BI.",
+        location="Hyderabad",
+        experience="0-2 Yrs",
+        employment_type="Full Time",
+        status="DISCOVERED",
+        discovered_at=now,
+        last_seen=now,
+        source="Data Analyst Fresher",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    decision = MatchEngine(db).evaluate_job_deterministic(job, profile, preference)
+    assert decision.decision.value == "SKIP"
+    assert decision.skip_reason.value == "LOCATION_NOT_ALLOWED"

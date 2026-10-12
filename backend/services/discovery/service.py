@@ -11,7 +11,7 @@ from backend.models.discovery import DiscoveryRun, utc_now
 from backend.models.job import Job
 from backend.models.matching import JobPreference
 from backend.services.naukri.adapter import NaukriAdapter
-from backend.services.matching.engine import experience_passes_fresher_rule
+from backend.services.matching.engine import experience_passes_fresher_rule, irrelevant_role_reason
 from backend.services.matching.normalizer import parse_salary_to_range
 from backend.database.database import SessionLocal
 from backend.core.logging import get_logger
@@ -414,6 +414,26 @@ class DiscoveryService:
         external_job_id = self._normalize_optional_str(job_data.get("external_job_id"))
 
         if not title or not company:
+            return None
+
+        # E5-R17: reject irrelevant roles before they are persisted, so the
+        # dashboard, the queue and the application path never see sales /
+        # BPO-voice / support / manufacturing postings that only look
+        # technical in their title. This is the same shared check used by the
+        # MatchEngine deterministic filter and the final safety gate.
+        relevance_reason = irrelevant_role_reason(
+            title,
+            role_category=self._normalize_optional_str(job_data.get("role_category")),
+            department=self._normalize_optional_str(job_data.get("department")),
+            description=self._normalize_optional_str(job_data.get("description")),
+        )
+        if relevance_reason:
+            logger.info(
+                "Skipping irrelevant discovered job '%s' (%s): %s",
+                title,
+                self._normalize_optional_str(job_data.get("company")),
+                relevance_reason,
+            )
             return None
 
         if not external_job_id:

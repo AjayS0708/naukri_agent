@@ -22,7 +22,11 @@ from backend.services.matching.normalizer import (
     is_employment_type_allowed,
     compute_profile_experience_years,
 )
-from backend.services.matching.engine import experience_passes_fresher_rule, is_strict_it_job
+from backend.services.matching.engine import (
+    experience_passes_fresher_rule,
+    is_strict_it_job,
+    job_relevance_check,
+)
 from backend.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -266,16 +270,21 @@ class ApplicationService:
             if not is_employment_type_allowed(job.employment_type, preference.employment_types):
                 return False, f"Employment type '{job.employment_type}' not allowed"
         
-        # 8. Job title/search scope — use the deterministic role-targeting
-        # function (already applied by MatchEngine) as the canonical scope gate.
-        # This avoids false rejections from strict substring mismatches between
-        # configured search titles (e.g. "Python Developer Fresher") and actual
-        # Naukri job titles (e.g. "Python Developer").  Unwanted specializations
-        # are already caught by title_matches_allowed_role.
+        # 8. Role relevance — shared deterministic gate (E5-R17): title/search
+        # scope plus the job's actual role category/department and described
+        # responsibilities. This avoids false rejections from strict substring
+        # mismatches between configured search titles (e.g. "Python Developer
+        # Fresher") and actual Naukri job titles (e.g. "Python Developer"),
+        # while rejecting sales/voice-process/manufacturing work that only
+        # sounds technical in its title.  Unwanted specializations are caught
+        # by title_matches_allowed_role inside job_relevance_check.
         if job.title:
-            from backend.services.matching.engine import title_matches_allowed_role
-            role_allowed, role_reason = title_matches_allowed_role(
-                job.title, getattr(preference, "job_titles", None)
+            role_allowed, role_reason = job_relevance_check(
+                job.title,
+                getattr(preference, "job_titles", None),
+                role_category=job.role_category,
+                department=job.department,
+                description=job.description,
             )
             if not role_allowed:
                 return False, f"Job title '{job.title}' not in configured search scope: {role_reason}"

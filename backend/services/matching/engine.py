@@ -95,6 +95,60 @@ _TITLE_MODIFIER_TOKENS = (
     "entry level", "entry-level",
 )
 
+# ── E5-R17: irrelevant-role rejection (shared, deterministic) ──────────────
+#
+# Title matching alone cannot tell what a job actually is: a voice-process /
+# L1 support opening titled "Associate Software Engineer" satisfies every
+# title rule and used to reach the AI and application queue. These phrases
+# are matched against the JD's responsibilities, and role_category /
+# department are matched as role *scope*, so a Sales or Manufacturing posting
+# is rejected even when its title sounds technical.
+
+EXCLUDED_ROLE_SCOPE_PHRASES = (
+    "sales", "business development", "marketing", "human resource",
+    "production", "manufacturing", "customer success",
+    "service & operations", "service and operations", "bpo", "voice",
+)
+
+# Responsibility phrases identifying the described work as an excluded role.
+# A job is rejected on these only when at least
+# MIN_EXCLUDED_RESPONSIBILITY_HITS distinct phrases match, so an IT JD that
+# merely mentions "lead generation" (a data pipeline) or "ticketing" (an ITSM
+# tool) is not swept away by a single loose phrase.
+EXCLUDED_RESPONSIBILITY_PHRASES = (
+    # sales / business development
+    "cold calling", "telecalling", "tele calling", "telesales",
+    "field sales", "inside sales", "door to door", "door-to-door",
+    "walk-in", "walk in customer", "sales target", "monthly target",
+    "achieving target", "closing deal", "sales pitch", "channel sales",
+    "pre-sales", "presales", "business target", "revenue target",
+    "canvassing", "lead generation",
+    # voice / BPO / customer support
+    "voice process", "inbound call", "outbound call", "call centre",
+    "call center", "helpdesk", "help desk", "l1 support",
+    "l1 technical support", "customer handling", "bpo",
+    # manufacturing / production
+    "assembly line", "shop floor", "production line", "production floor",
+    "manufacturing plant", "automotive component",
+)
+MIN_EXCLUDED_RESPONSIBILITY_HITS = 2
+
+# Technical work signals used only to rescue a job whose structural scope
+# looks non-technical (e.g. a Data Analyst posting filed under
+# "Sales & Business Development"): if the JD describes genuine engineering or
+# analytics work, the role scope alone must not reject it.
+TECHNICAL_RESPONSIBILITY_SIGNALS = (
+    "python", "sql", "java", "javascript", "typescript", "react", "angular",
+    "django", "flask", "aws", "azure", "gcp", "docker", "kubernetes",
+    "etl", "data pipeline", "power bi", "tableau", "pandas", "numpy",
+    "machine learning", "rest api", "git", "ci/cd", "analytics",
+    "dashboard", "reporting", "software development", "programming",
+    "html", "css", "c#", ".net", "scala", "spark", "airflow", "snowflake",
+    "dbt", "linux", " api", "data analysis", "data quality", "data cleaning",
+    "excel", "google sheets", "pivot table", "vlook", "tally",
+    "spreadsheet", "vba",
+)
+
 
 def _normalize_title(title: str) -> str:
     return " ".join((title or "").lower().split())
@@ -133,6 +187,15 @@ def _contains_keyword(title: str, keywords: list[str]) -> bool:
     return any(keyword.lower() in title_lower for keyword in keywords)
 
 
+def _unwanted_title_reason(title: str) -> Optional[str]:
+    """First explicitly rejected specialization found in the title, else None."""
+    title_lower = _normalize_title(title)
+    for unwanted in UNWANTED_SPECIALIZATIONS:
+        if unwanted in title_lower:
+            return f"Title contains unwanted specialization: {unwanted}"
+    return None
+
+
 def title_matches_allowed_role(
     title: str, allowed_titles: Optional[list] = None
 ) -> tuple[bool, str]:
@@ -151,9 +214,9 @@ def title_matches_allowed_role(
     """
     title_lower = _normalize_title(title)
 
-    for unwanted in UNWANTED_SPECIALIZATIONS:
-        if unwanted in title_lower:
-            return False, f"Title contains unwanted specialization: {unwanted}"
+    unwanted_reason = _unwanted_title_reason(title)
+    if unwanted_reason:
+        return False, unwanted_reason
 
     for families in (ALLOWED_ROLE_FAMILIES, CURATED_ROLE_FAMILIES):
         for family, keywords in families.items():
@@ -167,6 +230,108 @@ def title_matches_allowed_role(
                 return True, "Title matches allowed role family: configured_title"
 
     return False, "Title does not match any allowed role family"
+
+
+def _excluded_responsibility_hits(text: Optional[str]) -> list[str]:
+    text_lower = (text or "").lower()
+    return [phrase for phrase in EXCLUDED_RESPONSIBILITY_PHRASES if phrase in text_lower]
+
+
+def has_technical_responsibilities(text: Optional[str]) -> bool:
+    """True when the JD text shows genuine engineering/analytics work."""
+    text_lower = (text or "").lower()
+    return any(signal in text_lower for signal in TECHNICAL_RESPONSIBILITY_SIGNALS)
+
+
+def _excluded_scope_reason(
+    role_category: Optional[str], department: Optional[str]
+) -> Optional[str]:
+    for value, label in ((role_category, "Role category"), (department, "Department")):
+        if not value:
+            continue
+        value_lower = str(value).strip().lower()
+        for phrase in EXCLUDED_ROLE_SCOPE_PHRASES:
+            if phrase in value_lower:
+                return (
+                    f"{label} '{value}' is outside the preferred technical "
+                    f"scope (matched excluded scope: {phrase})"
+                )
+    return None
+
+
+def irrelevant_role_reason(
+    title: Optional[str] = None,
+    role_category: Optional[str] = None,
+    department: Optional[str] = None,
+    description: Optional[str] = None,
+    allowed_titles: Optional[list] = None,
+) -> Optional[str]:
+    """
+    E5-R17 shared irrelevant-role rejection.
+
+    Returns None when the job is not known to be irrelevant, otherwise a
+    human-readable reason. Checks, in order:
+      1. title unwanted specializations (sales, hr, production, ...),
+      2. responsibilities in the JD describing an excluded role (requires
+         >= MIN_EXCLUDED_RESPONSIBILITY_HITS distinct phrases so one loose
+         mention in an otherwise technical JD does not reject),
+      3. structural role scope (role_category / department): rejected as soon
+         as the JD shows even one excluded responsibility, and otherwise
+         rejected unless the JD shows genuine technical work *and* the title
+         itself targets an allowed role family (keeps a Data Analyst post
+         filed under a non-technical department, drops everything else).
+
+    Never rejects purely on a missing field: absent metadata simply carries
+    no signal here.
+    """
+    unwanted_reason = _unwanted_title_reason(title)
+    if unwanted_reason:
+        return unwanted_reason
+
+    hits = sorted(set(_excluded_responsibility_hits(description)))
+    if len(hits) >= MIN_EXCLUDED_RESPONSIBILITY_HITS:
+        return (
+            "Job responsibilities describe an excluded role rather than a "
+            f"preferred technical role (matched: {', '.join(hits)})"
+        )
+
+    scope_reason = _excluded_scope_reason(role_category, department)
+    if scope_reason:
+        if hits:
+            return scope_reason
+        if (
+            description
+            and has_technical_responsibilities(description)
+            and title_matches_allowed_role(title, allowed_titles)[0]
+        ):
+            return None
+        return scope_reason
+
+    return None
+
+
+def job_relevance_check(
+    title: Optional[str],
+    allowed_titles: Optional[list] = None,
+    role_category: Optional[str] = None,
+    department: Optional[str] = None,
+    description: Optional[str] = None,
+) -> tuple[bool, str]:
+    """
+    Canonical relevance gate: shared irrelevant-role rejection first, then
+    the configured title/role-family targeting. Used by MatchEngine's
+    deterministic checks, the final application safety gate, and discovery.
+    """
+    reason = irrelevant_role_reason(
+        title,
+        role_category=role_category,
+        department=department,
+        description=description,
+        allowed_titles=allowed_titles,
+    )
+    if reason:
+        return False, reason
+    return title_matches_allowed_role(title, allowed_titles)
 
 
 def is_strict_it_job(job: Job, industries: list[str] | None = None,
@@ -313,9 +478,15 @@ class MatchEngine:
             )
         matched_rules.append("DUPLICATE_CHECK")
 
-        # 3. Role/Title Targeting Check
-        role_allowed, role_reason = title_matches_allowed_role(
-            job.title, getattr(preference, "job_titles", None)
+        # 3. Role relevance: title targeting plus actual role scope and
+        # responsibilities (E5-R17). A technical-sounding title over an
+        # excluded JD is rejected here before any AI evaluation.
+        role_allowed, role_reason = job_relevance_check(
+            job.title,
+            getattr(preference, "job_titles", None),
+            role_category=job.role_category,
+            department=job.department,
+            description=job.description,
         )
         if not role_allowed:
             return MatchDecision(
@@ -375,6 +546,19 @@ class MatchEngine:
                 failed_rules=["EMPLOYMENT_TYPE"]
             )
         matched_rules.append("EMPLOYMENT_TYPE_CHECK")
+
+        # Location check (E5-R17 parity with the final safety gate): the job
+        # must sit in one of the configured locations (Bengaluru / Remote).
+        allowed_locations = getattr(preference, "locations", None)
+        if job.location and allowed_locations:
+            if not has_overlapping_location(job.location, allowed_locations):
+                return MatchDecision(
+                    decision=MatchDecisionEnum.SKIP,
+                    reason=f"Location '{job.location}' is not in the allowed locations.",
+                    skip_reason=SkipReason.LOCATION_NOT_ALLOWED,
+                    failed_rules=["LOCATION"],
+                )
+        matched_rules.append("LOCATION_CHECK")
 
         # All deterministic checks passed
         return MatchDecision(
