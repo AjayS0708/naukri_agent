@@ -26,6 +26,65 @@ DISCOVERY_STATUS_STOPPED = "STOPPED"
 DISCOVERY_STATUS_AUTH_REQUIRED = "AUTH_REQUIRED"
 DISCOVERY_STATUS_SECURITY_REQUIRED = "SECURITY_REQUIRED"
 
+# E5-R19: targeted search groups beyond the configured job_titles, so discovery
+# covers the preference's full scope instead of only the exact configured
+# phrasings. Every term here is verified to match an allowed role family in the
+# shared relevance gate (title_matches_allowed_role), so search capacity is
+# never spent on queries whose results the gate would reject outright. Plain
+# "Business Analyst" / "Reporting Analyst" titles are intentionally absent:
+# the shared gate rejects them, so querying them cannot yield an eligible job.
+# Ordered P1 (data/BI analytics) → P2 (data engineering/cloud/AI-ML) → P3
+# (graduate software) so the freshest coverage runs first if a budget stops a
+# run early. Sales / business development / BPO / support queries are never
+# searched here.
+DISCOVERY_SEARCH_GROUPS: dict[str, tuple[str, ...]] = {
+    "p1_data_analytics": (
+        "Data Analyst",
+        "Data Analytics",
+        "Power BI Analyst",
+        "BI Analyst",
+        "Business Intelligence Analyst",
+        "MIS Analyst",
+        "SQL Data Analyst",
+        "Python Data Analyst",
+    ),
+    "p2_data_engineering_cloud_ai": (
+        "Junior Data Engineer",
+        "Data Engineer",
+        "ETL Developer",
+        "Cloud Engineer Trainee",
+        "Machine Learning Trainee",
+        "AI Engineer Fresher",
+    ),
+    "p3_graduate_software": (
+        "Graduate Trainee",
+        "Software Engineer",
+    ),
+}
+
+DISCOVERY_EXTRA_SEARCH_TERMS: tuple[str, ...] = (
+    DISCOVERY_SEARCH_GROUPS["p1_data_analytics"]
+    + DISCOVERY_SEARCH_GROUPS["p2_data_engineering_cloud_ai"]
+    + DISCOVERY_SEARCH_GROUPS["p3_graduate_software"]
+)
+
+# Preserved pre-E5-R19 fallback used only when preferences carry no titles.
+DISCOVERY_FALLBACK_SEARCH_TERMS: tuple[str, ...] = (
+    "Data Analyst Fresher",
+    "Junior Data Analyst",
+    "Associate Data Analyst",
+    "Software Engineer Fresher",
+    "Associate Software Engineer",
+    "Software Developer Fresher",
+    "Python Developer Fresher",
+    "Data Engineer Fresher",
+    "Junior Data Engineer",
+    "Associate Data Engineer",
+    "DevOps Trainee",
+    "Junior DevOps Engineer",
+    "DevOps Engineer Fresher",
+)
+
 
 class DiscoveryService:
     def __init__(
@@ -133,21 +192,7 @@ class DiscoveryService:
                 self._abort_before_search(db, "No job preferences found. Configure them first.")
                 return
 
-            search_terms = preferences.job_titles or [
-                "Data Analyst Fresher",
-                "Junior Data Analyst",
-                "Associate Data Analyst",
-                "Software Engineer Fresher",
-                "Associate Software Engineer",
-                "Software Developer Fresher",
-                "Python Developer Fresher",
-                "Data Engineer Fresher",
-                "Junior Data Engineer",
-                "Associate Data Engineer",
-                "DevOps Trainee",
-                "Junior DevOps Engineer",
-                "DevOps Engineer Fresher",
-            ]
+            search_terms = self._discovery_search_terms(preferences)
             locations = preferences.locations or []
             if not search_terms:
                 self._abort_before_search(db, "No job titles configured.")
@@ -305,6 +350,36 @@ class DiscoveryService:
             self.current_search = None
             if owns_session:
                 db.close()
+
+    @staticmethod
+    def _discovery_search_terms(preferences: JobPreference) -> list[str]:
+        """
+        E5-R19: ordered, de-duplicated discovery queries.
+
+        Targeted groups (DISCOVERY_SEARCH_GROUPS) run first so fresh coverage
+        of under-searched preference families (BI/Power BI, SQL/Python
+        analytics, junior data engineering/ETL, cloud trainee, AI/ML fresher,
+        graduate software) is attempted before the already-saturated configured
+        titles. Configured job_titles always remain in the list; the historical
+        fallback list is used only when no titles are configured. Matching is
+        case-insensitive so a configured title equal to a targeted term is not
+        searched twice.
+        """
+        configured = list(getattr(preferences, "job_titles", None) or []) or list(
+            DISCOVERY_FALLBACK_SEARCH_TERMS
+        )
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for raw in (*DISCOVERY_EXTRA_SEARCH_TERMS, *configured):
+            term = " ".join(str(raw or "").split())
+            if not term:
+                continue
+            key = term.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(term)
+        return ordered
 
     @staticmethod
     def _normalize_search_locations(locations: list[str] | None) -> list[str | None]:
@@ -488,6 +563,11 @@ class DiscoveryService:
             if self.current_run_job_ids:
                 self.current_run.current_run_job_ids = ",".join(str(jid) for jid in sorted(self.current_run_job_ids))
             db.commit()
+            # E5-R19: reload the finalized run so its attributes stay readable
+            # after the owning session closes below. Without this the status
+            # endpoint hit an expired, detached instance and returned 500 for
+            # every completed run.
+            db.refresh(self.current_run)
 
     def _abort_before_search(self, db: Session, error_message: str) -> None:
         self._finalize_run(db, DISCOVERY_STATUS_STOPPED, error_message)

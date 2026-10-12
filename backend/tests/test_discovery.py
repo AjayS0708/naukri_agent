@@ -44,6 +44,18 @@ def state_manager():
 
 
 @pytest.fixture
+def no_targeted_terms():
+    """Run with only the configured titles (pre-E5-R19 search behaviour).
+
+    The run-flow, pagination and deduplication tests below assert one search
+    per configured title; targeted-group selection itself is covered by the
+    dedicated test_e5r19_search_terms_* tests.
+    """
+    with patch("backend.services.discovery.service.DISCOVERY_EXTRA_SEARCH_TERMS", ()):
+        yield
+
+
+@pytest.fixture
 def mock_adapter():
     with patch("backend.services.discovery.service.NaukriAdapter") as MockAdapter:
         adapter_instance = MockAdapter.return_value
@@ -76,7 +88,7 @@ def mock_adapter():
 
 @pytest.mark.asyncio
 async def test_discovery_run_flow_and_state_transitions(
-    state_manager, mock_db_session, mock_adapter
+    state_manager, mock_db_session, mock_adapter, no_targeted_terms
 ):
     fixed_now = datetime(2026, 3, 19, 12, 0, tzinfo=UTC)
 
@@ -119,7 +131,7 @@ async def test_discovery_run_flow_and_state_transitions(
 
 @pytest.mark.asyncio
 async def test_discovery_tracks_multiple_pages_processed(
-    state_manager, mock_db_session, mock_adapter
+    state_manager, mock_db_session, mock_adapter, no_targeted_terms
 ):
     async def mock_search_jobs_multi_page(*args, **kwargs):
         yield {
@@ -181,7 +193,7 @@ def test_normalize_search_locations_orders_dedupes_and_falls_back():
 
 @pytest.mark.asyncio
 async def test_discovery_searches_every_configured_location(
-    state_manager, mock_db_session, mock_adapter
+    state_manager, mock_db_session, mock_adapter, no_targeted_terms
 ):
     """E5-R8: every configured location (not only locations[0]) is searched."""
     calls: list[tuple[str, list[str]]] = []
@@ -231,7 +243,7 @@ async def test_discovery_searches_every_configured_location(
 
 @pytest.mark.asyncio
 async def test_discovery_pages_processed_can_exceed_searches_attempted(
-    state_manager, mock_db_session, mock_adapter
+    state_manager, mock_db_session, mock_adapter, no_targeted_terms
 ):
     """When a search yields page 2+, pages_processed > searches_attempted."""
     async def mock_search_jobs_multi_page(*args, **kwargs):
@@ -287,7 +299,7 @@ async def test_discovery_pages_processed_can_exceed_searches_attempted(
 
 @pytest.mark.asyncio
 async def test_discovery_empty_locations_still_searches_india_fallback(
-    state_manager, mock_db_session, mock_adapter
+    state_manager, mock_db_session, mock_adapter, no_targeted_terms
 ):
     """No configured locations still performs one unfiltered search."""
     calls: list[tuple[str, list[str]]] = []
@@ -503,7 +515,7 @@ async def test_discovery_user_stop(
 
 @pytest.mark.asyncio
 async def test_discovery_duplicate_detection_by_external_id(
-    state_manager, mock_db_session, mock_adapter
+    state_manager, mock_db_session, mock_adapter, no_targeted_terms
 ):
     async def mock_search_jobs_duplicate(*args, **kwargs):
         yield {
@@ -613,7 +625,7 @@ async def test_discovery_duplicate_detection_by_title_company(
 
 @pytest.mark.asyncio
 async def test_discovery_handles_malformed_job_data(
-    state_manager, mock_db_session, mock_adapter
+    state_manager, mock_db_session, mock_adapter, no_targeted_terms
 ):
     async def mock_search_jobs_malformed(*args, **kwargs):
         # Job with missing optional fields should be processed
@@ -1073,3 +1085,75 @@ def test_e5r17_discovery_drops_irrelevant_jobs():
     assert data is not None
     assert data.title == "Data Analyst"
     assert data.application_mode == "NAUKRI_NATIVE"
+
+# ── E5-R19: targeted discovery search coverage ─────────────────────────────
+
+def _pref(job_titles):
+    from types import SimpleNamespace
+    return SimpleNamespace(job_titles=job_titles)
+
+
+def test_e5r19_search_terms_cover_targeted_groups_and_configured_titles():
+    from backend.services.discovery.service import DISCOVERY_EXTRA_SEARCH_TERMS
+
+    configured = [
+        "Software Engineer Fresher", "Graduate Engineer Trainee",
+        "Software Developer Trainee", "Associate Software Engineer",
+        "Junior Data Analyst", "Data Analyst Fresher", "Data Engineer Fresher",
+        "DevOps Trainee", "Python Developer Fresher", "QA Engineer Fresher",
+        "SQL Developer Fresher",
+    ]
+    terms = DiscoveryService._discovery_search_terms(_pref(configured))
+
+    # Every targeted group term is searched.
+    for term in DISCOVERY_EXTRA_SEARCH_TERMS:
+        assert term in terms, term
+
+    # Configured titles are preserved (no preference coverage lost).
+    for title in configured:
+        assert title in terms, title
+
+    # Targeted groups run before configured titles (P1 coverage first).
+    assert terms.index("Data Analyst") < terms.index("Software Engineer Fresher")
+    assert terms.index("Junior Data Engineer") < terms.index("QA Engineer Fresher")
+
+    # Ordered and de-duplicated (case-insensitive), no blanks.
+    lowered = [t.lower() for t in terms]
+    assert len(lowered) == len(set(lowered))
+    assert all(t.strip() for t in terms)
+
+
+def test_e5r19_every_search_term_passes_shared_relevance_gate():
+    """A query whose titles the shared gate rejects would waste search capacity."""
+    from backend.services.matching.engine import title_matches_allowed_role
+    from backend.services.discovery.service import DISCOVERY_FALLBACK_SEARCH_TERMS
+
+    configured = ["Data Analyst Fresher", "Junior Data Analyst", "DevOps Trainee"]
+    terms = DiscoveryService._discovery_search_terms(_pref(configured))
+    terms += list(DISCOVERY_FALLBACK_SEARCH_TERMS)
+    for term in terms:
+        allowed, reason = title_matches_allowed_role(term, None)
+        assert allowed, f"{term}: {reason}"
+
+
+def test_e5r19_search_terms_exclude_restricted_queries():
+    """Never search sales, BPO/voice, support or manufacturing role families."""
+    banned = (
+        "sales", "business development", "marketing", "bpo", "voice",
+        "human resource", "production", "manufacturing", "helpdesk", "support",
+    )
+    for titles in (["Data Analyst Fresher"], None):
+        for term in DiscoveryService._discovery_search_terms(_pref(titles)):
+            for word in banned:
+                assert word not in term.lower(), f"{term} contains {word}"
+
+
+def test_e5r19_search_terms_fallback_when_no_configured_titles():
+    terms = DiscoveryService._discovery_search_terms(_pref(None))
+    # Historical fallback preserved.
+    assert "Data Analyst Fresher" in terms
+    assert "Junior Data Engineer" in terms  # also an extra -> deduped once
+    lowered = [t.lower() for t in terms]
+    assert len(lowered) == len(set(lowered))
+    assert terms  # never empty
+
