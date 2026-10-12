@@ -80,6 +80,10 @@ class RecentApplicationItem(BaseModel):
     needs_attention: bool = False
     is_dry_run: bool = False
     created_at: datetime
+    # E5-R20: True when this job has a confirmed APPLIED row — the attempt
+    # shown may be an unresolved UI failure while the application itself
+    # went through (confirmed-vs-unresolved distinction).
+    job_confirmed: bool = False
 
 
 class RecentApplicationsResponse(BaseModel):

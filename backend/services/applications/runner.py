@@ -516,6 +516,15 @@ class ApplicationRunner:
             # Submit application (production path only)
             submitted = await self.adapter.submit_application(page)
             if not submitted:
+                if self.adapter.last_submit_outcome == "AMBIGUOUS":
+                    # E5-R20: a timed-out/intercepted click leaves the true
+                    # state unknown — reconcile against Naukri's application
+                    # history before recording any outcome.
+                    return await self._reconcile_unconfirmed_attempt(
+                        application,
+                        job,
+                        "Form submit click timed out or was intercepted (ambiguous)",
+                    )
                 self.application_service.record_application_failure(
                     job, "Failed to submit application"
                 )
@@ -672,16 +681,36 @@ class ApplicationRunner:
     # E5-R7: conversational (chatbot_Drawer) application support ----------------
 
     _CONVERSATIONAL_MAX_STEPS = 12
+    # E5-R20: the same prompt may be interacted with at most this many times
+    # before the attempt terminates with a specific reason (previously the
+    # same nudge was "answered" 12 times in a row with no progress).
+    _CONVERSATIONAL_MAX_PROMPT_HANDLES = 2
+    # E5-R20: global bound on answer interactions per attempt.
+    _CONVERSATIONAL_MAX_ANSWERS = 8
 
     async def _complete_conversational_application(
         self, page, application, job: Job, profile: Profile
     ) -> str:
         """Drive Naukri's multi-step conversational apply drawer to completion.
 
-        The drawer shows one screening question at a time; each answered
-        question is submitted with Save. Applied is only recorded on explicit
-        confirmation evidence — never inferred.
+        The drawer shows one prompt at a time: an answerable question, an
+        informational nudge (e.g. "update your profile") or a confirmation.
+
+        E5-R20 rules:
+        - questions are answered at most ``_CONVERSATIONAL_MAX_PROMPT_HANDLES``
+          times per distinct prompt; an unchanged repeat terminates the
+          attempt with a specific reason instead of looping.
+        - nudges/prompts with no answer options are NEVER answered: they are
+          observed once (with at most one supported dismissal click) and a
+          second unchanged observation terminates with a specific reason.
+        - Applied is recorded only on explicit confirmation evidence; every
+          other ending is reconciled against Naukri's application history
+          first (history is authoritative over an intercepted/timed-out
+          click) before NEEDS_ATTENTION is written.
         """
+        prompt_handles: dict[tuple, int] = {}
+        total_answers = 0
+
         for step in range(1, self._CONVERSATIONAL_MAX_STEPS + 1):
             applied, evidence = await self.adapter.detect_applied_state(page)
             if applied:
@@ -705,7 +734,55 @@ class ApplicationRunner:
             question = questions[0]
             question_text = question.get("question", "")
             options = question.get("options") or []
+            # E5-R20: detection tags conversational prompts with an explicit
+            # kind ("question" | "nudge" | "info"). Dicts without a kind are
+            # legacy-shaped form questions and stay answerable.
+            kind = question.get("kind") or (
+                "question"
+                if options or question.get("type") in ("text", "radio", "select")
+                else "info"
+            )
+            signature = (
+                self.adapter._normalize_choice(question_text),
+                tuple(self.adapter._normalize_choice(o) for o in options),
+            )
+            handles = prompt_handles.get(signature, 0)
 
+            if kind != "question":
+                # E5-R20: informational prompt (nudge) — never answer it.
+                if handles == 0:
+                    prompt_handles[signature] = 1
+                    if await self.adapter.dismiss_conversational_nudge(page):
+                        logger.info(
+                            "Dismissed conversational prompt (step %d): %r",
+                            step,
+                            question_text,
+                        )
+                    else:
+                        logger.info(
+                            "Observed conversational prompt without answer options "
+                            "(step %d): %r",
+                            step,
+                            question_text,
+                        )
+                    await asyncio.sleep(2.0)
+                    continue
+                return await self._reconcile_unconfirmed_attempt(
+                    application,
+                    job,
+                    "Persistent conversational nudge with no answer options "
+                    f"(unanswered): {question_text}",
+                )
+
+            if handles >= self._CONVERSATIONAL_MAX_PROMPT_HANDLES:
+                return await self._reconcile_unconfirmed_attempt(
+                    application,
+                    job,
+                    "Conversational prompt unchanged after answering "
+                    f"(possible stale UI): {question_text}",
+                )
+
+            # Answerable question: answer from profile first.
             answer = self._get_answer_from_profile(question_text, profile)
             if options:
                 if not answer or self.adapter._normalize_choice(answer) not in [
@@ -713,52 +790,43 @@ class ApplicationRunner:
                 ]:
                     answer = self._answer_radio_via_ai(question_text, options, job, profile)
                 if not answer:
-                    self.application_service.update_application(
-                        application.id,
-                        ApplicationUpdate(
-                            status=ApplicationStatus.NEEDS_ATTENTION,
-                            needs_attention=True,
-                            skip_reason=f"Could not choose an option for: {question_text}",
-                        ),
+                    return await self._reconcile_unconfirmed_attempt(
+                        application, job,
+                        f"Could not choose an option for: {question_text}",
                     )
-                    return "NEEDS_ATTENTION"
             else:
                 if not answer:
                     answer = self._get_ai_answer(question_text, job, profile)
                 if not answer:
-                    self.application_service.update_application(
-                        application.id,
-                        ApplicationUpdate(
-                            status=ApplicationStatus.NEEDS_ATTENTION,
-                            needs_attention=True,
-                            skip_reason=f"Could not answer question: {question_text}",
-                        ),
+                    return await self._reconcile_unconfirmed_attempt(
+                        application, job,
+                        f"Could not answer question: {question_text}",
                     )
-                    return "NEEDS_ATTENTION"
 
-            if not await self.adapter.answer_conversational_question(page, answer):
-                self.application_service.update_application(
-                    application.id,
-                    ApplicationUpdate(
-                        status=ApplicationStatus.NEEDS_ATTENTION,
-                        needs_attention=True,
-                        skip_reason=f"Failed to answer question: {question_text}",
-                    ),
+            if not await self.adapter.answer_conversational_question(
+                page, answer, expected_question=question_text
+            ):
+                return await self._reconcile_unconfirmed_attempt(
+                    application, job,
+                    f"Failed to answer question: {question_text}",
                 )
-                return "NEEDS_ATTENTION"
 
+            prompt_handles[signature] = handles + 1
+            total_answers += 1
             logger.info(
                 "Conversational step %d answered %r with %r", step, question_text, answer
             )
+            if total_answers >= self._CONVERSATIONAL_MAX_ANSWERS:
+                return await self._reconcile_unconfirmed_attempt(
+                    application,
+                    job,
+                    "Conversational interaction bound reached before Applied confirmation",
+                )
             await asyncio.sleep(2.0)
 
-        # Final explicit confirmation after the loop (or a final Save attempt).
+        # Final explicit confirmation, then a bounded submit attempt whose
+        # result is reconciled against Naukri's application history.
         applied, evidence = await self.adapter.detect_applied_state(page)
-        if not applied:
-            await self.adapter.submit_application(page)
-            await asyncio.sleep(2.0)
-            applied, evidence = await self.adapter.detect_applied_state(page)
-
         if applied:
             self.application_service.update_application(
                 application.id,
@@ -772,15 +840,118 @@ class ApplicationRunner:
             logger.info("Conversational apply confirmed after loop: %s", evidence)
             return "APPLIED"
 
+        # E5-R20: click only a supported Apply/Submit control (never .sendMsg)
+        # and treat every non-confirmed result — including a timed-out or
+        # intercepted click — as unconfirmed pending history reconciliation.
+        outcome = await self.adapter.submit_conversational_application(page)
+        if outcome == "SUBMITTED":
+            await asyncio.sleep(2.0)
+            applied, evidence = await self.adapter.detect_applied_state(page)
+            if applied:
+                self.application_service.update_application(
+                    application.id,
+                    ApplicationUpdate(
+                        status=ApplicationStatus.APPLIED,
+                        applied_at=datetime.now(UTC),
+                        application_method=ApplicationMethod.NAUKRI_NATIVE,
+                        confirmation_evidence=evidence,
+                    ),
+                )
+                logger.info("Conversational apply confirmed after submit: %s", evidence)
+                return "APPLIED"
+            return await self._reconcile_unconfirmed_attempt(
+                application,
+                job,
+                "Conversational submit clicked without Applied confirmation",
+            )
+        if outcome == "AMBIGUOUS":
+            return await self._reconcile_unconfirmed_attempt(
+                application,
+                job,
+                "Conversational submit click timed out or was intercepted (ambiguous)",
+            )
+        return await self._reconcile_unconfirmed_attempt(
+            application,
+            job,
+            "Conversational apply completed without Applied confirmation "
+            "and no supported submit control was found",
+        )
+
+    async def _reconcile_unconfirmed_attempt(
+        self, application, job: Job, reason: str
+    ) -> str:
+        """E5-R20: reconcile an unconfirmed ending against Naukri's
+        application history before recording NEEDS_ATTENTION.
+
+        History is authoritative: when the applied-jobs page lists this job,
+        ApplicationService.reconcile_from_history (idempotent, never touches
+        protected jobs) records/keeps the APPLIED row, the current attempt
+        row is annotated for audit but never rewritten to APPLIED, and the
+        outcome reported is "APPLIED". When history does not list it, the
+        attempt is annotated NEEDS_ATTENTION with the specific reason — no
+        retry is attempted from here.
+        """
+        history_entries = None
+        try:
+            history_entries = await self.adapter.fetch_application_history()
+        except Exception as exc:
+            logger.warning(
+                "Job %s: application-history reconciliation unavailable: %s",
+                job.id,
+                exc,
+            )
+
+        if history_entries is not None:
+            try:
+                result = self.application_service.reconcile_from_history(history_entries)
+            except Exception as exc:
+                logger.warning(
+                    "Job %s: reconcile_from_history failed: %s", job.id, exc
+                )
+                result = None
+            if result is not None:
+                confirmed_ids = set(result.get("confirmed_local_job_ids") or [])
+                reconciled_ids = set(result.get("reconciled_job_ids") or [])
+                if job.id in confirmed_ids or job.id in reconciled_ids:
+                    self.application_service.update_application(
+                        application.id,
+                        ApplicationUpdate(
+                            status=ApplicationStatus.NEEDS_ATTENTION,
+                            needs_attention=True,
+                            skip_reason=(
+                                f"{reason}; application confirmed via Naukri "
+                                "application history (no in-page confirmation)"
+                            ),
+                        ),
+                    )
+                    logger.info(
+                        "Job %s confirmed via application-history reconciliation",
+                        job.id,
+                    )
+                    return "APPLIED"
+                logger.info(
+                    "Job %s: history does not list this application "
+                    "(reconciled=%d, confirmed=%d, ambiguous=%d, unmatched=%d)",
+                    job.id,
+                    len(reconciled_ids),
+                    len(confirmed_ids),
+                    len(result.get("ambiguous") or []),
+                    len(result.get("unmatched") or []),
+                )
+
         self.application_service.update_application(
             application.id,
             ApplicationUpdate(
                 status=ApplicationStatus.NEEDS_ATTENTION,
                 needs_attention=True,
-                skip_reason="Conversational apply completed without Applied confirmation",
+                skip_reason=(
+                    f"{reason}; not confirmed in Naukri application history"
+                    if history_entries is not None
+                    else f"{reason}; application history unavailable for verification"
+                ),
             ),
         )
-        logger.warning("Conversational apply without Applied confirmation for job %s", job.id)
+        logger.warning("Job %s unconfirmed: %s", job.id, reason)
         return "NEEDS_ATTENTION"
 
     def _answer_radio_via_ai(

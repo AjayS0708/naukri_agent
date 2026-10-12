@@ -90,6 +90,12 @@ class NaukriAdapter(JobPlatformAdapter):
         self.browser_type = browser_type.lower()
         self.last_startup_error: Optional[str] = None
         self._session_lock: Optional[BrowserSessionLock] = None
+        # E5-R20: outcome of the most recent submit attempt, one of
+        # "NOT_SUBMITTED", "SUBMITTED" or "AMBIGUOUS". "AMBIGUOUS" means a
+        # click timed out / was intercepted and the true state is unknown;
+        # callers must reconcile Naukri's application history instead of
+        # assuming success or failure.
+        self.last_submit_outcome: str = "NOT_SUBMITTED"
 
     async def start_session(self) -> bool:
         try:
@@ -1493,30 +1499,199 @@ class NaukriAdapter(JobPlatformAdapter):
                 "type": "radio",
                 "options": options,
                 "required": True,
+                "kind": "question",
             }
 
-        # Text question (contenteditable composer).
+        # Text question (contenteditable composer) or informational message.
         composer = await container.query_selector('[contenteditable="true"]')
-        if composer is not None and await composer.is_visible():
-            return {"question": bot_msg, "type": "text", "options": [], "required": True}
+        composer_visible = composer is not None and await composer.is_visible()
+        return {
+            "question": bot_msg,
+            "type": "text",
+            "options": [],
+            "required": True,
+            "kind": self.classify_conversational_message(bot_msg, False, composer_visible),
+        }
 
-        return {"question": bot_msg, "type": "text", "options": [], "required": True}
+    # E5-R20: informational bot messages that must never be answered.
+    # Answering them only re-renders the same nudge (observed 12x in a row
+    # during the E5-R19 attempt on job 462).
+    CONVERSATIONAL_NUDGE_PATTERNS = (
+        "update your profile",
+        "update the profile",
+        "complete your profile",
+        "take a couple of minutes to update",
+        "we request you",
+        "profile is not up to date",
+        "please update your profile",
+    )
+
+    @staticmethod
+    def classify_conversational_message(
+        text: str, has_options: bool, has_composer: bool
+    ) -> str:
+        """Classify a conversational bot message (E5-R20).
+
+        Returns one of:
+        - "question": answerable — radio options are present, the text ends
+          with "?", or a free-text composer is available for a non-nudge
+          prompt.
+        - "nudge": an informational prompt such as "update your profile"
+          with no answer options. It must never be answered.
+        - "info": a message with no options and no composer; nothing to do.
+        """
+        if has_options:
+            return "question"
+        normalized = " ".join((text or "").lower().split())
+        if not normalized:
+            return "info"
+        # A trailing question mark is a genuine question even when it
+        # mentions the profile (e.g. "Have you updated your profile?")
+        # or no composer is currently rendered.
+        if normalized.endswith("?"):
+            return "question"
+        if any(pattern in normalized for pattern in NaukriAdapter.CONVERSATIONAL_NUDGE_PATTERNS):
+            return "nudge"
+        if has_composer:
+            return "question"
+        return "info"
 
     @staticmethod
     def _normalize_choice(text: str) -> str:
         return " ".join((text or "").strip().lower().split())
 
-    async def answer_conversational_question(self, page: Page, answer: str) -> bool:
+    # E5-R20: supported dismissal/continuation controls for informational
+    # nudges. Exact lowercase text match keeps this conservative.
+    DISMISS_NUDGE_TEXTS = frozenset({
+        "skip",
+        "continue",
+        "continue later",
+        "not now",
+        "dismiss",
+        "close",
+        "got it",
+        "ok",
+        "done",
+        "no thanks",
+    })
+
+    async def _pointer_hits_element(self, element) -> bool:
+        """True when a click at the element's centre point would land on it.
+
+        Raises when the element is stale/detached so callers can tell
+        "occluded" apart from "node no longer exists".
+        """
+        return bool(
+            await element.evaluate(
+                "el => { const r = el.getBoundingClientRect();"
+                " if (!r.width || !r.height) return false;"
+                " const top = document.elementFromPoint("
+                "   r.left + r.width / 2, r.top + r.height / 2);"
+                " return !!top && (top === el || el.contains(top)); }"
+            )
+        )
+
+    async def _pointer_safe_click(self, element) -> str:
+        """Click an element only when the pointer would actually land on it.
+
+        Returns one of "clicked", "occluded", "not_visible", "not_enabled",
+        "stale", "timeout" or "error". Never raises: a click that times out
+        leaves the UI state ambiguous, it does not mean the application
+        failed (E5-R20 — the E5-R19 attempt died exactly here when a
+        background submit button was covered by the chat drawer).
+        """
+        try:
+            if not await element.is_visible():
+                return "not_visible"
+            if not await element.is_enabled():
+                return "not_enabled"
+            try:
+                if not await self._pointer_hits_element(element):
+                    return "occluded"
+            except Exception:
+                return "stale"
+            await element.click(timeout=8000)
+            return "clicked"
+        except Exception as exc:
+            message = str(exc).lower()
+            if "timeout" in message:
+                return "timeout"
+            if "not attached" in message or "detached" in message:
+                return "stale"
+            return "error"
+
+    async def dismiss_conversational_nudge(self, page: Page) -> bool:
+        """Click a visibly available dismissal control for a nudge (E5-R20).
+
+        Conservative: exact button text match against
+        ``DISMISS_NUDGE_TEXTS``, must be visible, enabled and hit-tested.
+        Returns True only when a control was actually clicked; never raises.
+        """
+        container = await self._get_visible_application_container(page)
+        if container is None:
+            return False
+        try:
+            candidates = await container.query_selector_all(
+                "button, [role='button'], a, div, span"
+            )
+        except Exception as exc:
+            logger.warning("dismiss_conversational_nudge: scan failed: %s", exc)
+            return False
+        for element in candidates:
+            try:
+                text = (await element.inner_text()).strip().lower()
+            except Exception:
+                continue  # stale node
+            if text not in self.DISMISS_NUDGE_TEXTS:
+                continue
+            outcome = await self._pointer_safe_click(element)
+            if outcome == "clicked":
+                logger.info("Conversational nudge dismissed via %r", text)
+                return True
+            if outcome == "timeout":
+                logger.warning(
+                    "Nudge dismissal control %r click timed out (ambiguous)", text
+                )
+                return False
+        return False
+
+    async def answer_conversational_question(
+        self, page: Page, answer: str, expected_question: Optional[str] = None
+    ) -> bool:
         """Answer the active conversational question and click Save.
 
         E5-R14: Handles radio-group questions, dropdowns, and text questions.
         Verifies the selected state before clicking Save. Returns True only when
         an answer surface was found, selected, and Save was clicked.
+
+        E5-R20: when ``expected_question`` is provided and the drawer now shows
+        a different prompt, the answer is stale and is NOT submitted (returns
+        False) — answering an outdated prompt only confuses the flow.
         """
         container = await self._get_visible_application_container(page)
         if container is None:
             logger.warning("answer_conversational_question: no application container")
             return False
+
+        if expected_question is not None:
+            current = None
+            for selector in (".botMsg span", ".botMsg"):
+                el = await container.query_selector(selector)
+                if el is not None and await el.is_visible():
+                    text = (await el.inner_text()).strip()
+                    if text:
+                        current = text
+                        break
+            if (
+                current is not None
+                and self._normalize_choice(current) != self._normalize_choice(expected_question)
+            ):
+                logger.info(
+                    "Stale conversational prompt ignored (expected %r, found %r)",
+                    expected_question,
+                    current,
+                )
+                return False
 
         target = self._normalize_choice(answer)
         answered = False
@@ -1800,36 +1975,118 @@ class NaukriAdapter(JobPlatformAdapter):
             return False
 
     async def submit_application(self, page: Page) -> bool:
-        """
-        Submit the application form.
-        Returns True if submitted successfully, False otherwise.
-        """
-        try:
-            # Look for submit button
-            submit_selectors = [
-                'button[type="submit"]',
-                '.submit-btn',
-                'input[type="submit"]',
-                'button.submit',
-                # E5-R7: Naukri's conversational apply drawer submits via a
-                # Save control that is a div (class "sendMsg"), not a button.
-                '.sendMsg',
-                '.send .sendMsg',
-            ]
+        """Submit the application form.
 
+        E5-R20: never raises on click failures. Occluded controls (e.g. a
+        background submit button covered by the chat drawer, as in the
+        E5-R19 attempt) are skipped; a click that times out marks
+        ``last_submit_outcome`` "AMBIGUOUS" so callers reconcile against
+        Naukri's application history instead of assuming success or failure.
+        """
+        self.last_submit_outcome = "NOT_SUBMITTED"
+
+        # Look for submit button
+        submit_selectors = [
+            'button[type="submit"]',
+            '.submit-btn',
+            'input[type="submit"]',
+            'button.submit',
+            # E5-R7: Naukri's conversational apply drawer submits via a
+            # Save control that is a div (class "sendMsg"), not a button.
+            '.sendMsg',
+            '.send .sendMsg',
+        ]
+
+        try:
             for selector in submit_selectors:
                 button = await page.query_selector(selector)
-                if button:
-                    await button.click()
+                if button is None:
+                    continue
+                outcome = await self._pointer_safe_click(button)
+                if outcome == "clicked":
                     await asyncio.sleep(3)
                     await self._check_security(page)
+                    self.last_submit_outcome = "SUBMITTED"
                     return True
+                if outcome == "timeout":
+                    self.last_submit_outcome = "AMBIGUOUS"
+                    logger.warning(
+                        "Submit control %s click timed out; result is ambiguous",
+                        selector,
+                    )
+                    return False
+                logger.info("Submit control %s not clickable (%s)", selector, outcome)
 
             logger.warning("No submit button found")
             return False
         except Exception as e:
+            error_msg = str(e).lower()
+            if any(
+                token in error_msg
+                for token in ("security verification", "captcha", "access blocked")
+            ):
+                raise
             logger.error(f"Error submitting application: {e}")
-            raise e
+            self.last_submit_outcome = "AMBIGUOUS"
+            return False
+
+    CONVERSATIONAL_SUBMIT_TEXT = re.compile(
+        r"^(apply now|apply|submit my application|submit this application|"
+        r"submit application|submit|confirm my application|confirm application|confirm)$",
+        re.IGNORECASE,
+    )
+
+    async def submit_conversational_application(self, page: Page) -> str:
+        """Final submit for the conversational drawer (E5-R20).
+
+        Clicks only a drawer-local Apply/Submit/Confirm control that is
+        visible, enabled and hit-tested. Never clicks ``.sendMsg`` (an answer
+        control, not a submit control) and never raises.
+
+        Returns "SUBMITTED", "NOT_SUBMITTED" (no supported control found) or
+        "AMBIGUOUS" (a click timed out — outcome unknown).
+        """
+        try:
+            container = await self._get_visible_application_container(page)
+            scope = container if container is not None else page
+            elements = await scope.query_selector_all(
+                "button, [role='button'], input[type='submit'], a"
+            )
+            for element in elements:
+                try:
+                    text = (await element.inner_text()).strip()
+                    if not text:
+                        text = ((await element.get_attribute("value")) or "").strip()
+                except Exception:
+                    continue  # stale node
+                if not text or not self.CONVERSATIONAL_SUBMIT_TEXT.match(text):
+                    continue
+                outcome = await self._pointer_safe_click(element)
+                if outcome == "clicked":
+                    self.last_submit_outcome = "SUBMITTED"
+                    logger.info("Conversational submit clicked via %r", text)
+                    return "SUBMITTED"
+                if outcome == "timeout":
+                    self.last_submit_outcome = "AMBIGUOUS"
+                    logger.warning(
+                        "Conversational submit %r click timed out (ambiguous)", text
+                    )
+                    return "AMBIGUOUS"
+                logger.info(
+                    "Conversational submit control %r not clickable (%s)", text, outcome
+                )
+            self.last_submit_outcome = "NOT_SUBMITTED"
+            return "NOT_SUBMITTED"
+        except Exception as exc:
+            error_msg = str(exc).lower()
+            if any(
+                token in error_msg
+                for token in ("security verification", "captcha", "access blocked")
+            ):
+                raise
+            logger.warning("Conversational submit scan failed: %s", exc)
+            self.last_submit_outcome = "AMBIGUOUS"
+            return "AMBIGUOUS"
 
     async def confirm_submission(self, page: Page) -> bool:
         """

@@ -129,8 +129,13 @@ class TestDashboardSummaryWithData:
         job = _make_job(db)
         _make_application(db, job, status="APPLIED")
         _make_application(db, job, status="SKIPPED")
-        _make_application(db, job, status="NEEDS_ATTENTION")
-        _make_application(db, job, status="EXTERNAL_APPLICATION")
+        # E5-R20: needs_attention counts unresolved attempts only — the
+        # NEEDS_ATTENTION row belongs to a separate, unconfirmed job here
+        # (a NEEDS_ATTENTION attempt on an APPLIED job is confirmed work,
+        # covered by TestConfirmedVsUnresolved below).
+        other_job = _make_job(db, title="Other Analyst", company="Other Corp")
+        _make_application(db, other_job, status="NEEDS_ATTENTION")
+        _make_application(db, other_job, status="EXTERNAL_APPLICATION")
         db.commit()
 
         data = client.get("/api/dashboard/summary").json()
@@ -318,7 +323,11 @@ class TestNeedsAttentionWithData:
 
     def test_filters_by_needs_attention_flag(self, client: TestClient, db: Session) -> None:
         job = _make_job(db)
-        _make_application(db, job, status="APPLIED", needs_attention=False)
+        # E5-R20: the APPLIED row lives on a different job — a
+        # needs_attention row whose job is confirmed is excluded from the
+        # unresolved queue (covered by TestConfirmedVsUnresolved below).
+        applied_job = _make_job(db, title="Applied Analyst", company="Applied Corp")
+        _make_application(db, applied_job, status="APPLIED", needs_attention=False)
         _make_application(db, job, status="SKIPPED", needs_attention=True)
         db.commit()
 
@@ -613,3 +622,60 @@ class TestJobsListWithData:
         assert client.post("/api/dashboard/jobs").status_code == 405
         assert client.put("/api/dashboard/jobs").status_code == 405
         assert client.delete("/api/dashboard/jobs").status_code == 405
+
+
+# ── E5-R20: confirmed applications vs unresolved attempts ─────────────────────
+
+class TestConfirmedVsUnresolved:
+    """A NEEDS_ATTENTION attempt whose job has a confirmed APPLIED row is
+    audit history, not open work (the #147/#148 pattern)."""
+
+    def test_confirmed_job_attempt_is_not_unresolved(
+        self, client: TestClient, db: Session
+    ) -> None:
+        job = _make_job(db)
+        _make_application(db, job, status="NEEDS_ATTENTION")  # intercepted click
+        _make_application(db, job, status="APPLIED")  # history confirmation
+        db.commit()
+
+        summary = client.get("/api/dashboard/summary").json()["applications"]
+        assert summary["needs_attention"] == 0
+        assert summary["applied"] == 1
+        assert summary["total"] == 2  # rows are still all counted
+
+        queue = client.get("/api/dashboard/needs-attention").json()
+        assert queue["total"] == 0
+        assert queue["applications"] == []
+
+    def test_unconfirmed_attempt_stays_in_unresolved_queue(
+        self, client: TestClient, db: Session
+    ) -> None:
+        job = _make_job(db)
+        _make_application(db, job, status="NEEDS_ATTENTION")
+        db.commit()
+
+        summary = client.get("/api/dashboard/summary").json()["applications"]
+        assert summary["needs_attention"] == 1
+
+        queue = client.get("/api/dashboard/needs-attention").json()
+        assert queue["total"] == 1
+        assert queue["applications"][0]["job_id"] == job.id
+
+    def test_recent_applications_exposes_job_confirmed_flag(
+        self, client: TestClient, db: Session
+    ) -> None:
+        confirmed_job = _make_job(db, title="Confirmed Analyst", company="Recruito")
+        _make_application(db, confirmed_job, status="NEEDS_ATTENTION")
+        _make_application(db, confirmed_job, status="APPLIED")
+        open_job = _make_job(db, title="Open Analyst", company="Other Corp")
+        _make_application(db, open_job, status="NEEDS_ATTENTION")
+        db.commit()
+
+        data = client.get("/api/dashboard/recent-applications").json()
+        flags = {
+            (item["job_id"], item["status"]): item["job_confirmed"]
+            for item in data["applications"]
+        }
+        assert flags[(confirmed_job.id, "APPLIED")] is True
+        assert flags[(confirmed_job.id, "NEEDS_ATTENTION")] is True
+        assert flags[(open_job.id, "NEEDS_ATTENTION")] is False

@@ -73,10 +73,27 @@ def _get_discovery_summary(db: Session) -> DiscoverySummary:
     )
 
 
+def _confirmed_job_ids(db: Session) -> set[int]:
+    """E5-R20: job ids with a confirmed (APPLIED) application row.
+
+    Attempts that remain NEEDS_ATTENTION for such a job (e.g. an
+    in-page click that timed out while Naukri history already lists the
+    application) are NOT unresolved — the dashboard must not present
+    them as open work.
+    """
+    rows = db.execute(
+        select(Application.job_id).where(Application.status == "APPLIED").distinct()
+    ).all()
+    return {row[0] for row in rows}
+
+
 def _get_application_counts(db: Session) -> ApplicationCounts:
     """
     Return all-time application status counts.
     Uses direct COUNT queries per status to avoid loading all rows.
+
+    E5-R20: needs_attention counts only attempts whose job has no
+    confirmed APPLIED row (confirmed-vs-unresolved distinction).
     """
     def count_status(status: str) -> int:
         return db.execute(
@@ -85,7 +102,14 @@ def _get_application_counts(db: Session) -> ApplicationCounts:
 
     total: int = db.execute(select(func.count(Application.id))).scalar() or 0
     applied = count_status("APPLIED") + count_status("SUBMITTED")
-    needs_attention = count_status("NEEDS_ATTENTION")
+    confirmed = _confirmed_job_ids(db)
+    needs_attention = sum(
+        1
+        for (job_id,) in db.execute(
+            select(Application.job_id).where(Application.status == "NEEDS_ATTENTION")
+        ).all()
+        if job_id not in confirmed
+    )
     skipped = count_status("SKIPPED")
     external_application = count_status("EXTERNAL_APPLICATION")
     failed = count_status("FAILED") + count_status("APPLICATION_STARTED")
@@ -175,6 +199,8 @@ def get_recent_applications(
         .limit(limit)
     ).all()
 
+    confirmed = _confirmed_job_ids(db)
+
     items = [
         RecentApplicationItem(
             application_id=app.id,
@@ -188,6 +214,7 @@ def get_recent_applications(
             needs_attention=app.needs_attention,
             is_dry_run=app.is_dry_run,
             created_at=app.created_at,
+            job_confirmed=app.job_id in confirmed,
         )
         for app, job in rows
     ]
@@ -206,6 +233,10 @@ def get_needs_attention(
     Filters for applications with needs_attention=True or status=NEEDS_ATTENTION.
     Joins with Job to provide job title and company context.
 
+    E5-R20: attempts whose job already has a confirmed APPLIED row are
+    excluded — the application went through; only genuinely unresolved
+    attempts are open work.
+
     Limit is capped at 50 to prevent large payloads.
     This endpoint is read-only. It performs no mutations.
     """
@@ -214,10 +245,17 @@ def get_needs_attention(
     if limit < 1:
         limit = 1
 
+    confirmed_subquery = (
+        select(Application.job_id)
+        .where(Application.status == "APPLIED")
+        .distinct()
+        .scalar_subquery()
+    )
     rows = db.execute(
         select(Application, Job)
         .join(Job, Application.job_id == Job.id)
         .where((Application.needs_attention.is_(True)) | (Application.status == "NEEDS_ATTENTION"))
+        .where(~Application.job_id.in_(confirmed_subquery))
         .order_by(Application.created_at.desc())
         .limit(limit)
     ).all()
