@@ -1,5 +1,50 @@
 # Architecture
 
+## E5-R22 — Idempotent Start Guard & Shared Relevance Candidate Filtering
+
+**Status:** IMPLEMENTED, TESTED (1161 passed, 29 new) — offline only; no live application run in this checkpoint. Not committed (working tree).
+
+**Double-start guard (defect 1):**
+
+```text
+POST /api/autonomous-cycle/run
+  └─ coordinator.try_acquire           # atomic UPDATE WHERE status='IDLE'
+       ├─ acquired=True  → one run_token, one runner task
+       └─ acquired=False → 409 + active run_token identity (duplicate POST)
+
+Frontend handleStartCycle
+  └─ startCycleInFlightRef (useRef)    # synchronous re-entry block (before React re-render)
+  └─ cycleRequestInFlight (state)      # disabled buttons
+```
+
+**Shared relevance candidate filtering (defects 2 + 3):**
+
+```text
+_run_applications
+  └─ SQL: NAUKRI_NATIVE jobs with no application (or SKIPPED)
+  └─ pre-filter: job_relevance_check(title, configured_titles,
+        role_category, department, description)      # E5-R22 shared gate
+       ├─ rejected → stats["relevance_rejected"]     # never a candidate
+       └─ passed   → candidates → progress doc → apply loop
+```
+
+`job_relevance_check` (engine.py): unwanted-specialization title check first
+(now includes BPO / voice / customer-support / telecalling / telemarketing /
+apprentice / apprenticeship — the "apprentice" allowed family was removed);
+then strong single-hit responsibility phrases (`STRONG_EXCLUDED_RESPONSIBILITY_PHRASES`
+— voice process / bpo / call centre / customer support … reject on one hit);
+then the two-hit threshold for loose phrases; then structural scope
+(`EXCLUDED_ROLE_SCOPE_PHRASES` now includes customer support / customer
+service) with technical-rescue; then allowed role-family title match.
+Enforced at discovery (`_build_job`), the deterministic checks, the candidate
+pre-filter (new) and the final application safety gate.
+
+**Invariants:** E5-R21 answer memory / HITL / duplicate protection /
+cancellation / session locking / reconciliation; E5-R10 no application-count
+cap; two-consecutive-ERROR abort; Stop → CANCELLED; LOGIN_REQUIRED.
+
+---
+
 ## E5-R21 — Multi-Job Autonomous Applications & Human-in-the-Loop Answer Memory
 
 **Status:** IMPLEMENTED, TESTED (1132 passed, 40 new) — offline only; no live application run in this checkpoint. Not committed (working tree).

@@ -1,5 +1,25 @@
 # Development Status
 
+## CHECKPOINT E5-R22: Idempotent Start Guard & Shared Relevance Candidate Filtering
+
+**Status: E5-R22 IMPLEMENTED, TESTED (1161 passed, 29 new), OFFLINE ONLY — no live application run in this checkpoint. Not committed (working tree; awaiting explicit authorization).** 2026-10-13.
+
+**Trigger:** the first controlled live run (run #80, 2026-10-13) exposed three defects: (1) one dashboard Start click *appeared* to trigger two runs (the backend ran once — atomic DB claim, single POST — but the frontend's React-state guard lagged behind rapid clicks, allowing a duplicate POST whose 409 conflict plus optimistic-status flicker looked like a second run); (2) irrelevant BPO / customer-support / international-voice / apprenticeship jobs entered the candidate list (the `_run_applications` candidate query selected every NAUKRI_NATIVE job with no application — zero relevance filtering — and `CURATED_ROLE_FAMILIES` still allowed "apprentice"/"apprenticeship"; job 105 "Apprentice - Trainee" even reached the application stage); (3) only 1 of 82 candidates was applied — the multi-job loop processed all 82 without early termination (1 applied + 81 skipped, `failed=0`), but the over-broad candidate query made 81 irrelevant jobs late-skip by the per-job safety gate, producing the single-application symptom.
+
+**Implementation:**
+
+1. Frontend `App.tsx` — synchronous double-submit guard: `startCycleInFlightRef` (useRef) blocks `handleStartCycle` re-entry before React re-renders `startCycleLoading`; the modal button also stays disabled while the request is in flight. Backend already atomic (`coordinator.try_acquire` single UPDATE WHERE `status='IDLE'`; duplicate POSTs get 409 with the active `run_token` identity).
+2. `backend/services/matching/engine.py` — shared relevance: removed the "apprentice"/"apprenticeship" family from `CURATED_ROLE_FAMILIES` (operator is already an apprentice); added BPO / voice-process / international-voice / voice-call / telecalling / telemarketing / customer-support / customer-service / call-center / call-centre / apprentice / apprenticeship to `UNWANTED_SPECIALIZATIONS`; added the same support/process phrases to `EXCLUDED_ROLE_SCOPE_PHRASES` and `EXCLUDED_RESPONSIBILITY_PHRASES`; new `STRONG_EXCLUDED_RESPONSIBILITY_PHRASES` reject on a single JD hit (short BPO/voice JDs used to slip past the two-hit threshold); genuine technical roles with a single minor support mention are not swept away.
+3. `backend/services/autonomous_cycle/service.py` — `_run_applications` pre-filters SQL candidates through `job_relevance_check` (title + role_category + department + description + configured titles) *before* the candidate count and progress document, so irrelevant jobs never become candidates, never appear as skipped-only noise, and can never be reintroduced by the loop; new `relevance_rejected` stat records the pre-filtered count.
+
+**Tests:** new `backend/tests/test_e5_r22_run_guard_and_candidate_filter.py` (29 tests: acquire-identity/duplicate-reject/legit-subsequent/dead-pid-orphan/concurrent-one-wins; title+JD relevance exclusions, strong single-hit rejection, two-hit threshold preserved, technical-role rescue, final-gate enforcement; candidate pre-filter, progress-document counts, all-irrelevant short-circuit, P1/P2/P3 no-false-cull). Full suite **1161 passed, 0 failed** (1132 baseline + 29). `npm run build` passes. Offline only — adapter mocked, no browser, no live run.
+
+**Invariants preserved:** E5-R21 answer memory / HITL / duplicate protection / cancellation / session locking / reconciliation; E5-R10 no application-count cap; two-consecutive-ERROR abort; Stop → CANCELLED; LOGIN_REQUIRED; all pre-E5-R22 tests pass unmodified.
+
+**Next priority:** live multi-job verification — the acceptance criteria in `docs/MASTER_PRD.md` remain NOT MET until one dashboard-initiated run completes ≥2 native applications with no manual intervention.
+
+---
+
 ## CHECKPOINT E5-R21: Multi-Job Autonomous Applications & Human-in-the-Loop Answer Memory
 
 **Status: E5-R21 IMPLEMENTED, TESTED (1132 passed, 40 new), OFFLINE ONLY — no live application run in this checkpoint. Not committed (working tree; awaiting explicit authorization).** 2026-10-13.

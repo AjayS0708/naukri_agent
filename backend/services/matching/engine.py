@@ -62,7 +62,9 @@ CURATED_ROLE_FAMILIES = {
         "graduate engineer trainee", "graduate trainee", "graduate engineer",
         "post graduate engineer", "campus hiring", "campus hire",
     ],
-    "apprentice": ["apprentice", "apprenticeship"],
+    # E5-R22: the "apprentice" / "apprenticeship" family was removed — the
+    # operator is already an apprentice and does not want another one; those
+    # titles are now rejected via UNWANTED_SPECIALIZATIONS instead.
     "ai_ml": [
         "ai/ml", "ai engineer", "ai engineering", "machine learning",
         "deep learning", "artificial intelligence", "computational science",
@@ -79,13 +81,23 @@ CURATED_ROLE_FAMILIES = {
     ],
 }
 
-# Explicitly rejected specializations (title-level exclusions)
+# Explicitly rejected specializations (title-level exclusions).
+# E5-R22: added BPO / voice-call / customer-support / telemarketing /
+# apprenticeship exclusions from the first controlled live run — those roles
+# entered the candidate list because the title filter did not reject them.
 UNWANTED_SPECIALIZATIONS = [
     "java", "php", ".net", "c#", "c++", "power platform",
     "platform engineer", "salesforce", "sap", "servicenow",
     "embedded", "firmware", "hardware", "electrical", "mechanical",
     "civil", "sales", "marketing", "hr", "operations",
     "production", "manufacturing", "automobile",
+    # E5-R22: support / process roles and apprenticeship (Ajay is already
+    # an apprentice and does not want another apprenticeship).
+    "bpo", "voice process", "international voice", "voice call",
+    "telecalling", "tele calling", "telemarketing",
+    "customer support", "customer service",
+    "call center", "call centre",
+    "apprentice", "apprenticeship",
 ]
 
 # Modifiers stripped from configured job_titles when deriving generic role
@@ -107,6 +119,7 @@ _TITLE_MODIFIER_TOKENS = (
 EXCLUDED_ROLE_SCOPE_PHRASES = (
     "sales", "business development", "marketing", "human resource",
     "production", "manufacturing", "customer success",
+    "customer support", "customer service",
     "service & operations", "service and operations", "bpo", "voice",
 )
 
@@ -127,11 +140,26 @@ EXCLUDED_RESPONSIBILITY_PHRASES = (
     "voice process", "inbound call", "outbound call", "call centre",
     "call center", "helpdesk", "help desk", "l1 support",
     "l1 technical support", "customer handling", "bpo",
+    "international voice", "voice call", "telemarketing",
+    "customer support", "customer service", "tech support",
     # manufacturing / production
     "assembly line", "shop floor", "production line", "production floor",
     "manufacturing plant", "automotive component",
 )
 MIN_EXCLUDED_RESPONSIBILITY_HITS = 2
+
+# E5-R22: phrases that unambiguously identify an excluded process / support
+# role — a single hit in the JD is enough to reject regardless of the
+# MIN_EXCLUDED_RESPONSIBILITY_HITS threshold, because these never appear in
+# genuine engineering or analytics work. Added after the first controlled
+# live run leaked short-JD BPO / voice / customer-support postings through
+# the two-hit threshold.
+STRONG_EXCLUDED_RESPONSIBILITY_PHRASES = (
+    "voice process", "international voice", "bpo",
+    "telemarketing", "telecalling", "tele calling",
+    "call centre", "call center",
+    "customer support", "customer service",
+)
 
 # Technical work signals used only to rescue a job whose structural scope
 # looks non-technical (e.g. a Data Analyst posting filed under
@@ -237,6 +265,16 @@ def _excluded_responsibility_hits(text: Optional[str]) -> list[str]:
     return [phrase for phrase in EXCLUDED_RESPONSIBILITY_PHRASES if phrase in text_lower]
 
 
+def _strong_excluded_responsibility_hits(text: Optional[str]) -> list[str]:
+    """E5-R22: single-hit unambiguous exclusions (voice/BPO/support/process)."""
+    text_lower = (text or "").lower()
+    return [
+        phrase
+        for phrase in STRONG_EXCLUDED_RESPONSIBILITY_PHRASES
+        if phrase in text_lower
+    ]
+
+
 def has_technical_responsibilities(text: Optional[str]) -> bool:
     """True when the JD text shows genuine engineering/analytics work."""
     text_lower = (text or "").lower()
@@ -287,6 +325,16 @@ def irrelevant_role_reason(
     unwanted_reason = _unwanted_title_reason(title)
     if unwanted_reason:
         return unwanted_reason
+
+    # E5-R22: unambiguous process/support phrases reject on a single hit
+    # (short BPO / voice / customer-support JDs used to slip past the
+    # two-hit threshold and enter the candidate list).
+    strong_hits = sorted(set(_strong_excluded_responsibility_hits(description)))
+    if strong_hits:
+        return (
+            "Job responsibilities describe an excluded role rather than a "
+            f"preferred technical role (matched: {', '.join(strong_hits)})"
+        )
 
     hits = sorted(set(_excluded_responsibility_hits(description)))
     if len(hits) >= MIN_EXCLUDED_RESPONSIBILITY_HITS:

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal, RefreshCw, Play, AlertTriangle, Square } from "lucide-react";
 import { getDashboardSummary, getHealth, getNeedsAttention, getNotifications, getRecentApplications, startAutonomousCycle, getAutonomousCycleStatus, stopAutonomousCycle, getPendingQuestion, answerPendingQuestion } from "../services/api";
 import type { AnswerQuestionRequest, DashboardSummary, HealthResponse, NeedsAttentionItem, Notification, PendingQuestion, ProfileResponse, RecentApplicationItem, AutonomousCycleStatusResponse } from "../types/api";
@@ -66,6 +66,9 @@ export function App() {
   const [stopCycleLoading, setStopCycleLoading] = useState(false);
   const [cycleConflict, setCycleConflict] = useState(false);
   const cycleRequestInFlight = startCycleLoading || stopCycleLoading;
+  // E5-R22: synchronous double-submit guard — React state (startCycleLoading)
+  // can lag behind rapid clicks, so a ref blocks re-entry before re-render.
+  const startCycleInFlightRef = useRef(false);
 
   // E5-R21: human-in-the-loop screening answer state
   const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
@@ -215,11 +218,12 @@ export function App() {
   };
 
   const handleStartCycle = async () => {
-    if (cycleRequestInFlight) return;
+    if (cycleRequestInFlight || startCycleInFlightRef.current) return;
+    startCycleInFlightRef.current = true;
     setStartCycleLoading(true);
     setCycleConflict(false);
 
-try {
+    try {
       const result = await startAutonomousCycle({});
       setCycleStatus({
         active_state: "RUNNING",
@@ -245,6 +249,7 @@ try {
         await refreshCycleStatus();
       }
     } finally {
+      startCycleInFlightRef.current = false;
       setStartCycleLoading(false);
     }
   };

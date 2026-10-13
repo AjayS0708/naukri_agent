@@ -25,7 +25,7 @@ from sqlalchemy import select
 from backend.database.database import SessionLocal
 from backend.services.agent_state import AgentStateManager
 from backend.services.discovery.service import DiscoveryService
-from backend.services.matching.engine import MatchEngine
+from backend.services.matching.engine import MatchEngine, job_relevance_check
 from backend.services.gemini.queue import AIQueueService
 from backend.services.applications.runner import ApplicationRunner
 from backend.services.applications.service import ApplicationService
@@ -1025,6 +1025,9 @@ class AutonomousCycle:
             "external": 0,
             "needs_attention": 0,
             "failed": 0,
+            # E5-R22: jobs rejected by the shared relevance pre-filter before
+            # they enter the candidate list / progress document.
+            "relevance_rejected": 0,
             "errors": [],
         }
 
@@ -1059,6 +1062,42 @@ class AutonomousCycle:
             stmt = stmt.limit(self.max_jobs)
 
         eligible_jobs = db.execute(stmt).scalars().all()
+
+        # E5-R22: pre-filter candidates through the shared relevance gate
+        # before they enter the progress document or the apply loop. Without
+        # this, every NAUKRI_NATIVE job with no application became a
+        # candidate — BPO / voice / customer-support posts that slipped past
+        # discovery's sparse-card filter entered the list (82 candidates in
+        # the first controlled live run) and were only skipped late by the
+        # per-job safety gate, so the dashboard showed mostly-irrelevant
+        # candidates and just 1 real application. Irrelevant jobs are now
+        # rejected before the candidate count and can never be reintroduced
+        # by the loop.
+        allowed_titles = getattr(preferences, "job_titles", None)
+        relevant_jobs = []
+        for job in eligible_jobs:
+            if job.title:
+                role_ok, role_reason = job_relevance_check(
+                    job.title,
+                    allowed_titles,
+                    role_category=job.role_category,
+                    department=job.department,
+                    description=job.description,
+                )
+                if not role_ok:
+                    stats["relevance_rejected"] += 1
+                    logger.info(
+                        "e5_r22_relevance_rejected_job",
+                        extra={
+                            "job_id": job.id,
+                            "title": job.title,
+                            "reason": role_reason,
+                        },
+                    )
+                    continue
+            relevant_jobs.append(job)
+        eligible_jobs = relevant_jobs
+
         stats["candidates"] = len(eligible_jobs)
 
         if not eligible_jobs:

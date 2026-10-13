@@ -51,23 +51,32 @@ The application-submission objective that Run #52 left unresolved was subsequent
 met by later checkpoints (D5/D7 single and multi native applications; E5-R7 surgical
 live validation of job 114).
 
-**E5 status: substantial but not finished.** Checkpoints E5-R1 through E5-R21 are
+**E5 status: substantial but not finished.** Checkpoints E5-R1 through E5-R22 are
 implemented and documented in `docs/DEVELOPMENT_STATUS.md`. Offline suite:
-**1132 passed / 0 failed** including the new E5-R21 multi-job/HITL suite (verified
-2026-10-13; E5-R21 changes uncommitted in the working tree). Live-verified since
-E5-R7: single-job surgical apply (job 114, row 82) and history-confirmed application
-(job 462, row 148 via reconciliation after attempt #147). E5-R21 delivers the
-shared-runner multi-job orchestration, waiting-for-user lifecycle and scoped
-screening-answer memory offline; the live multi-job run that proves them
-end-to-end has not happened.
+**1161 passed / 0 failed** including the new E5-R22 run-guard/candidate-filter
+suite (verified 2026-10-13; E5-R22 changes uncommitted in the working tree).
+Live-verified since E5-R7: single-job surgical apply (job 114, row 82) and
+history-confirmed application (job 462, row 148 via reconciliation after
+attempt #147). E5-R21 delivered the shared-runner multi-job orchestration,
+waiting-for-user lifecycle and scoped screening-answer memory offline. The
+first controlled live run (run #80, 2026-10-13) completed end-to-end with
+1 applied / 82 candidates / 81 late-skipped / 0 failed — proving the
+orchestrator, safety gates and reconciliation — but exposed three defects
+(double-run appearance, irrelevant BPO/voice/apprentice candidates, and the
+single-application symptom caused by the over-broad candidate query) that
+E5-R22 fixes offline; the multi-job acceptance criteria (≥2 native
+applications in one live run) remain NOT MET until a post-E5-R22 live run.
 
 **Known limitations / open items:**
 
-- **Multi-job application execution is UNVERIFIED live.** No single run has completed
-  multiple native applications since E5-R7. E5-R21 (2026-10-13) delivered the
-  offline-tested infrastructure — one shared runner/browser session per run, stale
-  state recovery, per-job progress, waiting-for-user lifecycle, scoped answer
-  memory — but the live multi-job verification run remains the top roadmap priority.
+- **Multi-application live verification is still pending.** Run #80 completed
+  one native application in a single cycle (the orchestrator, shared runner
+  and safety gates all held), but the candidate query selected 82 mostly
+  irrelevant jobs that late-skipped, yielding only 1 applied. E5-R22
+  (2026-10-13) pre-filters candidates through the shared relevance gate so
+  the next live run sees only relevant candidates; the top roadmap priority
+  is now a post-E5-R22 dashboard-initiated run completing ≥2 native
+  applications.
 - 13 `NEEDS_ATTENTION` application rows remain for human review (incl. #146 job 105
   and #147 job 462 — remote status uncertain; #148 is the history-confirmed
   companion row of 462). No bulk resolution mechanism exists by design.
@@ -84,13 +93,17 @@ initiate, monitor and stop cycles, and the safety gates hold — but end-to-end
 multi-job execution has not been demonstrated since the E5-R7 code changes. Remaining
 work, in priority order:
 
-1. **Multi-job application execution.** Infrastructure delivered by E5-R21
-   (shared-runner orchestration, progress, HITL, answer memory — offline
-   test-verified, 1132 passed). Remaining: verify one dashboard-initiated live run
-   that discovers → hard-filters → evaluates → attempts → truthfully verifies **at
-   least two** native applications in a single cycle. Acceptance criteria are
-   recorded in `docs/MASTER_PRD.md` ("Multi-job acceptance criteria", as of
-   E5-R21). Status: infrastructure MET, live verification NOT MET.
+1. **Multi-application live verification.** Infrastructure delivered by E5-R21
+   (shared-runner orchestration, progress, HITL, answer memory) and hardened by
+   E5-R22 (idempotent start guard, shared relevance candidate pre-filter — both
+   offline test-verified, 1161 passed). Run #80 (2026-10-13) completed one live
+   cycle end-to-end but applied to only 1 of 82 candidates because the old
+   candidate query selected mostly irrelevant jobs. Remaining: one
+   dashboard-initiated live run (post-E5-R22) that discovers → hard-filters →
+   evaluates → attempts → truthfully verifies **at least two** native
+   applications in a single cycle. Acceptance criteria are recorded in
+   `docs/MASTER_PRD.md` ("Multi-job acceptance criteria"). Status:
+   infrastructure MET, live multi-application verification NOT MET.
 2. **Historical application reconciliation.** Implemented (E5-R16 endpoint, E5-R20
    attempt-level reconciliation; live read-only run reconciled 117 → 145 rows
    additively). Remaining: make it a routine, documented workflow (when to trigger,
