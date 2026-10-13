@@ -1,8 +1,8 @@
 # Naukri AI Job Application Agent
 
-## Implementation Status Summary (as of E5-R20, 2026-10-12)
+## Implementation Status Summary (as of E5-R21, 2026-10-13)
 
-Reconciles the original vision (Sections 1–85 below) with the verified implementation state through E5-R20. Evidence: git history (HEAD = origin/main = `c2868d0`), `E5-R*` code markers, the offline test suite (**1092 passed / 0 failed at `c2868d0`, re-verified 2026-10-12**), and read-only database inspection. Offline tests are labeled as such; nothing here claims a live run that did not happen.
+Reconciles the original vision (Sections 1–85 below) with the verified implementation state through E5-R21. Evidence: git history (HEAD = origin/main = `e2f440d`; E5-R21 changes uncommitted in the working tree), `E5-R*` code markers, the offline test suite (**1132 passed / 0 failed including new `test_e5_r21_multi_job_hitl.py`, re-verified 2026-10-13**), and read-only database inspection. Offline tests are labeled as such; nothing here claims a live run that did not happen.
 
 **Implemented and test-verified**
 - Discovery: multi-location search (E5-R8), live-verified pagination (E5-R8), freshness-first ordering (E5-R3), targeted search groups beyond configured titles (E5-R19), `application_mode` classified during discovery with native-first ranking (E5-R9).
@@ -10,26 +10,39 @@ Reconciles the original vision (Sections 1–85 below) with the verified impleme
 - AI: bounded Gemini evaluation, advisory only — only the `suspicious` flag blocks (D6.1/D6.2, E5-R3); native-first AI-queue priority with deterministic fallback when no analysis exists (E5-R12).
 - Applications: legacy and conversational Naukri apply with bounded steps (E5-R7, E5-R14), pointer-honest clicks that never fabricate success (E5-R20), conversational nudge classification (E5-R20), `APPLIED` strictly requires positive confirmation evidence (D5 onward).
 - Cycle control: DB-backed single-run lock across processes/restarts, idempotent Stop reported as `CANCELLED` (E5-R15), cooperative cancellation inside every phase, login-aware gate terminating with `LOGIN_REQUIRED` (E5-R16), read-only Naukri history reconciliation (`POST /api/applications/reconcile-history`, E5-R16) and attempt-level reconciliation before `NEEDS_ATTENTION` (E5-R20).
-- Dashboard: run/stop control with `CANCELLING` state, needs-attention separated from history-confirmed jobs (`job_confirmed`, E5-R20), job/application drill-downs.
+- Multi-job orchestration (E5-R21, offline test-verified): ONE shared `ApplicationRunner`/browser session per run, idempotent session open, stale non-auth state recovery, reconcile-first, per-job progress persisted to the control row, duplicate-protected candidacy, one-job failure never poisons the rest.
+- Screening answers (E5-R21, offline test-verified): saved-memory → profile → AI → human-in-the-loop chain; `PendingQuestion` waiting lifecycle (WAITING/ANSWERED/SKIPPED/CANCELLED/EXPIRED) with dashboard APIs; scoped `ScreeningAnswer` memory (GLOBAL/EMPLOYER/JOB, sensitive-question hard block, context-sensitive GLOBAL authorisation, profile-hash and option-list staleness).
+- Dashboard: run/stop control with `CANCELLING` state, needs-attention separated from history-confirmed jobs (`job_confirmed`, E5-R20), job/application drill-downs, live progress + waiting-for-user display (E5-R21).
 
 **Partial**
 - Application limits (§29): quota infrastructure was **removed** by E5-R10 — `max_applications` is display-only; the §29 text below is original vision, superseded (status note added in place).
 - History reconciliation: implemented and live-verified once read-only (E5-R16: 117 → 145 rows additive); not yet a routine, scheduled workflow.
 - Login gating: implemented and test-verified; a full live cycle under a deliberately logged-out session has not been exercised.
+- Multi-job infrastructure: shared runner, progress, HITL and answer memory delivered and offline test-verified (E5-R21); the live multi-job run that proves them end-to-end has not happened.
 
 **Unverified (do not claim)**
-- **Multi-job application execution:** no single verified run has completed multiple native applications since E5-R7. Verified applications are single-job: job 114 (row 82, E5-R7 surgical apply) and job 462 (row 148, confirmed via history reconciliation after E5-R19/20 attempt #147). Multi-job acceptance criteria below are **NOT MET**.
-- Scheduler-driven continuous operation, notifications/email summaries, and Chrome (non-default browser) paths were not exercised in any E5-R7–E5-R20 checkpoint.
+- **Multi-job application execution:** no single verified run has completed multiple native applications since E5-R7. Verified applications are single-job: job 114 (row 82, E5-R7 surgical apply) and job 462 (row 148, confirmed via history reconciliation after E5-R19/20 attempt #147). The E5-R21 infrastructure is in place, but the multi-job acceptance criteria below remain **NOT MET** until one live dashboard-initiated run completes ≥2 native applications.
+- Scheduler-driven continuous operation, notifications/email summaries, and Chrome (non-default browser) paths were not exercised in any E5-R7–E5-R21 checkpoint.
 
 **Future (not started)**
-- E6 Candidate Profile & Question Answer Engine, E7 Persistent Candidate Answer Memory (see `docs/FUTURE_IMPLEMENTATION_ROADMAP.md`); multi-account, cloud/24×7, and non-Naukri platforms remain out of V1 scope.
+- E6 Candidate Profile & Question Answer Engine (see `docs/FUTURE_IMPLEMENTATION_ROADMAP.md`); E7 Persistent Candidate Answer Memory is now **partially started** by E5-R21 (scoped `ScreeningAnswer` store + HITL flow; the broader profile-driven answer engine remains future work); multi-account, cloud/24x7, and non-Naukri platforms remain out of V1 scope.
 
-**Multi-job acceptance criteria (target for the next verification checkpoint)**
+**Multi-job acceptance criteria (target for the next verification checkpoint; infrastructure delivered by E5-R21, live verification pending)**
 1. One dashboard-initiated run discovers, hard-filters, evaluates, attempts, and truthfully verifies **at least two** native applications in a single cycle with no manual intervention.
-2. After each completed application the run continues to the next eligible candidate — no premature stop, no exhausted-budget slice (E5-R10 removed caps; the loop ends only when the eligible queue is exhausted or a stop/terminal condition fires).
+2. After each completed application the run continues to the next eligible candidate — no premature stop, no exhausted-budget slice (E5-R10 removed caps; the loop ends only when the eligible queue is exhausted or a stop/terminal condition fires). E5-R21 delivers this mechanically: one shared runner/session, stale-state recovery, one-job failure isolation, priority order preserved.
 3. Every outcome is truthful: `APPLIED` only with positive evidence; ambiguous submissions reconciled against Naukri history before `NEEDS_ATTENTION` (E5-R20); user Stop reported as `CANCELLED`, never `COMPLETED` (E5-R15).
 4. Safety invariants hold across the whole run: protected jobs 81/87/114/120 untouched, external applications never submitted, CAPTCHA/security challenges stop the run, duplicate protection intact, DB-backed lock prevents concurrent runs.
-5. Per-run statistics separate discovered / filtered / evaluated / applied / needs-attention counts, and the dashboard reflects them live.
+5. Per-run statistics separate discovered / filtered / evaluated / applied / needs-attention counts, and the dashboard reflects them live. E5-R21 delivers the live progress document (`progress` JSON + `waiting_for_user` on the control row) and the waiting-for-user UI.
+
+---
+
+## E5-R21 - Multi-Job Autonomous Applications & Human-in-the-Loop Answer Memory
+
+**Status:** E5-R21 IMPLEMENTED, TESTED (1132 passed, 40 new), OFFLINE ONLY — no live run in this checkpoint. Not committed (working tree; awaiting explicit authorization). 2026-10-13.
+
+**Contract change:** one dashboard-initiated run now processes every eligible candidate through ONE shared `ApplicationRunner` and browser session (idempotent `open_session`; state returns to IDLE between jobs; `close_session_after_run=False`; `recover_stale_state` + `AgentStateManager.ensure_idle()` recover stale non-auth states — AUTH/SECURITY never recovered; browser-start failure returns zeroed stats, an unusable state returns `{"error": "Invalid state"}`; `reconcile_history()` opens the browser lazily only when unresolved NEEDS_ATTENTION/SUBMITTED rows exist). Screening questions follow saved memory → profile → AI → human-in-the-loop. With HITL armed (`hitl AND run_token`), an unanswerable question persists a `PendingQuestion` (WAITING), emits a `waiting` progress event (`coordinator.set_waiting`; snapshot `display_status=WAITING_FOR_USER`), and polls via a fresh short-lived session until ANSWERED / SKIPPED / CANCELLED / EXPIRED (timeout 3600s default). After an ANSWERED wait the Naukri login is re-checked (`_auth_ok_after_wait`; logged-out → AUTH_REQUIRED); a user skip marks the job SKIPPED (re-offered next run); cancel-while-waiting finalizes the PendingQuestion CANCELLED and the attempt NEEDS_ATTENTION (run reports CANCELLED at the next boundary). Answers are saved ONLY through `POST /api/autonomous-cycle/answer-question` into the scoped `ScreeningAnswer` memory: scopes GLOBAL/EMPLOYER/JOB never widen silently; sensitive questions (password/OTP/token/…) return 400 `SENSITIVE_QUESTION` and are never stored or auto-answered; context-sensitive families (salary/notice/relocation/visa/availability/commitment) require `allow_global_reuse=True` for GLOBAL (400 `MEMORY_SAVE_REFUSED` otherwise); PROFILE-sourced rows carry a profile-data hash and go stale on profile change; choice answers go stale when the option list changes. Without run_token/hitl the legacy gate (`questions and not answer_questions and not hitl` → NEEDS_ATTENTION) is unchanged.
+
+**Tests:** new `backend/tests/test_e5_r21_multi_job_hitl.py` (40 tests: multi-job orchestration incl. priority order, duplicate exclusion, dry-run-never-submits, stop-between-jobs, shared-runner-once, stale-state recovery; HITL lifecycle incl. answer/skip/cancel/expire, auth re-check, coordinator waiting flag; answer memory incl. scope isolation, sensitive block, context-sensitive authorisation, staleness, upsert, delete; dashboard/API incl. full pending-question flow, validation codes, CRUD, progress persistence, stop-during-wait). Full suite **1132 passed, 0 failed** (1092 baseline + 40). `npm run build` passes. Protected jobs, records #146/#147/#148, preferences and the APPLIED-requires-evidence rule unchanged. Offline only — adapter mocked, no browser, no live run.
 
 ---
 

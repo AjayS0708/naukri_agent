@@ -120,6 +120,8 @@ class CycleCoordinator:
                     last_result=None,
                     last_error=None,
                     pid=os.getpid(),
+                    progress=None,
+                    waiting_for_question_id=None,
                 )
             )
             db.commit()
@@ -215,6 +217,79 @@ class CycleCoordinator:
             if owns_session:
                 db.close()
 
+    def update_progress(
+        self,
+        run_token: str,
+        progress: dict[str, Any],
+        *,
+        db: Optional[Session] = None,
+    ) -> None:
+        """E5-R21: persist live multi-job progress for the active run.
+
+        No-op when the token no longer owns the control row (completed or
+        replaced runs never overwrite a terminal state).
+        """
+        if not run_token or not progress:
+            return
+        owns_session = db is None
+        if owns_session:
+            db = database_module.SessionLocal()
+        try:
+            row = db.get(CycleRunControl, CONTROL_ROW_ID)
+            if row is None or row.run_token != run_token:
+                return
+            if row.status not in ("RUNNING", "CANCELLING"):
+                return
+            row.progress = dict(progress)
+            db.commit()
+        finally:
+            if owns_session:
+                db.close()
+
+    def set_waiting(
+        self,
+        run_token: str,
+        pending_question_id: int,
+        *,
+        db: Optional[Session] = None,
+    ) -> None:
+        """E5-R21: mark the active run as waiting for a human answer."""
+        if not run_token:
+            return
+        owns_session = db is None
+        if owns_session:
+            db = database_module.SessionLocal()
+        try:
+            row = db.get(CycleRunControl, CONTROL_ROW_ID)
+            if row is None or row.run_token != run_token:
+                return
+            if row.status not in ("RUNNING", "CANCELLING"):
+                return
+            row.waiting_for_question_id = int(pending_question_id)
+            db.commit()
+        finally:
+            if owns_session:
+                db.close()
+
+    def clear_waiting(self, run_token: str, *, db: Optional[Session] = None) -> None:
+        """E5-R21: clear the waiting-for-user flag (answer, skip or cancel)."""
+        if not run_token:
+            return
+        owns_session = db is None
+        if owns_session:
+            db = database_module.SessionLocal()
+        try:
+            row = db.get(CycleRunControl, CONTROL_ROW_ID)
+            if row is None or row.run_token != run_token:
+                return
+            if row.waiting_for_question_id is None:
+                return
+            row.waiting_for_question_id = None
+            db.commit()
+        finally:
+            if owns_session:
+                db.close()
+
     def complete(
         self,
         run_token: str,
@@ -253,6 +328,8 @@ class CycleCoordinator:
                 row.last_result = payload
                 row.last_error = result.get("error")
                 row.pid = None
+                row.progress = None
+                row.waiting_for_question_id = None
                 # Keep run_token for last_run correlation until next acquire.
             db.commit()
             return payload
@@ -289,16 +366,24 @@ class CycleCoordinator:
             }
         active = None
         if row.status in ("RUNNING", "CANCELLING"):
+            waiting = bool(row.waiting_for_question_id)
             active = {
                 "run_id": row.discovery_run_id,
                 "run_token": row.run_token,
                 "status": row.status,
+                # E5-R21: display status surfaced to the dashboard while the
+                # underlying lock guard stays RUNNING/CANCELLING (the claim
+                # itself never changes; only the operator-facing view does).
+                "display_status": "WAITING_FOR_USER" if waiting else row.status,
                 "max_applications": row.max_applications,
                 "started_at": row.started_at,
                 "completed_at": None,
                 "stats": {},
                 "error": None,
                 "cancel_requested": row.status == "CANCELLING",
+                "progress": row.progress or {},
+                "waiting_for_user": waiting,
+                "waiting_for_question_id": row.waiting_for_question_id,
             }
         last_run = None
         if row.last_result:

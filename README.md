@@ -1,5 +1,32 @@
 # Naukri AI Job Application Agent
 
+## CHECKPOINT E5-R21: Multi-Job Autonomous Applications & Human-in-the-Loop Answer Memory
+
+**Status: E5-R21 IMPLEMENTED, TESTED (1132 passed, 40 new), OFFLINE ONLY — no live application run in this checkpoint. Not committed (working tree; awaiting explicit authorization).**
+
+**Trigger:** no single run has completed multiple native applications since E5-R7 (E5-R20 "Next priority"). Pre-E5-R21 every job in a run constructed a fresh `ApplicationRunner` with a fresh browser session under a strict IDLE gate, so one stuck job poisoned every remaining candidate with "Invalid state"; screening questions the profile/AI could not answer dead-ended the job in `NEEDS_ATTENTION`; and no per-run progress or waiting state existed for the dashboard.
+
+**Implementation:**
+
+1. `backend/services/applications/runner.py` — shared multi-job session: `open_session()` is idempotent (IDLE→RUNNING *before* the browser start so a start failure lands in CRITICAL_ERROR legally; `_open_failure` distinguishes `invalid_state` from `browser_start`); `close_session_after_run=False` keeps the browser open across jobs (state still returns to IDLE between jobs); `recover_stale_state` + `AgentStateManager.ensure_idle()` recover stale non-auth states (AUTH/SECURITY never recovered); per-job `_process_single_job` emits `job_started`/`job_finished` progress around `_execute_single_job`; `reconcile_history()` opens the browser lazily and only when unresolved NEEDS_ATTENTION/SUBMITTED rows exist. Screening chain: saved memory → profile → AI → human-in-the-loop. HITL: `_await_user_answer` persists a `PendingQuestion` row, emits a `waiting` event and polls via a fresh short-lived session (API commits are visible); `_auth_ok_after_wait` re-validates the Naukri login before resuming a form (logged-out → `AUTH_REQUIRED`); `_record_user_skip` (job `SKIPPED`, re-offered next run) and `_record_stop_while_waiting` (attempt `NEEDS_ATTENTION`).
+2. `backend/services/agent_state.py` — `ensure_idle()` with `_RECOVERABLE_TO_IDLE`.
+3. `backend/services/autonomous_cycle/service.py` — ONE shared `ApplicationRunner` per run (constructed once with `run_token`/`progress_hook`/`cancel_check`/`hitl=bool(run_token)`/`close_session_after_run=False`/`recover_stale_state=True`); reconcile-first; per-job progress document persisted to the control row; waiting flag via `coordinator.set_waiting`/`clear_waiting`; `_close_shared_runner` exactly once at run end. Cycle-facing API unchanged: `run_applications([job.id])` per job.
+4. `backend/services/autonomous_cycle/coordinator.py` — `update_progress`, `set_waiting`, `clear_waiting`; snapshot gains `progress`, `waiting_for_user`, `waiting_for_question_id` and `display_status` (`WAITING_FOR_USER` while the lock guard itself stays RUNNING/CANCELLING).
+5. `backend/models/screening.py`, `backend/schemas/screening.py`, `backend/services/applications/answer_memory.py` — `ScreeningAnswer` scoped reusable memory (scopes GLOBAL/EMPLOYER/JOB, sources USER/PROFILE; profile-hash staleness; option-list staleness; sensitive questions — password/OTP/token/… — never stored or auto-answered; context-sensitive families salary/notice/relocation/visa/availability/commitment require explicit authorisation before GLOBAL reuse) and `PendingQuestion` (WAITING/ANSWERED/SKIPPED/CANCELLED/EXPIRED). Answers are saved ONLY through the API endpoint (`remember` default true, scope default JOB).
+6. `backend/api/routes/autonomous_cycle.py` — `GET /pending-question`, `POST /answer-question` (404 `PENDING_QUESTION_NOT_FOUND`; 409 `PENDING_QUESTION_NOT_WAITING`/`PENDING_QUESTION_STALE`; 400 `ANSWER_REQUIRED`/`INVALID_OPTION`/`SENSITIVE_QUESTION`/`MEMORY_SAVE_REFUSED`/`INVALID_SCOPE`), `GET/PUT/DELETE /screening-answers`.
+7. `backend/models/cycle_run.py` + Migration 5 — `progress` JSON and `waiting_for_question_id` columns on `cycle_run_control`.
+8. Frontend — `App.tsx` pending-question UI (answer/skip buttons, option select-or-input, remember checkboxes, live progress row: processed/candidates, applied, skipped, needs_attention, remaining, current job/step); `types/api.ts` + `services/api.ts` gain `CycleProgress`, `PendingQuestion`, screening-answer types and API functions.
+
+**Tests:** new `backend/tests/test_e5_r21_multi_job_hitl.py` (40 tests: multi-job orchestration, waiting-for-user lifecycle, scoped answer memory, dashboard/API flows). Full suite **1132 passed, 0 failed** (baseline 1092 + 40). Frontend `npm run build` passes. All tests offline — no live browser, adapter methods mocked.
+
+**Invariants preserved:** protected jobs 81/87/114/120; `APPLIED`-requires-evidence; duplicate protection; two-consecutive-ERROR abort; E5-R15 Stop → `CANCELLED`; E5-R16 `LOGIN_REQUIRED`; legacy HITL-off gate (`questions and not answer_questions and not hitl` → NEEDS_ATTENTION) unchanged; all pre-E5-R21 runner/cycle tests pass unmodified.
+
+**Unverified (do not claim):** a live multi-job run. The E5-R21 multi-job acceptance criteria in `docs/MASTER_PRD.md` remain **NOT MET** — the infrastructure is delivered, but one dashboard-initiated live run completing ≥2 native applications is still required.
+
+**Documentation updated (2026-10-13):** `README.md`, `docs/MASTER_PRD.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT_STATUS.md`, `docs/DECISIONS.md`, `docs/FUTURE_IMPLEMENTATION_ROADMAP.md`.
+
+---
+
 ## CHECKPOINT E5-R20: Conversational Nudge Classification & Ambiguous-Submission Reconciliation
 
 **Status: E5-R20 IMPLEMENTED, TESTED (1092 passed, 44 new), OFFLINE ONLY — no live application run in this checkpoint. Commit `c2868d0` (2026-10-12), 6 files, +1466/−63.**

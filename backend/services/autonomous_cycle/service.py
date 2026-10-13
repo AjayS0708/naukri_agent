@@ -14,9 +14,10 @@ No automation logic is duplicated.
 """
 
 import asyncio
+import inspect
 import re
 from datetime import UTC, datetime
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -449,6 +450,11 @@ class AutonomousCycle:
         self.stop_reason: Optional[str] = None
         self.stop_is_normal = False
         self.current_discovery_run: Optional[DiscoveryRun] = None
+        # E5-R21: one shared ApplicationRunner (one browser session) serves
+        # every candidate of a run, plus the live progress document that is
+        # persisted to the cycle control row for the dashboard.
+        self._runner = None
+        self._run_progress: dict = {}
 
     def _print(self, message: str):
         """Print message to stdout if CLI output is enabled."""
@@ -1088,75 +1094,241 @@ class AutonomousCycle:
         # every eligible candidate is processed or a genuine blocker stops it.
         consecutive_errors = 0
 
-        for job in eligible_jobs:
-            # E5-R15: never begin a new application after Stop is requested.
-            if self._check_cancellation(f"before job {job.id}"):
-                stats["stop_reason"] = self.stop_reason
-                return stats
+        # E5-R21: one shared runner for the whole run. A single browser
+        # session serves every candidate; stale non-auth states left by a
+        # failed job are recovered so one failure cannot poison the rest.
+        self._run_progress = {
+            "candidates_total": len(eligible_jobs),
+            "processed": 0,
+            "applied": 0,
+            "submitted_unconfirmed": 0,
+            "skipped": 0,
+            "external": 0,
+            "needs_attention": 0,
+            "failed": 0,
+            "remaining": len(eligible_jobs),
+            "current_job_id": None,
+            "current_job_title": None,
+            "current_step": None,
+            "waiting_for_user": False,
+            "current_question": None,
+            "pending_question_id": None,
+        }
+        self._persist_progress()
+        self._runner = ApplicationRunner(
+            db,
+            self.state_manager,
+            dry_run=self.dry_run,
+            run_token=self.run_token,
+            progress_hook=self._make_progress_hook(),
+            cancel_check=self._cancellation_requested,
+            hitl=bool(self.run_token),
+            close_session_after_run=False,
+            recover_stale_state=True,
+        )
+
+        # E5-R21: reconcile-first. Before any new attempt is made, unresolved
+        # rows (NEEDS_ATTENTION/SUBMITTED) are verified against Naukri's
+        # read-only application history so duplicate protection and the
+        # dashboard see the authoritative state. Managed runs (run_token)
+        # only; the browser opens lazily and only when such rows exist.
+        if self.run_token:
             try:
-                result = await self._process_single_job(db, job, profile, preferences)
+                reconciled = self._runner.reconcile_history(db)
+                if inspect.isawaitable(reconciled):
+                    reconciled = await reconciled
+                if isinstance(reconciled, dict) and reconciled.get("reconciled_job_ids"):
+                    self._print(
+                        f"  Reconciled {len(reconciled['reconciled_job_ids'])} "
+                        "attempt(s) from application history"
+                    )
+            except Exception as exc:
+                logger.warning(f"Pre-run application-history reconciliation skipped: {exc}")
 
-                # E5-R16: an AUTH/SECURITY blocker observed while processing a
-                # job stops the whole run — it must not be counted as an
-                # ordinary per-job failure and then retried on the next job.
-                if self.state_manager.current_state == AgentState.AUTH_REQUIRED:
-                    self.stop_reason = "Authentication required"
+        try:
+            for job in eligible_jobs:
+                # E5-R15: never begin a new application after Stop is requested.
+                if self._check_cancellation(f"before job {job.id}"):
+                    stats["stop_reason"] = self.stop_reason
                     return stats
-                if self.state_manager.current_state == AgentState.SECURITY_REQUIRED:
-                    self.stop_reason = "Security challenge encountered"
-                    return stats
+                self._run_progress.update(
+                    {
+                        "current_job_id": job.id,
+                        "current_job_title": job.title,
+                        "current_step": "processing",
+                        "waiting_for_user": False,
+                        "current_question": None,
+                        "pending_question_id": None,
+                    }
+                )
+                self._persist_progress()
+                try:
+                    result = await self._process_single_job(db, job, profile, preferences)
 
-                if result == "APPLIED":
-                    stats["applied"] += 1
-                    self.applications_count += 1
-                    consecutive_errors = 0
-                elif result == "SUBMITTED_UNCONFIRMED":
-                    # Clicked submit without positive confirmation: truthful
-                    # outcome, never counted toward the successful budget.
-                    stats["submitted_unconfirmed"] += 1
-                    consecutive_errors = 0
-                elif result == "SKIPPED":
-                    stats["skipped"] += 1
-                    consecutive_errors = 0
-                elif result == "EXTERNAL":
-                    stats["external"] += 1
-                    consecutive_errors = 0
-                elif result == "NEEDS_ATTENTION":
-                    stats["needs_attention"] += 1
-                    consecutive_errors = 0
-                elif result == "FAILED":
-                    stats["failed"] += 1
-                    consecutive_errors = 0
-                elif result == "ERROR":
-                    # The runner never inspected this job (browser session or
-                    # agent state unavailable). E5-R5.2: the first isolated
-                    # ERROR is recorded and the loop continues so later
-                    # candidates can still be considered; a second consecutive
-                    # ERROR means the runtime is unusable and aborts instead
-                    # of producing a run of bogus outcomes.
-                    stats["failed"] += 1
-                    consecutive_errors += 1
-                    if consecutive_errors >= 2:
-                        self.stop_reason = (
-                            "Two consecutive runner errors; "
-                            "aborting remaining candidates"
-                        )
+                    # E5-R16: an AUTH/SECURITY blocker observed while processing a
+                    # job stops the whole run — it must not be counted as an
+                    # ordinary per-job failure and then retried on the next job.
+                    if self.state_manager.current_state == AgentState.AUTH_REQUIRED:
+                        self.stop_reason = "Authentication required"
                         return stats
-                elif result == "SECURITY_REQUIRED":
-                    self.stop_reason = "Security challenge encountered"
-                    return stats
-                elif result == "AUTH_REQUIRED":
-                    self.stop_reason = "Authentication required"
-                    return stats
+                    if self.state_manager.current_state == AgentState.SECURITY_REQUIRED:
+                        self.stop_reason = "Security challenge encountered"
+                        return stats
 
-            except Exception as e:
-                logger.error(f"Error processing job {job.id}: {e}", exc_info=True)
-                stats["errors"].append(str(e))
-                stats["failed"] += 1
-                # An exception is not a valid outcome: it neither resets nor
-                # increments the consecutive runner-ERROR counter.
+                    if result == "APPLIED":
+                        stats["applied"] += 1
+                        self.applications_count += 1
+                        consecutive_errors = 0
+                    elif result == "SUBMITTED_UNCONFIRMED":
+                        # Clicked submit without positive confirmation: truthful
+                        # outcome, never counted toward the successful budget.
+                        stats["submitted_unconfirmed"] += 1
+                        consecutive_errors = 0
+                    elif result == "SKIPPED":
+                        stats["skipped"] += 1
+                        consecutive_errors = 0
+                    elif result == "EXTERNAL":
+                        stats["external"] += 1
+                        consecutive_errors = 0
+                    elif result == "NEEDS_ATTENTION":
+                        stats["needs_attention"] += 1
+                        consecutive_errors = 0
+                    elif result == "FAILED":
+                        stats["failed"] += 1
+                        consecutive_errors = 0
+                    elif result == "ERROR":
+                        # The runner never inspected this job (browser session or
+                        # agent state unavailable). E5-R5.2: the first isolated
+                        # ERROR is recorded and the loop continues so later
+                        # candidates can still be considered; a second consecutive
+                        # ERROR means the runtime is unusable and aborts instead
+                        # of producing a run of bogus outcomes.
+                        stats["failed"] += 1
+                        consecutive_errors += 1
+                        if consecutive_errors >= 2:
+                            self.stop_reason = (
+                                "Two consecutive runner errors; "
+                                "aborting remaining candidates"
+                            )
+                            return stats
+                    elif result == "SECURITY_REQUIRED":
+                        self.stop_reason = "Security challenge encountered"
+                        return stats
+                    elif result == "AUTH_REQUIRED":
+                        self.stop_reason = "Authentication required"
+                        return stats
 
-        return stats
+                    self._record_progress_outcome(result)
+
+                except Exception as e:
+                    logger.error(f"Error processing job {job.id}: {e}", exc_info=True)
+                    stats["errors"].append(str(e))
+                    stats["failed"] += 1
+                    # An exception is not a valid outcome: it neither resets nor
+                    # increments the consecutive runner-ERROR counter.
+
+            return stats
+        finally:
+            await self._close_shared_runner()
+
+    def _persist_progress(self) -> None:
+        """E5-R21: publish the live progress document to the control row."""
+        if not self.run_token:
+            return
+        try:
+            from backend.services.autonomous_cycle.coordinator import coordinator
+
+            coordinator.update_progress(self.run_token, dict(self._run_progress))
+        except Exception as exc:
+            logger.warning(f"Failed to persist run progress: {exc}")
+
+    def _record_progress_outcome(self, result: str) -> None:
+        """E5-R21: fold one finished job's outcome into the progress document."""
+        outcome_keys = {
+            "APPLIED": "applied",
+            "SUBMITTED_UNCONFIRMED": "submitted_unconfirmed",
+            "SKIPPED": "skipped",
+            "EXTERNAL": "external",
+            "NEEDS_ATTENTION": "needs_attention",
+            "FAILED": "failed",
+            "ERROR": "failed",
+        }
+        progress = self._run_progress
+        key = outcome_keys.get(result)
+        if key:
+            progress[key] = progress.get(key, 0) + 1
+        progress["processed"] = progress.get("processed", 0) + 1
+        progress["remaining"] = max(
+            0, progress.get("candidates_total", 0) - progress["processed"]
+        )
+        progress["current_step"] = "job_done"
+        self._persist_progress()
+
+    def _make_progress_hook(self) -> Callable[[dict], Any]:
+        """E5-R21: runner progress events update the progress document and
+        the waiting-for-user flag on the control row."""
+        async def hook(payload: dict) -> None:
+            if not isinstance(payload, dict):
+                return
+            event = payload.get("event")
+            try:
+                if event == "waiting":
+                    self._run_progress.update(
+                        {
+                            "waiting_for_user": True,
+                            "current_step": "waiting_for_user",
+                            "current_question": payload.get("question"),
+                            "pending_question_id": payload.get("pending_question_id"),
+                        }
+                    )
+                    if self.run_token:
+                        from backend.services.autonomous_cycle.coordinator import coordinator
+
+                        coordinator.set_waiting(
+                            self.run_token, payload.get("pending_question_id")
+                        )
+                elif event == "answer_received":
+                    self._run_progress.update(
+                        {
+                            "waiting_for_user": False,
+                            "current_step": "resuming",
+                            "current_question": None,
+                            "pending_question_id": None,
+                        }
+                    )
+                    if self.run_token:
+                        from backend.services.autonomous_cycle.coordinator import coordinator
+
+                        coordinator.clear_waiting(self.run_token)
+                elif event == "job_started":
+                    self._run_progress.update(
+                        {
+                            "current_job_id": payload.get("job_id"),
+                            "current_step": "starting",
+                            "waiting_for_user": False,
+                        }
+                    )
+                elif event == "job_finished":
+                    self._run_progress["current_step"] = "job_done"
+                elif event == "step":
+                    self._run_progress["current_step"] = payload.get("step")
+                self._persist_progress()
+            except Exception as exc:
+                logger.warning(f"Progress hook failed: {exc}")
+
+        return hook
+
+    async def _close_shared_runner(self) -> None:
+        """E5-R21: release the shared browser session exactly once per run."""
+        runner, self._runner = self._runner, None
+        if runner is None:
+            return
+        try:
+            result = runner.close_session()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            logger.warning(f"Failed to close shared application runner: {exc}")
 
     async def _process_single_job(
         self, db: Session, job: Job, profile: Profile, preferences: JobPreference
@@ -1252,7 +1424,10 @@ class AutonomousCycle:
             )
             return "SKIPPED"
 
-        runner = ApplicationRunner(db, self.state_manager, dry_run=self.dry_run)
+        # E5-R21: reuse the run's shared runner (one browser session for the
+        # whole run) when available; direct callers fall back to a fresh
+        # runner that owns its own session.
+        runner = self._runner or ApplicationRunner(db, self.state_manager, dry_run=self.dry_run)
         app_results = await runner.run_applications([job.id], dry_run=self.dry_run)
 
         # E5-R16: a logged-out session is an authentication outcome, not an

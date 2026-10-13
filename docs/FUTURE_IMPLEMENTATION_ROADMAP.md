@@ -51,16 +51,23 @@ The application-submission objective that Run #52 left unresolved was subsequent
 met by later checkpoints (D5/D7 single and multi native applications; E5-R7 surgical
 live validation of job 114).
 
-**E5 status: substantial but not finished.** Checkpoints E5-R1 through E5-R20 are
+**E5 status: substantial but not finished.** Checkpoints E5-R1 through E5-R21 are
 implemented and documented in `docs/DEVELOPMENT_STATUS.md`. Offline suite:
-**1092 passed / 0 failed** at `c2868d0` (verified 2026-10-12). Live-verified since
+**1132 passed / 0 failed** including the new E5-R21 multi-job/HITL suite (verified
+2026-10-13; E5-R21 changes uncommitted in the working tree). Live-verified since
 E5-R7: single-job surgical apply (job 114, row 82) and history-confirmed application
-(job 462, row 148 via reconciliation after attempt #147).
+(job 462, row 148 via reconciliation after attempt #147). E5-R21 delivers the
+shared-runner multi-job orchestration, waiting-for-user lifecycle and scoped
+screening-answer memory offline; the live multi-job run that proves them
+end-to-end has not happened.
 
 **Known limitations / open items:**
 
-- **Multi-job application execution is UNVERIFIED.** No single run has completed
-  multiple native applications since E5-R7. This is the top roadmap priority.
+- **Multi-job application execution is UNVERIFIED live.** No single run has completed
+  multiple native applications since E5-R7. E5-R21 (2026-10-13) delivered the
+  offline-tested infrastructure — one shared runner/browser session per run, stale
+  state recovery, per-job progress, waiting-for-user lifecycle, scoped answer
+  memory — but the live multi-job verification run remains the top roadmap priority.
 - 13 `NEEDS_ATTENTION` application rows remain for human review (incl. #146 job 105
   and #147 job 462 — remote status uncertain; #148 is the history-confirmed
   companion row of 462). No bulk resolution mechanism exists by design.
@@ -77,11 +84,13 @@ initiate, monitor and stop cycles, and the safety gates hold — but end-to-end
 multi-job execution has not been demonstrated since the E5-R7 code changes. Remaining
 work, in priority order:
 
-1. **Multi-job application execution.** Verify one dashboard-initiated run that
-   discovers → hard-filters → evaluates → attempts → truthfully verifies **at least
-   two** native applications in a single cycle. Acceptance criteria are recorded in
-   `docs/MASTER_PRD.md` ("Multi-job acceptance criteria", as of E5-R20). Status:
-   NOT MET.
+1. **Multi-job application execution.** Infrastructure delivered by E5-R21
+   (shared-runner orchestration, progress, HITL, answer memory — offline
+   test-verified, 1132 passed). Remaining: verify one dashboard-initiated live run
+   that discovers → hard-filters → evaluates → attempts → truthfully verifies **at
+   least two** native applications in a single cycle. Acceptance criteria are
+   recorded in `docs/MASTER_PRD.md` ("Multi-job acceptance criteria", as of
+   E5-R21). Status: infrastructure MET, live verification NOT MET.
 2. **Historical application reconciliation.** Implemented (E5-R16 endpoint, E5-R20
    attempt-level reconciliation; live read-only run reconciled 117 → 145 rows
    additively). Remaining: make it a routine, documented workflow (when to trigger,
@@ -191,6 +200,16 @@ may later be stored for safe reuse.
 
 Persist approved user answers to recurring application questions. The conceptual name
 is **Candidate Answer Memory**, not "AI Memory."
+
+**Status note (E5-R21, 2026-10-13):** partially started. The scoped `ScreeningAnswer`
+store (`backend/models/screening.py`, `backend/services/applications/answer_memory.py`)
+delivers GLOBAL/EMPLOYER/JOB reuse scopes, USER/PROFILE sources, sensitive-question
+hard blocking, context-sensitive GLOBAL authorisation, profile-hash and option-list
+staleness, and the HITL pending-question flow with dashboard APIs. E7's remaining
+aspects — approval workflow, supersession/versioning (Section 8), semantic-equivalent
+question matching (Section 9) and the `application_question_answers` schema — are
+still future work; the E5-R21 schema is a separate validated design, not this
+proposal's table.
 
 ### Proposed future table
 

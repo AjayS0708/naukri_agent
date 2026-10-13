@@ -79,3 +79,10 @@ class AutonomousCycleRunResponse(BaseModel):
     stats: dict = Field(default_factory=dict)
     error: Optional[str] = None
     cancel_requested: bool = False
+    # E5-R21: live multi-job observability. ``display_status`` is
+    # WAITING_FOR_USER while the run is blocked on a human answer; the
+    # underlying lock status stays RUNNING/CANCELLING.
+    display_status: Optional[str] = None
+    progress: Optional[dict] = None
+    waiting_for_user: bool = False
+    waiting_for_question_id: Optional[int] = None

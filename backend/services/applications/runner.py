@@ -1,18 +1,26 @@
 import asyncio
+import inspect
+import time
 from datetime import UTC, datetime
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from backend.models.application import Application
 from backend.models.job import Job
 from backend.models.profile import Profile
 from backend.models.matching import JobPreference
 from backend.models.ai import JobAnalysisModel
 from backend.models.ai_queue import AIQueueItem
+from backend.models.screening import PendingQuestion
 from backend.schemas.agent import AgentState
 from backend.services.agent_state import AgentStateManager
 from backend.services.applications.service import ApplicationService, SafetyGateError
+from backend.services.applications.answer_memory import (
+    ScreeningAnswerService,
+    normalize_question,
+)
 from backend.schemas.application import (
     ApplicationStatus,
     ApplicationMethod,
@@ -44,6 +52,14 @@ class ApplicationRunner:
         state_manager: AgentStateManager,
         dry_run: bool = False,
         supervise_form: bool = False,
+        # E5-R21: shared multi-job session, progress reporting, cooperative
+        # cancellation and human-in-the-loop screening answers.
+        run_token: Optional[str] = None,
+        progress_hook: Optional[Callable[[dict], Any]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        hitl: bool = False,
+        close_session_after_run: bool = True,
+        recover_stale_state: bool = False,
     ):
         self.session = session
         self.state_manager = state_manager
@@ -56,30 +72,80 @@ class ApplicationRunner:
         self.supervise_form = supervise_form
         self.answer_questions = get_settings().answer_questions
         self.dry_run_result = None
+        # E5-R21: human-in-the-loop + shared-session controls.
+        self.run_token = run_token
+        self.progress_hook = progress_hook
+        self.cancel_check = cancel_check
+        self.hitl = hitl
+        self.close_session_after_run = close_session_after_run
+        self.recover_stale_state = recover_stale_state
+        # "invalid_state" | "browser_start" | None â€” distinguishes why
+        # open_session() failed for the caller of run_applications().
+        self._open_failure: Optional[str] = None
+        self._hitl_poll_interval = 1.5
+        self._hitl_timeout_seconds = 3600.0
 
     async def stop_safely(self):
         """Request a graceful stop to the application runner."""
         self._stop_requested = True
         logger.info("application_runner_stop_requested")
 
-    async def run_applications(self, job_ids: list[int], dry_run: bool = False) -> dict:
-        """
-        Process a list of eligible job IDs sequentially.
-        Returns statistics about the run.
+    async def open_session(self) -> bool:
+        """Start (or reuse) the browser session and enter the APPLYING state.
 
-        Args:
-            job_ids: List of job IDs to process
-            dry_run: If True, inspect application form but do not submit (default: False)
+        E5-R21: one session serves many jobs. With ``recover_stale_state``
+        (shared multi-job runs) a stale non-auth state left behind by an
+        earlier job is recovered so a single failure cannot poison every
+        remaining candidate; AUTH/SECURITY still stop immediately.
+        ``_open_failure`` records why the open failed ("invalid_state" vs
+        "browser_start") for run_applications() to map to its contract.
         """
-        self.dry_run = dry_run
-        if self.state_manager.current_state != AgentState.IDLE:
+        if self.recover_stale_state:
+            state_ok = self.state_manager.ensure_idle()
+        else:
+            state_ok = self.state_manager.current_state == AgentState.IDLE
+        if not state_ok:
             logger.warning("Application runner can only start from IDLE state")
-            return {"error": "Invalid state"}
+            self._open_failure = "invalid_state"
+            return False
 
-        self._stop_requested = False
+        # Enter RUNNING before the browser start so a start failure lands in
+        # CRITICAL_ERROR through a legal transition (IDLE -> CRITICAL_ERROR is
+        # not an allowed edge).
         self.state_manager.transition_to(AgentState.RUNNING)
 
-        stats = {
+        if not self._session_started:
+            try:
+                started = await self.adapter.start_session()
+            except Exception as exc:
+                logger.error("Browser session start raised: %s", exc)
+                started = False
+            if not started:
+                logger.error("Failed to start browser session")
+                self.state_manager.transition_to(AgentState.CRITICAL_ERROR)
+                self._open_failure = "browser_start"
+                return False
+            self._session_started = True
+
+        self.state_manager.transition_to(AgentState.SEARCHING)
+        self.state_manager.transition_to(AgentState.FILTERING)
+        self.state_manager.transition_to(AgentState.APPLYING)
+        self._open_failure = None
+        return True
+
+    async def close_session(self) -> None:
+        """Stop the browser session if it is open (idempotent)."""
+        if not self._session_started:
+            return
+        try:
+            await self.adapter.stop_session()
+        except Exception as exc:
+            logger.warning("Browser session stop failed: %s", exc)
+        finally:
+            self._session_started = False
+
+    def _empty_stats(self, job_ids: list[int], dry_run: bool) -> dict:
+        return {
             "total": len(job_ids),
             "processed": 0,
             "applied": 0,
@@ -91,33 +157,46 @@ class ApplicationRunner:
             "errors": 0,
             "auth_required": 0,
             "dry_run": 0,
-            "dry_run_mode": dry_run
+            "dry_run_mode": dry_run,
         }
 
+    async def run_applications(self, job_ids: list[int], dry_run: bool = False) -> dict:
+        """
+        Process a list of eligible job IDs sequentially.
+        Returns statistics about the run.
+
+        Args:
+            job_ids: List of job IDs to process
+            dry_run: If True, inspect application form but do not submit (default: False)
+
+        E5-R21: when ``close_session_after_run`` is False (shared multi-job
+        runs) the browser session stays open after this call returns so the
+        next job reuses it; state still returns to IDLE between jobs.
+        """
+        self.dry_run = dry_run
+        if not await self.open_session():
+            if self._open_failure == "invalid_state":
+                return {"error": "Invalid state"}
+            # Browser session could not start: zeroed stats and no outcome.
+            return self._empty_stats(job_ids, dry_run)
+
+        self._stop_requested = False
+        stats = self._empty_stats(job_ids, dry_run)
+
         try:
-            # Start browser session
-            started = await self.adapter.start_session()
-            if not started:
-                logger.error("Failed to start browser session")
-                self.state_manager.transition_to(AgentState.CRITICAL_ERROR)
-                return stats
-
-            self._session_started = True
-            self.state_manager.transition_to(AgentState.SEARCHING)
-            self.state_manager.transition_to(AgentState.FILTERING)
-            self.state_manager.transition_to(AgentState.APPLYING)
-
             # Get profile and preferences
             profile = self.session.execute(select(Profile)).scalars().first()
             if not profile or not profile.confirmed:
                 logger.error("No confirmed profile found")
                 stats["errors"] = len(job_ids)
+                self._return_to_idle_from_active()
                 return stats
 
             preferences = self.session.execute(select(JobPreference)).scalars().first()
             if not preferences:
                 logger.error("No job preferences found")
                 stats["errors"] = len(job_ids)
+                self._return_to_idle_from_active()
                 return stats
 
             # Process jobs sequentially
@@ -145,7 +224,7 @@ class ApplicationRunner:
                     elif result == "ERROR":
                         stats["errors"] += 1
                     elif result == "AUTH_REQUIRED":
-                        # E5-R16: logged-out session — halt immediately; the
+                        # E5-R16: logged-out session â€” halt immediately; the
                         # caller surfaces LOGIN_REQUIRED to the dashboard.
                         stats["auth_required"] += 1
                         break
@@ -177,13 +256,90 @@ class ApplicationRunner:
             self.state_manager.transition_to(AgentState.CRITICAL_ERROR)
 
         finally:
-            if self._session_started:
-                await self.adapter.stop_session()
-                self._session_started = False
+            if self.close_session_after_run:
+                await self.close_session()
 
         return stats
 
+    def _return_to_idle_from_active(self) -> None:
+        """Leave the active state machine after an early, non-job exit."""
+        if self.state_manager.current_state in (AgentState.APPLYING, AgentState.FILTERING):
+            self.state_manager.transition_to(AgentState.STOPPED)
+            self.state_manager.transition_to(AgentState.IDLE)
+
+    async def reconcile_history(self, db: Session) -> Optional[dict]:
+        """E5-R21: reconcile unresolved rows against Naukri's history first.
+
+        Called by the cycle before the first job. Opens the shared session
+        lazily — and only when unresolved rows exist — reviews the read-only
+        application history, reconciles through ApplicationService (idempotent,
+        never touches protected jobs) and returns the state machine to IDLE so
+        the first run_applications() call starts cleanly. The browser session
+        stays open for the jobs that follow.
+        """
+        unresolved = (
+            db.execute(
+                select(func.count())
+                .select_from(Application)
+                .where(
+                    Application.status.in_(
+                        [
+                            ApplicationStatus.NEEDS_ATTENTION.value,
+                            ApplicationStatus.SUBMITTED.value,
+                        ]
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+        if not unresolved:
+            return None
+
+        if not await self.open_session():
+            return None
+
+        history = None
+        try:
+            history = await self.adapter.fetch_application_history()
+        except Exception as exc:
+            logger.warning("Application-history reconciliation unavailable: %s", exc)
+        finally:
+            if self.state_manager.current_state == AgentState.APPLYING:
+                self.state_manager.transition_to(AgentState.STOPPED)
+                self.state_manager.transition_to(AgentState.IDLE)
+
+        if not isinstance(history, list):
+            return None
+        try:
+            return self.application_service.reconcile_from_history(history)
+        except Exception as exc:
+            logger.warning("reconcile_from_history failed: %s", exc)
+            return None
+
+    async def _emit(self, payload: dict) -> None:
+        """Report a progress event to the owner of the shared session."""
+        if self.progress_hook is None:
+            return
+        try:
+            result = self.progress_hook(payload)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            logger.warning("progress hook failed: %s", exc)
+
     async def _process_single_job(
+        self,
+        job_id: int,
+        profile: Profile,
+        preferences: JobPreference
+    ) -> str:
+        """E5-R21: emit per-job progress around the actual job execution."""
+        await self._emit({"event": "job_started", "job_id": job_id})
+        outcome = await self._execute_single_job(job_id, profile, preferences)
+        await self._emit({"event": "job_finished", "job_id": job_id, "outcome": outcome})
+        return outcome
+
+    async def _execute_single_job(
         self,
         job_id: int,
         profile: Profile,
@@ -198,21 +354,24 @@ class ApplicationRunner:
             logger.warning(f"Job {job_id} not found")
             return "ERROR"
 
-        # Check if job is in AI queue and not completed
         queue_item = self.session.execute(
             select(AIQueueItem).where(AIQueueItem.job_id == job_id)
         ).scalars().first()
-
-        if queue_item and queue_item.status != AIQueueStatus.COMPLETED.value:
-            logger.info(f"Job {job_id} has incomplete AI analysis (status: {queue_item.status})")
-            self.application_service.record_application_skip(job, f"AI analysis not completed: {queue_item.status}")
-            return "SKIPPED"
 
         # Get AI analysis if available
         job_analysis = None
         analysis_model = self.session.execute(
             select(JobAnalysisModel).where(JobAnalysisModel.job_id == job_id)
         ).scalars().first()
+
+        # E5-R21: skip on an incomplete queue item ONLY when there is also no
+        # persisted analysis. The autonomous cycle writes a deterministic
+        # fallback analysis for quota-blocked candidates; honoring it means a
+        # single QUOTA_BLOCKED queue row no longer discards the job.
+        if queue_item and queue_item.status != AIQueueStatus.COMPLETED.value and analysis_model is None:
+            logger.info(f"Job {job_id} has incomplete AI analysis (status: {queue_item.status})")
+            self.application_service.record_application_skip(job, f"AI analysis not completed: {queue_item.status}")
+            return "SKIPPED"
 
         if analysis_model:
             job_analysis = JobAnalysis(
@@ -261,6 +420,7 @@ class ApplicationRunner:
         # Open job page
         page = None
         try:
+            await self._emit({"event": "step", "job_id": job_id, "step": "opening_job_page"})
             result = await self.adapter.open_job_page(job.url)
             page = result.page
 
@@ -442,7 +602,10 @@ class ApplicationRunner:
 
             # Detect and answer questions
             questions = await self.adapter.detect_application_questions(page)
-            if questions and not self.answer_questions:
+            # E5-R21: with human-in-the-loop enabled, saved answers and human
+            # answers keep the form moving even when AI answering
+            # (answer_questions) is disabled â€” only the AI step is gated.
+            if questions and not self.answer_questions and not self.hitl:
                 self.application_service.update_application(
                     application.id,
                     ApplicationUpdate(
@@ -483,15 +646,52 @@ class ApplicationRunner:
                 if not question_text:
                     continue
 
-                # Try to answer from profile
-                answer = self._get_answer_from_profile(question_text, profile)
-                answer_source = "PROFILE" if answer else None
+                await self._emit({
+                    "event": "step",
+                    "job_id": job_id,
+                    "step": "answering_questions",
+                    "question": question_text,
+                })
+
+                # E5-R21: reuse an approved saved answer first, then profile.
+                answer = self._lookup_saved_answer(
+                    question_text,
+                    options=q.get("options"),
+                    employer=job.company,
+                    job_id=job.id,
+                    profile=profile,
+                )
+                answer_source = "SAVED" if answer else None
 
                 if not answer:
+                    # Try to answer from profile
+                    answer = self._get_answer_from_profile(question_text, profile)
+                    answer_source = "PROFILE" if answer else None
+
+                if not answer and self.answer_questions:
                     # Try AI-generated answer
                     answer = self._get_ai_answer(question_text, job, profile)
                     if answer:
                         answer_source = "GEMINI"
+
+                if not answer:
+                    # E5-R21: ask the human before giving up on the job.
+                    status, human_answer = await self._await_user_answer(
+                        job=job,
+                        application=application,
+                        question_text=question_text,
+                        options=q.get("options"),
+                        question_type=_question_type_for(q.get("options")),
+                    )
+                    if status == "ANSWERED" and human_answer:
+                        if not await self._auth_ok_after_wait(page, job):
+                            return "AUTH_REQUIRED"
+                        answer = human_answer
+                        answer_source = "USER"
+                    elif status == "SKIPPED":
+                        return self._record_user_skip(application, job)
+                    elif status == "CANCELLED":
+                        return self._record_stop_while_waiting(application, job)
 
                 if answer:
                     prepared_answers.append({
@@ -514,11 +714,12 @@ class ApplicationRunner:
                     return "NEEDS_ATTENTION"
 
             # Submit application (production path only)
+            await self._emit({"event": "step", "job_id": job_id, "step": "submitting"})
             submitted = await self.adapter.submit_application(page)
             if not submitted:
                 if self.adapter.last_submit_outcome == "AMBIGUOUS":
                     # E5-R20: a timed-out/intercepted click leaves the true
-                    # state unknown — reconcile against Naukri's application
+                    # state unknown â€” reconcile against Naukri's application
                     # history before recording any outcome.
                     return await self._reconcile_unconfirmed_attempt(
                         application,
@@ -749,7 +950,7 @@ class ApplicationRunner:
             handles = prompt_handles.get(signature, 0)
 
             if kind != "question":
-                # E5-R20: informational prompt (nudge) — never answer it.
+                # E5-R20: informational prompt (nudge) â€” never answer it.
                 if handles == 0:
                     prompt_handles[signature] = 1
                     if await self.adapter.dismiss_conversational_nudge(page):
@@ -782,26 +983,66 @@ class ApplicationRunner:
                     f"(possible stale UI): {question_text}",
                 )
 
-            # Answerable question: answer from profile first.
-            answer = self._get_answer_from_profile(question_text, profile)
+            # Answerable question: saved answer â†’ profile â†’ AI â†’ human.
+            saved = self._lookup_saved_answer(
+                question_text,
+                options=options or None,
+                employer=job.company,
+                job_id=job.id,
+                profile=profile,
+            )
+            answer = saved
+            if not answer:
+                answer = self._get_answer_from_profile(question_text, profile)
             if options:
                 if not answer or self.adapter._normalize_choice(answer) not in [
                     self.adapter._normalize_choice(o) for o in options
                 ]:
                     answer = self._answer_radio_via_ai(question_text, options, job, profile)
                 if not answer:
-                    return await self._reconcile_unconfirmed_attempt(
-                        application, job,
-                        f"Could not choose an option for: {question_text}",
+                    status, human_answer = await self._await_user_answer(
+                        job=job,
+                        application=application,
+                        question_text=question_text,
+                        options=options,
+                        question_type="SINGLE_CHOICE",
                     )
+                    if status == "ANSWERED" and human_answer:
+                        if not await self._auth_ok_after_wait(page, job):
+                            return "AUTH_REQUIRED"
+                        answer = human_answer
+                    elif status == "SKIPPED":
+                        return self._record_user_skip(application, job)
+                    elif status == "CANCELLED":
+                        return self._record_stop_while_waiting(application, job)
+                    if not answer:
+                        return await self._reconcile_unconfirmed_attempt(
+                            application, job,
+                            f"Could not choose an option for: {question_text}",
+                        )
             else:
                 if not answer:
                     answer = self._get_ai_answer(question_text, job, profile)
                 if not answer:
-                    return await self._reconcile_unconfirmed_attempt(
-                        application, job,
-                        f"Could not answer question: {question_text}",
+                    status, human_answer = await self._await_user_answer(
+                        job=job,
+                        application=application,
+                        question_text=question_text,
+                        question_type="TEXT",
                     )
+                    if status == "ANSWERED" and human_answer:
+                        if not await self._auth_ok_after_wait(page, job):
+                            return "AUTH_REQUIRED"
+                        answer = human_answer
+                    elif status == "SKIPPED":
+                        return self._record_user_skip(application, job)
+                    elif status == "CANCELLED":
+                        return self._record_stop_while_waiting(application, job)
+                    if not answer:
+                        return await self._reconcile_unconfirmed_attempt(
+                            application, job,
+                            f"Could not answer question: {question_text}",
+                        )
 
             if not await self.adapter.answer_conversational_question(
                 page, answer, expected_question=question_text
@@ -841,8 +1082,8 @@ class ApplicationRunner:
             return "APPLIED"
 
         # E5-R20: click only a supported Apply/Submit control (never .sendMsg)
-        # and treat every non-confirmed result — including a timed-out or
-        # intercepted click — as unconfirmed pending history reconciliation.
+        # and treat every non-confirmed result â€” including a timed-out or
+        # intercepted click â€” as unconfirmed pending history reconciliation.
         outcome = await self.adapter.submit_conversational_application(page)
         if outcome == "SUBMITTED":
             await asyncio.sleep(2.0)
@@ -888,7 +1129,7 @@ class ApplicationRunner:
         protected jobs) records/keeps the APPLIED row, the current attempt
         row is annotated for audit but never rewritten to APPLIED, and the
         outcome reported is "APPLIED". When history does not list it, the
-        attempt is annotated NEEDS_ATTENTION with the specific reason — no
+        attempt is annotated NEEDS_ATTENTION with the specific reason â€” no
         retry is attempted from here.
         """
         history_entries = None
@@ -982,3 +1223,215 @@ class ApplicationRunner:
         except Exception as exc:
             logger.warning("Radio AI answer failed: %s", exc)
         return None
+
+    # E5-R21: human-in-the-loop screening answers ---------------------------------
+
+    def _lookup_saved_answer(
+        self,
+        question: str,
+        *,
+        options: Optional[list] = None,
+        employer: Optional[str] = None,
+        job_id: Optional[int] = None,
+        profile: Any = None,
+    ) -> Optional[str]:
+        """Reuse an approved saved answer (scope/staleness checked) or None."""
+        try:
+            service = ScreeningAnswerService(self.session)
+            row = service.find(
+                question,
+                options=options,
+                employer=employer,
+                job_id=job_id,
+                profile=profile,
+            )
+            if row is None:
+                return None
+            service.mark_reused(row)
+            logger.info(
+                "Reusing saved screening answer (id=%s, scope=%s)",
+                row.id,
+                row.scope,
+            )
+            return row.answer
+        except Exception as exc:
+            logger.warning("Screening answer lookup failed: %s", exc)
+            return None
+
+    async def _await_user_answer(
+        self,
+        *,
+        job: Job,
+        application,
+        question_text: str,
+        options: Optional[list] = None,
+        question_type: str = "TEXT",
+    ) -> tuple[str, Optional[str]]:
+        """Pause until the human answers, skips, cancels or the wait expires.
+
+        Persists a PendingQuestion row, emits a ``waiting`` progress event and
+        polls the row (short-lived session, so API commits are visible) until
+        it leaves WAITING. Returns (status, answer) with status one of
+        ANSWERED / SKIPPED / CANCELLED / EXPIRED / UNAVAILABLE. Without
+        ``hitl`` plus a ``run_token`` this is a no-op (UNAVAILABLE) so callers
+        keep the pre-E5-R21 review behaviour.
+        """
+        if not self.hitl or not self.run_token:
+            return "UNAVAILABLE", None
+
+        pending = PendingQuestion(
+            run_token=self.run_token,
+            application_id=getattr(application, "id", None),
+            job_id=job.id,
+            employer=job.company,
+            job_title=job.title,
+            question_text=question_text,
+            question_fingerprint=normalize_question(question_text),
+            question_type=question_type,
+            options=list(options) if options else None,
+            status="WAITING",
+        )
+        self.session.add(pending)
+        self.session.commit()
+        self.session.refresh(pending)
+        pending_id = pending.id
+
+        await self._emit({
+            "event": "waiting",
+            "pending_question_id": pending_id,
+            "job_id": job.id,
+            "question": question_text,
+        })
+        logger.info(
+            "Waiting for user answer (pending_question_id=%s, job=%s)",
+            pending_id,
+            job.id,
+        )
+
+        deadline = time.monotonic() + self._hitl_timeout_seconds
+        status = "EXPIRED"
+        answer: Optional[str] = None
+        try:
+            while True:
+                if self.cancel_check and self.cancel_check():
+                    status = "CANCELLED"
+                    break
+                if time.monotonic() >= deadline:
+                    status = "EXPIRED"
+                    break
+                await asyncio.sleep(self._hitl_poll_interval)
+                row_status, row_answer = self._poll_pending_question(pending_id)
+                if row_status is None:
+                    # Row disappeared (manually deleted): stop waiting.
+                    status = "EXPIRED"
+                    break
+                if row_status in ("ANSWERED", "SKIPPED", "CANCELLED", "EXPIRED"):
+                    status = row_status
+                    answer = row_answer
+                    break
+        finally:
+            if status in ("CANCELLED", "EXPIRED"):
+                self._finalize_pending_question(pending_id, status)
+            await self._emit({
+                "event": "answer_received",
+                "pending_question_id": pending_id,
+                "job_id": job.id,
+                "status": status,
+            })
+            logger.info(
+                "Wait finished (pending_question_id=%s, status=%s)",
+                pending_id,
+                status,
+            )
+        return status, answer
+
+    def _poll_pending_question(self, pending_id: int) -> tuple[Optional[str], Optional[str]]:
+        """Read the pending row on a short-lived session.
+
+        A fresh short transaction is required: the long-lived run session may
+        hold an open read snapshot that would never observe the API's commit.
+        """
+        from sqlalchemy.orm import Session as SASession
+
+        poll_db = SASession(bind=self.session.get_bind())
+        try:
+            row = poll_db.get(PendingQuestion, pending_id)
+            if row is None:
+                return None, None
+            return row.status, row.answer
+        finally:
+            poll_db.close()
+
+    def _finalize_pending_question(self, pending_id: int, status: str) -> None:
+        """Record a locally-terminal wait (cancel/expiry) on the pending row."""
+        try:
+            row = self.session.get(PendingQuestion, pending_id)
+            if row is not None and row.status == "WAITING":
+                row.status = status
+                row.updated_at = datetime.now(UTC)
+                self.session.commit()
+        except Exception as exc:
+            logger.warning("Failed to finalize pending question %s: %s", pending_id, exc)
+
+    async def _session_still_authenticated(self, page) -> bool:
+        """Re-validate the Naukri login after a human-in-the-loop wait."""
+        try:
+            login_state = await self.adapter.detect_login_state(page)
+        except Exception as exc:
+            logger.warning("Post-wait login re-check failed: %s", exc)
+            return True
+        return login_state.get("authenticated") is not False
+
+    async def _auth_ok_after_wait(self, page, job: Job) -> bool:
+        """E5-R21: a wait can outlive the Naukri session — never resume a
+        form on a logged-out page; stop the run with AUTH_REQUIRED instead."""
+        if await self._session_still_authenticated(page):
+            return True
+        logger.warning(
+            "Naukri session logged out while waiting for an answer (job %s)",
+            job.id,
+        )
+        self.application_service.resolve_open_attempt(
+            job, "Authentication required while waiting for a screening answer"
+        )
+        self.state_manager.transition_to(AgentState.AUTH_REQUIRED)
+        return False
+
+    def _record_user_skip(self, application, job: Job) -> str:
+        """E5-R21: the human skipped this job at a screening question."""
+        try:
+            self.application_service.update_application(
+                application.id,
+                ApplicationUpdate(
+                    status=ApplicationStatus.SKIPPED,
+                    needs_attention=False,
+                    skip_reason="User skipped the screening question",
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Failed to record user skip for job %s: %s", job.id, exc)
+        logger.info("Job %s skipped by user at screening question", job.id)
+        return "SKIPPED"
+
+    def _record_stop_while_waiting(self, application, job: Job) -> str:
+        """E5-R21: the run was stopped while blocked on a human answer."""
+        try:
+            self.application_service.update_application(
+                application.id,
+                ApplicationUpdate(
+                    status=ApplicationStatus.NEEDS_ATTENTION,
+                    needs_attention=True,
+                    skip_reason="Run stopped while waiting for an answer to a screening question",
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Failed to record waiting-stop for job %s: %s", job.id, exc)
+        logger.info("Job %s left NEEDS_ATTENTION: run stopped while waiting for user", job.id)
+        return "NEEDS_ATTENTION"
+
+
+def _question_type_for(options: Optional[list]) -> str:
+    """Classify a form/conversational question for the pending-question row."""
+    if options:
+        return "SINGLE_CHOICE"
+    return "TEXT"

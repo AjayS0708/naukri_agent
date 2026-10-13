@@ -1,11 +1,13 @@
 """Autonomous-cycle control and strictly read-only runtime diagnostics."""
 import asyncio
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from backend.api.dependencies import get_db
 from backend.core.logging import get_logger
+from backend.models.screening import PendingQuestion, ScreeningAnswer
 from backend.schemas.autonomous_cycle import (
     AutonomousCycleRunResponse,
     AutonomousCycleStartRequest,
@@ -13,6 +15,18 @@ from backend.schemas.autonomous_cycle import (
     AutonomousCycleStatusResponse,
     AutonomousCycleStopRequest,
     AutonomousCycleStopResponse,
+)
+from backend.schemas.screening import (
+    AnswerQuestionRequest,
+    AnswerQuestionResponse,
+    PendingQuestionResponse,
+    ScreeningAnswerResponse,
+    ScreeningAnswerUpdateRequest,
+)
+from backend.services.applications.answer_memory import (
+    ScreeningAnswerService,
+    is_sensitive_question,
+    normalize_option,
 )
 from backend.services.autonomous_cycle import AutonomousCycle
 from backend.services.autonomous_cycle.coordinator import coordinator
@@ -131,3 +145,243 @@ async def get_autonomous_cycle_status(db: Session = Depends(get_db)) -> Autonomo
         active_run=_run_response_from(snapshot["active_run"]),
         last_run=_run_response_from(snapshot["last_run"]),
     )
+
+
+# E5-R21: human-in-the-loop screening answers --------------------------------
+
+
+def _screening_answer_response(row: ScreeningAnswer) -> ScreeningAnswerResponse:
+    return ScreeningAnswerResponse(
+        id=row.id,
+        question_text=row.question_text,
+        answer=row.answer,
+        answer_type=row.answer_type,
+        scope=row.scope,
+        employer=row.employer,
+        job_id=row.job_id,
+        source=row.source,
+        verification_status=row.verification_status,
+        context_sensitive=bool(row.context_sensitive),
+        reuse_count=row.reuse_count or 0,
+        last_used_at=row.last_used_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+@router.get("/pending-question", response_model=PendingQuestionResponse)
+async def get_pending_question(db: Session = Depends(get_db)) -> PendingQuestionResponse:
+    """Return the screening question the active run is waiting on, if any."""
+    snapshot = coordinator.snapshot(db=db)
+    active = snapshot.get("active_run") or {}
+    pending_id = active.get("waiting_for_question_id")
+    if not active.get("waiting_for_user") or not pending_id:
+        return PendingQuestionResponse(found=False)
+    row = db.get(PendingQuestion, pending_id)
+    if row is None or row.status != "WAITING":
+        return PendingQuestionResponse(found=False)
+    return PendingQuestionResponse(
+        found=True,
+        pending_question_id=row.id,
+        run_token=row.run_token,
+        question_text=row.question_text,
+        question_type=row.question_type,
+        options=row.options,
+        employer=row.employer,
+        job_title=row.job_title,
+        job_id=row.job_id,
+        application_id=row.application_id,
+        status=row.status,
+        created_at=row.created_at,
+    )
+
+
+@router.post("/answer-question", response_model=AnswerQuestionResponse)
+async def answer_pending_question(
+    request: AnswerQuestionRequest, db: Session = Depends(get_db)
+) -> AnswerQuestionResponse:
+    """Answer or skip the active run's pending screening question.
+
+    Validations: 404 unknown id, 409 stale/already-handled/foreign-run, 400
+    missing answer, invalid option, sensitive (credential) question, or a
+    context-sensitive answer requested for GLOBAL reuse without explicit
+    authorisation. On success the run resumes on its next poll.
+    """
+    row = db.get(PendingQuestion, request.pending_question_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "PENDING_QUESTION_NOT_FOUND", "message": "Unknown question id"},
+        )
+    if row.status != "WAITING":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PENDING_QUESTION_NOT_WAITING",
+                "message": "Question was already handled",
+                "status": row.status,
+            },
+        )
+
+    snapshot = coordinator.snapshot(db=db)
+    active = snapshot.get("active_run") or {}
+    if request.run_token and active.get("run_token") != request.run_token:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PENDING_QUESTION_STALE",
+                "message": "Question does not belong to the given run",
+            },
+        )
+    if active.get("waiting_for_question_id") != row.id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PENDING_QUESTION_STALE",
+                "message": "Question is no longer the active run's pending question",
+            },
+        )
+
+    if request.skip:
+        row.status = "SKIPPED"
+        row.answered_at = datetime.now(UTC)
+        row.updated_at = datetime.now(UTC)
+        db.commit()
+        if row.run_token:
+            coordinator.clear_waiting(row.run_token, db=db)
+        return AnswerQuestionResponse(
+            status="SKIPPED",
+            pending_question_id=row.id,
+            message="Job will be skipped; the run continues with the next candidate",
+        )
+
+    answer = (request.answer or "").strip()
+    if not answer:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "ANSWER_REQUIRED", "message": "An answer is required"},
+        )
+
+    # E5-R21: credentials/OTPs/tokens are never stored anywhere.
+    if is_sensitive_question(row.question_text):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "SENSITIVE_QUESTION",
+                "message": (
+                    "This question cannot be answered through the agent. "
+                    "Complete it manually or skip the job."
+                ),
+            },
+        )
+
+    # Choice questions: the answer must be one of the offered options.
+    if row.options:
+        normalized_options = {normalize_option(option) for option in row.options}
+        if normalize_option(answer) not in normalized_options:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "INVALID_OPTION",
+                    "message": "Answer must be one of the offered options",
+                    "options": row.options,
+                },
+            )
+
+    scope = (request.scope or "JOB").upper()
+    if scope not in ("JOB", "EMPLOYER", "GLOBAL"):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_SCOPE", "message": f"Unknown scope: {scope}"},
+        )
+
+    saved = False
+    if request.remember:
+        try:
+            ScreeningAnswerService(db).save_user_answer(
+                row.question_text,
+                answer,
+                scope=scope,
+                employer=row.employer,
+                job_id=row.job_id,
+                options=row.options,
+                source="USER",
+                answer_type=row.question_type or "TEXT",
+                origin_pending_question_id=row.id,
+                allow_global_reuse=request.allow_global_reuse,
+            )
+            saved = True
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "MEMORY_SAVE_REFUSED", "message": str(exc)},
+            )
+
+    row.status = "ANSWERED"
+    row.answer = answer
+    row.answer_scope = scope
+    row.answered_via = "USER"
+    row.answered_at = datetime.now(UTC)
+    row.updated_at = datetime.now(UTC)
+    db.commit()
+    if row.run_token:
+        coordinator.clear_waiting(row.run_token, db=db)
+
+    return AnswerQuestionResponse(
+        status="ANSWERED",
+        pending_question_id=row.id,
+        saved_to_memory=saved,
+        answer_scope=scope if saved else None,
+        message="Answer recorded; the run will resume",
+    )
+
+
+# E5-R21: screening-answer memory management ---------------------------------
+
+
+@router.get("/screening-answers", response_model=list[ScreeningAnswerResponse])
+async def list_screening_answers(db: Session = Depends(get_db)) -> list[ScreeningAnswerResponse]:
+    """Inspect every saved reusable screening answer."""
+    rows = ScreeningAnswerService(db).list_answers()
+    return [_screening_answer_response(row) for row in rows]
+
+
+@router.put("/screening-answers/{answer_id}", response_model=ScreeningAnswerResponse)
+async def update_screening_answer(
+    answer_id: int,
+    request: ScreeningAnswerUpdateRequest,
+    db: Session = Depends(get_db),
+) -> ScreeningAnswerResponse:
+    """Edit an existing saved answer; widening to GLOBAL needs authorisation."""
+    try:
+        row = ScreeningAnswerService(db).update_answer(
+            answer_id,
+            answer=request.answer,
+            scope=request.scope,
+            allow_global_reuse=request.allow_global_reuse,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "MEMORY_SAVE_REFUSED", "message": str(exc)},
+        )
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "SCREENING_ANSWER_NOT_FOUND", "message": "Unknown answer id"},
+        )
+    return _screening_answer_response(row)
+
+
+@router.delete("/screening-answers/{answer_id}")
+async def delete_screening_answer(
+    answer_id: int, db: Session = Depends(get_db)
+) -> dict:
+    """Delete a saved answer (it will be asked again when encountered)."""
+    removed = ScreeningAnswerService(db).delete_answer(answer_id)
+    if not removed:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "SCREENING_ANSWER_NOT_FOUND", "message": "Unknown answer id"},
+        )
+    return {"deleted": True, "id": answer_id}

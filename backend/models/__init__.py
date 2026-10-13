@@ -10,5 +10,6 @@ from backend.models.feedback import JobFeedback, DecisionQualityRecord
 from backend.models.worker import Worker
 from backend.models.notification import Notification
 from backend.models.cycle_run import CycleRunControl
+from backend.models.screening import PendingQuestion, ScreeningAnswer
 
-__all__ = ["Profile", "Resume", "AIUsage", "JobAnalysisModel", "Job", "JobPreference", "MatchResult", "DiscoveryRun", "Application", "ApplicationAnswer", "SchedulerConfig", "AIQueueItem", "JobFeedback", "DecisionQualityRecord", "Worker", "Notification", "CycleRunControl"]
+__all__ = ["Profile", "Resume", "AIUsage", "JobAnalysisModel", "Job", "JobPreference", "MatchResult", "DiscoveryRun", "Application", "ApplicationAnswer", "SchedulerConfig", "AIQueueItem", "JobFeedback", "DecisionQualityRecord", "Worker", "Notification", "CycleRunControl", "ScreeningAnswer", "PendingQuestion"]

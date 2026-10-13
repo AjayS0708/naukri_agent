@@ -1,4 +1,4 @@
-import type { ApplicationsListResponse, AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, AutonomousCycleStopRequest, AutonomousCycleStopResponse, DashboardSummary, HealthResponse, JobsListResponse, NeedsAttentionResponse, NotificationHistoryResponse, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse } from "../types/api";
+import type { AnswerQuestionRequest, AnswerQuestionResponse, ApplicationsListResponse, AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, AutonomousCycleStopRequest, AutonomousCycleStopResponse, DashboardSummary, HealthResponse, JobsListResponse, NeedsAttentionResponse, NotificationHistoryResponse, PendingQuestion, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse, ScreeningAnswer } from "../types/api";
 
 const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -100,6 +100,32 @@ export const stopAutonomousCycle = (request: AutonomousCycleStopRequest = {}) =>
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
+  });
+
+// ── E5-R21: human-in-the-loop screening answers + answer memory ──────────────
+export const getPendingQuestion = () =>
+  apiRequest<PendingQuestion>("/autonomous-cycle/pending-question");
+
+export const answerPendingQuestion = (request: AnswerQuestionRequest) =>
+  apiRequest<AnswerQuestionResponse>("/autonomous-cycle/answer-question", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+export const listScreeningAnswers = () =>
+  apiRequest<ScreeningAnswer[]>("/autonomous-cycle/screening-answers");
+
+export const updateScreeningAnswer = (id: number, request: { answer?: string; scope?: string; allow_global_reuse?: boolean }) =>
+  apiRequest<ScreeningAnswer>(`/autonomous-cycle/screening-answers/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+export const deleteScreeningAnswer = (id: number) =>
+  apiRequest<{ deleted: boolean; id: number }>(`/autonomous-cycle/screening-answers/${id}`, {
+    method: "DELETE",
   });
 
 // ── Drill-down endpoints (Checkpoint E5) ─────────────────────────────

@@ -132,6 +132,16 @@ def initialize_database() -> None:
         if "it_keyword_list" not in preference_columns:
             connection.execute(text("ALTER TABLE job_preferences ADD COLUMN it_keyword_list JSON"))
 
+    # Migration 5: cycle_run_control progress / waiting columns (E5-R21)
+    # Authoritative multi-job run progress plus the pending-question link for
+    # the waiting-for-user state.
+    control_columns = {column["name"] for column in inspect(engine).get_columns("cycle_run_control")}
+    with engine.begin() as connection:
+        if "progress" not in control_columns:
+            connection.execute(text("ALTER TABLE cycle_run_control ADD COLUMN progress JSON"))
+        if "waiting_for_question_id" not in control_columns:
+            connection.execute(text("ALTER TABLE cycle_run_control ADD COLUMN waiting_for_question_id INTEGER"))
+
 
 def get_session() -> Generator[Session, None, None]:
     session = SessionLocal()

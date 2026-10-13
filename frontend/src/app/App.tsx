@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal, RefreshCw, Play, AlertTriangle, Square } from "lucide-react";
-import { getDashboardSummary, getHealth, getNeedsAttention, getNotifications, getRecentApplications, startAutonomousCycle, getAutonomousCycleStatus, stopAutonomousCycle } from "../services/api";
-import type { DashboardSummary, HealthResponse, NeedsAttentionItem, Notification, ProfileResponse, RecentApplicationItem, AutonomousCycleStatusResponse } from "../types/api";
+import { getDashboardSummary, getHealth, getNeedsAttention, getNotifications, getRecentApplications, startAutonomousCycle, getAutonomousCycleStatus, stopAutonomousCycle, getPendingQuestion, answerPendingQuestion } from "../services/api";
+import type { AnswerQuestionRequest, DashboardSummary, HealthResponse, NeedsAttentionItem, Notification, PendingQuestion, ProfileResponse, RecentApplicationItem, AutonomousCycleStatusResponse } from "../types/api";
 import { ProfileWorkspace } from "../components/ProfileWorkspace";
 import { AIStatus } from "../components/AIStatus";
 import { JobPreferences } from "../components/JobPreferences";
@@ -67,6 +67,24 @@ export function App() {
   const [cycleConflict, setCycleConflict] = useState(false);
   const cycleRequestInFlight = startCycleLoading || stopCycleLoading;
 
+  // E5-R21: human-in-the-loop screening answer state
+  const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
+  const [answerText, setAnswerText] = useState("");
+  const [rememberAnswer, setRememberAnswer] = useState(true);
+  const [rememberAllJobs, setRememberAllJobs] = useState(false);
+  const [answerSubmitting, setAnswerSubmitting] = useState(false);
+  const [answerError, setAnswerError] = useState<string | null>(null);
+
+  const syncPendingQuestion = (status: AutonomousCycleStatusResponse) => {
+    if (status.active_run?.waiting_for_user) {
+      getPendingQuestion()
+        .then(setPendingQuestion)
+        .catch(() => setPendingQuestion(null));
+    } else {
+      setPendingQuestion(null);
+    }
+  };
+
   useEffect(() => {
     getHealth().then(setHealth).catch(() => setFailed(true));
     getNotifications().then((response) => setNotifications(response.notifications)).catch(() => setNotifications([]));
@@ -95,7 +113,7 @@ export function App() {
     // Autonomous cycle status (E3)
     setCycleLoading(true);
     getAutonomousCycleStatus()
-      .then((data) => { setCycleStatus(data); setCycleConflict(false); })
+      .then((data) => { setCycleStatus(data); setCycleConflict(false); syncPendingQuestion(data); })
       .catch(() => setCycleStatus(null))
       .finally(() => setCycleLoading(false));
   }, []);
@@ -111,6 +129,7 @@ export function App() {
         .then((data) => {
           setCycleStatus(data);
           setCycleConflict(false);
+          syncPendingQuestion(data);
           // Stop polling when completed or failed and refresh dashboard
           if (data.active_state === "IDLE") {
             clearInterval(pollInterval);
@@ -250,6 +269,37 @@ try {
     setShowRunConfirmation(true);
   };
 
+  // E5-R21: answer or skip the run's pending screening question
+  const handleAnswerQuestion = async (skip: boolean) => {
+    if (!pendingQuestion?.pending_question_id || answerSubmitting) return;
+    if (!skip && !answerText.trim()) {
+      setAnswerError("Enter an answer, or skip this job.");
+      return;
+    }
+    setAnswerSubmitting(true);
+    setAnswerError(null);
+    try {
+      const request: AnswerQuestionRequest = skip
+        ? { pending_question_id: pendingQuestion.pending_question_id, skip: true }
+        : {
+            pending_question_id: pendingQuestion.pending_question_id,
+            answer: answerText.trim(),
+            remember: rememberAnswer,
+            scope: rememberAllJobs ? "GLOBAL" : "JOB",
+            allow_global_reuse: rememberAnswer && rememberAllJobs,
+          };
+      await answerPendingQuestion(request);
+      setPendingQuestion(null);
+      setAnswerText("");
+      setRememberAllJobs(false);
+      await refreshCycleStatus();
+    } catch (error: any) {
+      setAnswerError(error?.message ?? "The answer could not be submitted. Please try again.");
+    } finally {
+      setAnswerSubmitting(false);
+    }
+  };
+
   const handleCancelRunCycle = () => {
     setShowRunConfirmation(false);
   };
@@ -275,6 +325,9 @@ try {
   const isCycleRunning = cycleStatus?.active_state === "RUNNING";
   // E5-R16: the run halted because the Naukri session is not authenticated.
   const cycleLoginRequired = lastCycle?.status === "LOGIN_REQUIRED";
+  // E5-R21: the run is blocked on a screening question awaiting an answer.
+  const isWaitingForAnswer = Boolean(isCycleRunning && activeCycle?.waiting_for_user);
+  const cycleProgress = activeCycle?.progress ?? null;
 
   return <main className="app-shell">
     <a href="#main-content" className="skip-to-content">Skip to main content</a>
@@ -360,10 +413,13 @@ try {
             <section className="status-panel">
               <div>
                 <p className="eyebrow">AUTONOMOUS CYCLE</p>
-                <strong className={`agent-state ${(isCycleRunning ? (cycleStatus?.active_run?.status === "CANCELLING" ? "PAUSED" : "RUNNING") : cycleLoginRequired ? "AUTH_REQUIRED" : "IDLE").toLowerCase()}`}>
-                  {isCycleRunning ? (cycleStatus?.active_run?.status === "CANCELLING" ? "Stopping…" : "Running") : cycleLoginRequired ? "Login required" : "Idle"}
+                <strong className={`agent-state ${(isCycleRunning ? (cycleStatus?.active_run?.status === "CANCELLING" ? "PAUSED" : isWaitingForAnswer ? "PAUSED" : "RUNNING") : cycleLoginRequired ? "AUTH_REQUIRED" : "IDLE").toLowerCase()}`}>
+                  {isCycleRunning ? (cycleStatus?.active_run?.status === "CANCELLING" ? "Stopping…" : isWaitingForAnswer ? "Waiting for your answer" : "Running") : cycleLoginRequired ? "Login required" : "Idle"}
                 </strong>
-                {isCycleRunning && cycleStatus?.active_run?.status !== "CANCELLING" && <p>Discovery and application in progress...</p>}
+                {isCycleRunning && !isWaitingForAnswer && cycleStatus?.active_run?.status !== "CANCELLING" && <p>Discovery and application in progress...</p>}
+                {isCycleRunning && isWaitingForAnswer && (
+                  <p>The run is paused on a screening question. Answer below to resume, skip this job, or stop the run entirely.</p>
+                )}
                 {isCycleRunning && cycleStatus?.active_run?.status === "CANCELLING" && <p>Cancellation requested. Finishing the current safe step...</p>}
                 {!isCycleRunning && cycleLoginRequired && (
                   <p className="warning-text">
@@ -422,6 +478,89 @@ try {
                     {lastCycle.stats.needs_attention !== undefined && `, ${lastCycle.stats.needs_attention} needs attention`}
                     {lastCycle.stats.external !== undefined && `, ${lastCycle.stats.external} external`}
                   </b>
+                </div>
+              )}
+              {/* E5-R21: live multi-job progress while the run is active */}
+              {isCycleRunning && cycleProgress && (
+                <div className="status-meta">
+                  <span>Progress</span>
+                  <b>
+                    {`${cycleProgress.processed ?? 0} / ${cycleProgress.candidates_total ?? "?"} processed`}
+                    {typeof cycleProgress.applied === "number" ? ` · ${cycleProgress.applied} applied` : ""}
+                    {typeof cycleProgress.skipped === "number" && cycleProgress.skipped > 0 ? ` · ${cycleProgress.skipped} skipped` : ""}
+                    {typeof cycleProgress.needs_attention === "number" && cycleProgress.needs_attention > 0 ? ` · ${cycleProgress.needs_attention} needs attention` : ""}
+                    {typeof cycleProgress.remaining === "number" ? ` · ${cycleProgress.remaining} remaining` : ""}
+                    {cycleProgress.current_job_title ? ` · current: ${cycleProgress.current_job_title}` : ""}
+                    {cycleProgress.current_step && !isWaitingForAnswer ? ` (${cycleProgress.current_step.replaceAll("_", " ")})` : ""}
+                  </b>
+                </div>
+              )}
+              {/* E5-R21: pending screening question — answer, skip, or stop */}
+              {isWaitingForAnswer && pendingQuestion?.found && pendingQuestion.question_text && (
+                <div
+                  role="alert"
+                  aria-live="assertive"
+                  style={{ marginTop: "0.75rem", padding: "0.75rem", border: "1px solid var(--color-warning)", borderRadius: "8px", display: "grid", gap: "0.5rem" }}
+                >
+                  <p className="eyebrow" style={{ margin: 0 }}>
+                    ANSWER NEEDED{pendingQuestion.job_title ? ` — ${pendingQuestion.job_title}` : ""}
+                    {pendingQuestion.employer ? ` · ${pendingQuestion.employer}` : ""}
+                  </p>
+                  <p style={{ margin: 0 }}><strong>{pendingQuestion.question_text}</strong></p>
+                  {pendingQuestion.options && pendingQuestion.options.length > 0 ? (
+                    <select
+                      value={answerText}
+                      onChange={(e) => setAnswerText(e.target.value)}
+                      aria-label="Choose an answer"
+                    >
+                      <option value="">Select an answer…</option>
+                      {pendingQuestion.options.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={answerText}
+                      onChange={(e) => setAnswerText(e.target.value)}
+                      placeholder="Type your answer"
+                      aria-label="Your answer"
+                    />
+                  )}
+                  <label style={{ display: "flex", gap: "0.4rem", alignItems: "center", fontSize: "0.85rem" }}>
+                    <input
+                      type="checkbox"
+                      checked={rememberAnswer}
+                      onChange={(e) => setRememberAnswer(e.target.checked)}
+                    />
+                    Save this answer for future applications
+                  </label>
+                  <label style={{ display: "flex", gap: "0.4rem", alignItems: "center", fontSize: "0.85rem" }}>
+                    <input
+                      type="checkbox"
+                      checked={rememberAllJobs}
+                      disabled={!rememberAnswer}
+                      onChange={(e) => setRememberAllJobs(e.target.checked)}
+                    />
+                    Reuse it for all jobs (salary, notice, relocation, …)
+                  </label>
+                  {answerError && <p className="error-text" style={{ margin: 0 }}>{answerError}</p>}
+                  <div className="control-buttons" style={{ marginTop: "0.25rem" }}>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => handleAnswerQuestion(false)}
+                      disabled={answerSubmitting || !answerText.trim()}
+                    >
+                      {answerSubmitting ? "Submitting…" : "Answer & resume"}
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => handleAnswerQuestion(true)}
+                      disabled={answerSubmitting}
+                    >
+                      Skip this job
+                    </button>
+                  </div>
                 </div>
               )}
             </section>

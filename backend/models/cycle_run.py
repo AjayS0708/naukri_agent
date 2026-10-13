@@ -28,3 +28,9 @@ class CycleRunControl(Base):
     last_result: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     pid: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # E5-R21: authoritative per-run progress (candidate counts, current job,
+    # waiting-for-user question). Written only by the process holding the run;
+    # read by the dashboard for live multi-job observability.
+    progress: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    # E5-R21: id of the PendingQuestion the run is blocked on, if any.
+    waiting_for_question_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

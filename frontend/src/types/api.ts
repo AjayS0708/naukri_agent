@@ -128,12 +128,88 @@ export interface AutonomousCycleRun {
   run_id: number | null;
   run_token?: string | null;
   status: "RUNNING" | "CANCELLING" | "COMPLETED" | "FAILED" | "CANCELLED" | "LOGIN_REQUIRED";
+  // E5-R21: WAITING_FOR_USER while the run is blocked on a screening answer.
+  display_status?: string | null;
   started_at: string | null;
   completed_at: string | null;
   max_applications: number | null;
   stats: Record<string, unknown>;
   error: string | null;
   cancel_requested?: boolean;
+  // E5-R21: live multi-job progress counters + current job/step.
+  progress?: CycleProgress | null;
+  waiting_for_user?: boolean;
+  waiting_for_question_id?: number | null;
+}
+
+// ── E5-R21: multi-job observability + screening-answer memory ────────────────
+
+export interface CycleProgress {
+  candidates_total?: number;
+  processed?: number;
+  applied?: number;
+  submitted_unconfirmed?: number;
+  skipped?: number;
+  external?: number;
+  needs_attention?: number;
+  failed?: number;
+  remaining?: number;
+  current_job_id?: number | null;
+  current_job_title?: string | null;
+  current_step?: string | null;
+  waiting_for_user?: boolean;
+  current_question?: string | null;
+  pending_question_id?: number | null;
+}
+
+export interface PendingQuestion {
+  found: boolean;
+  pending_question_id?: number | null;
+  run_token?: string | null;
+  question_text?: string | null;
+  question_type?: string | null;
+  options?: string[] | null;
+  employer?: string | null;
+  job_title?: string | null;
+  job_id?: number | null;
+  application_id?: number | null;
+  status?: string | null;
+  created_at?: string | null;
+}
+
+export interface AnswerQuestionRequest {
+  pending_question_id: number;
+  run_token?: string | null;
+  answer?: string | null;
+  skip?: boolean;
+  scope?: "JOB" | "EMPLOYER" | "GLOBAL";
+  remember?: boolean;
+  allow_global_reuse?: boolean;
+}
+
+export interface AnswerQuestionResponse {
+  status: "ANSWERED" | "SKIPPED";
+  pending_question_id: number;
+  saved_to_memory: boolean;
+  answer_scope?: string | null;
+  message: string;
+}
+
+export interface ScreeningAnswer {
+  id: number;
+  question_text: string;
+  answer: string;
+  answer_type: string;
+  scope: string;
+  employer?: string | null;
+  job_id?: number | null;
+  source: string;
+  verification_status: string;
+  context_sensitive: boolean;
+  reuse_count: number;
+  last_used_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 // ── Applications List types (Drill-down) ─────────────────────────────

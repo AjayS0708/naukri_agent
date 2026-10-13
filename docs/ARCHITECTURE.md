@@ -1,5 +1,51 @@
 # Architecture
 
+## E5-R21 — Multi-Job Autonomous Applications & Human-in-the-Loop Answer Memory
+
+**Status:** IMPLEMENTED, TESTED (1132 passed, 40 new) — offline only; no live application run in this checkpoint. Not committed (working tree).
+
+**Shared-runner multi-job orchestration:**
+
+```text
+AutonomousCycle._run_applications
+  └─ ONE ApplicationRunner per run
+       run_token / progress_hook / cancel_check
+       hitl = bool(run_token)
+       close_session_after_run = False
+       recover_stale_state = True
+  ├─ reconcile_history(db)          # lazy browser; only when unresolved rows exist
+  ├─ for job in priority_order:
+  │    run_applications([job.id])   # idempotent open_session; state → IDLE between jobs
+  └─ close_session()                # exactly once, run end
+```
+
+`open_session()` enters RUNNING *before* the browser start (IDLE→CRITICAL_ERROR is not a legal edge), then SEARCHING→FILTERING→APPLYING; `_open_failure` ∈ {`invalid_state`, `browser_start`} maps to `{"error": "Invalid state"}` vs zeroed stats. `AgentStateManager.ensure_idle()` (`_RECOVERABLE_TO_IDLE`) recovers stale non-auth states for shared runs; AUTH/SECURITY_REQUIRED are never recovered. Stale-state recovery is opt-in (`recover_stale_state=True`, cycle only) so the legacy strict-IDLE contract (`test_runner_requires_idle_state`) is unchanged.
+
+**Screening-answer chain (per question):** saved memory (`ScreeningAnswerService.find` — scope/staleness checked) → profile → AI (only when `answer_questions`) → human-in-the-loop. The legacy gate `questions and not self.answer_questions and not self.hitl` → NEEDS_ATTENTION is preserved when HITL is off.
+
+**Human-in-the-loop lifecycle:**
+
+```text
+_await_user_answer (hitl AND run_token, else UNAVAILABLE)
+  ├─ PendingQuestion(status=WAITING) persisted
+  ├─ progress event "waiting"  → coordinator.set_waiting(run_token, id)
+  ├─ poll via fresh short-lived Session (API commits visible) until
+  │    ANSWERED | SKIPPED | CANCELLED | EXPIRED
+  ├─ cancel_check → CANCELLED + row finalized; _record_stop_while_waiting
+  │    → attempt NEEDS_ATTENTION (run stops CANCELLED at next boundary)
+  ├─ SKIPPED → _record_user_skip → job SKIPPED (re-offered next run)
+  └─ ANSWERED → _auth_ok_after_wait (login re-check; logged-out → AUTH_REQUIRED)
+progress event "answer_received" → coordinator.clear_waiting
+```
+
+**Answer memory (`backend/services/applications/answer_memory.py`):** `ScreeningAnswer` scopes GLOBAL/EMPLOYER/JOB never widen silently; sources USER (API endpoint only) / PROFILE (carries `profile_hash`, stale on profile change); sensitive questions (password/OTP/token/…) are never stored or auto-answered; context-sensitive families (salary, notice, relocation, visa, availability, commitment) require `allow_global_reuse=True` for GLOBAL; choice answers are skipped when the saved answer is no longer among the offered options; upsert on fingerprint+scope+keys; `reuse_count`/`last_used_at` audited.
+
+**Dashboard observability:** `cycle_run_control` gains `progress` (JSON) and `waiting_for_question_id` (Migration 5). Snapshot exposes `display_status` (`WAITING_FOR_USER` while the lock guard stays RUNNING/CANCELLING), `waiting_for_user`, `waiting_for_question_id`, `progress`. APIs: `GET /api/autonomous-cycle/pending-question`, `POST /answer-question` (404/409/400 codes), `GET/PUT/DELETE /screening-answers`. Frontend polls status, renders the pending question (answer/skip, remember scope checkboxes) and a live progress row.
+
+**Unchanged:** cycle-facing API stays `run_applications([job.id])` per job; protected jobs 81/87/114/120; APPLIED-requires-evidence; duplicate protection; two-consecutive-ERROR abort; Stop → CANCELLED; LOGIN_REQUIRED; answer saved only by the API endpoint.
+
+---
+
 ## E5-R20 — Conversational Nudge Classification & Ambiguous-Submission Reconciliation
 
 **Status:** IMPLEMENTED, TESTED (1092 passed, 44 new) — offline only; no live application run in this checkpoint. Commit `c2868d0` (2026-10-12).
