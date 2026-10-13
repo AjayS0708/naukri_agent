@@ -1,5 +1,130 @@
 # Naukri AI Job Application Agent
 
+## Implementation Status Summary (as of E5-R20, 2026-10-12)
+
+Reconciles the original vision (Sections 1–85 below) with the verified implementation state through E5-R20. Evidence: git history (HEAD = origin/main = `c2868d0`), `E5-R*` code markers, the offline test suite (**1092 passed / 0 failed at `c2868d0`, re-verified 2026-10-12**), and read-only database inspection. Offline tests are labeled as such; nothing here claims a live run that did not happen.
+
+**Implemented and test-verified**
+- Discovery: multi-location search (E5-R8), live-verified pagination (E5-R8), freshness-first ordering (E5-R3), targeted search groups beyond configured titles (E5-R19), `application_mode` classified during discovery with native-first ranking (E5-R9).
+- Deterministic filtering: hard eligibility rules, IT-scope structural gate (E5-R13/R14), shared irrelevant-role filter across matching, safety gate and discovery (E5-R17), interest-tier prioritization with hard role exclusions (E5-R10/R10B), duplicate protection, protected-job invariants (81/87/114/120).
+- AI: bounded Gemini evaluation, advisory only — only the `suspicious` flag blocks (D6.1/D6.2, E5-R3); native-first AI-queue priority with deterministic fallback when no analysis exists (E5-R12).
+- Applications: legacy and conversational Naukri apply with bounded steps (E5-R7, E5-R14), pointer-honest clicks that never fabricate success (E5-R20), conversational nudge classification (E5-R20), `APPLIED` strictly requires positive confirmation evidence (D5 onward).
+- Cycle control: DB-backed single-run lock across processes/restarts, idempotent Stop reported as `CANCELLED` (E5-R15), cooperative cancellation inside every phase, login-aware gate terminating with `LOGIN_REQUIRED` (E5-R16), read-only Naukri history reconciliation (`POST /api/applications/reconcile-history`, E5-R16) and attempt-level reconciliation before `NEEDS_ATTENTION` (E5-R20).
+- Dashboard: run/stop control with `CANCELLING` state, needs-attention separated from history-confirmed jobs (`job_confirmed`, E5-R20), job/application drill-downs.
+
+**Partial**
+- Application limits (§29): quota infrastructure was **removed** by E5-R10 — `max_applications` is display-only; the §29 text below is original vision, superseded (status note added in place).
+- History reconciliation: implemented and live-verified once read-only (E5-R16: 117 → 145 rows additive); not yet a routine, scheduled workflow.
+- Login gating: implemented and test-verified; a full live cycle under a deliberately logged-out session has not been exercised.
+
+**Unverified (do not claim)**
+- **Multi-job application execution:** no single verified run has completed multiple native applications since E5-R7. Verified applications are single-job: job 114 (row 82, E5-R7 surgical apply) and job 462 (row 148, confirmed via history reconciliation after E5-R19/20 attempt #147). Multi-job acceptance criteria below are **NOT MET**.
+- Scheduler-driven continuous operation, notifications/email summaries, and Chrome (non-default browser) paths were not exercised in any E5-R7–E5-R20 checkpoint.
+
+**Future (not started)**
+- E6 Candidate Profile & Question Answer Engine, E7 Persistent Candidate Answer Memory (see `docs/FUTURE_IMPLEMENTATION_ROADMAP.md`); multi-account, cloud/24×7, and non-Naukri platforms remain out of V1 scope.
+
+**Multi-job acceptance criteria (target for the next verification checkpoint)**
+1. One dashboard-initiated run discovers, hard-filters, evaluates, attempts, and truthfully verifies **at least two** native applications in a single cycle with no manual intervention.
+2. After each completed application the run continues to the next eligible candidate — no premature stop, no exhausted-budget slice (E5-R10 removed caps; the loop ends only when the eligible queue is exhausted or a stop/terminal condition fires).
+3. Every outcome is truthful: `APPLIED` only with positive evidence; ambiguous submissions reconciled against Naukri history before `NEEDS_ATTENTION` (E5-R20); user Stop reported as `CANCELLED`, never `COMPLETED` (E5-R15).
+4. Safety invariants hold across the whole run: protected jobs 81/87/114/120 untouched, external applications never submitted, CAPTCHA/security challenges stop the run, duplicate protection intact, DB-backed lock prevents concurrent runs.
+5. Per-run statistics separate discovered / filtered / evaluated / applied / needs-attention counts, and the dashboard reflects them live.
+
+---
+
+## E5-R20 - Conversational Nudge Classification & Ambiguous-Submission Reconciliation
+
+**Status:** E5-R20 IMPLEMENTED, TESTED (1092 passed, 44 new), OFFLINE ONLY — no live run in this checkpoint. Commit `c2868d0` (2026-10-12).
+
+**Contract change:** conversational messages are classified (`question` / `nudge` / `info`); nudges are observed once, never answered, dismissed at most once (a second unchanged observation terminates the attempt). Pointer interaction is honest and non-fatal — `_pointer_safe_click` returns `clicked / occluded / not_visible / not_enabled / stale / timeout / error` and never raises; occluded controls are skipped. `submit_application` records `last_submit_outcome` ∈ {SUBMITTED, NOT_SUBMITTED, AMBIGUOUS} and re-raises only security/captcha/access-blocked. The new `submit_conversational_application` never clicks the `.sendMsg` save control; `answer_conversational_question` gained an `expected_question` stale-prompt guard. Any AMBIGUOUS submission (conversational or legacy-form) is reconciled against Naukri history (`_reconcile_unconfirmed_attempt` → `fetch_application_history` → `reconcile_from_history`) **before** `NEEDS_ATTENTION`; a history-confirmed job reports `APPLIED` while the attempt row stays `NEEDS_ATTENTION` for audit. Dashboard needs-attention count/queue exclude confirmed-job attempts; `RecentApplicationItem.job_confirmed` added.
+
+**Tests:** new `test_e5_r20_conversational.py` (41) + 3 dashboard tests; 2 existing dashboard tests adapted without weakening semantics. Full suite **1092 passed**. Records #146/#147/#148 and protected jobs verified unchanged.
+
+---
+
+## E5-R19 - Targeted Native Discovery Search Groups
+
+**Status:** E5-R19 IMPLEMENTED, TESTED (session record: 1048 passed), LIVE-VALIDATED via discovery run 79 (753 discovered / 60 new / 162 pages, 2026-10-12). Commit `a16f6b4` (2026-10-12).
+
+**Contract change:** discovery issues ordered, de-duplicated targeted search groups beyond the configured `job_titles` (`_discovery_search_terms()`, pre-R19 fallback preserved when no titles are configured); `_finalize_run` reloads the finalized run so its attributes stay readable after commit. Search terms are additive discovery inputs only — preferences, filters, and safety gates unchanged. The checkpoint's live application attempt on job 462 (attempt #147, occluded submit → `NEEDS_ATTENTION`, later confirmed as #148) exposed the defects fixed by E5-R20.
+
+---
+
+## E5-R18 - Discovery-Driven Validation (No Eligible Candidate)
+
+**Status:** E5-R18 OPERATIONAL CHECKPOINT — no code change, no commit; reconstructed from `discovery_runs`/`jobs` rows verified 2026-10-13. No E5-R18 marker exists in code or git history.
+
+**Evidence:** discovery run 78 (2026-10-12) COMPLETED — 270 cards / 54 pages / 3 new jobs (459, 460, 461); all three remain `DISCOVERED` with zero application, queue, analysis, or match rows — none entered candidacy, so the run made no application attempt and reported honestly. Rejection reasons are not persisted (no rejection-audit table). E5-R18 is discovery validation only and is not evidence of multi-job application execution. Sequence note: E5-R11 has no commit, marker, or prior doc reference (assumed unused sequence number).
+
+---
+
+## E5-R17 - Shared Irrelevant-Role Filter
+
+**Status:** E5-R17 IMPLEMENTED, TESTED (session record: 1044 passed). Commit `1b7fa2b` (2026-10-12).
+
+**Contract change:** one deterministic gate — `irrelevant_role_reason()` + `job_relevance_check()` in `backend/services/matching/engine.py` — now backs MatchEngine, the final application safety gate (rejects before persist), and discovery, so the three can no longer disagree. Order: unwanted title specializations → JD responsibility hits (≥ threshold; one loose mention never rejects) → structural scope (role_category/department) requiring genuine technical work plus an allowed role-family title when the JD shows excluded responsibilities; missing metadata never rejects. Regression locked: the "Associate Software Engineer" non-IT-scope leak.
+
+---
+
+## E5-R16 - Login-Aware Native Apply, Responsive Stop, History Reconciliation
+
+**Status:** E5-R16 IMPLEMENTED, TESTED (1033 backend tests; `npm run build` passes), LIVE-VERIFIED read-only reconciliation. Commit `0865f6b` (2026-10-12).
+
+**Contract change:** a logged-out session terminates the cycle with `LOGIN_REQUIRED` (exit 2, dashboard "Login required") instead of being misread as a classification problem. Stop works through cooperative cancellation inside discovery, the AI queue, and the application loop; user stops report `CANCELLED`. `POST /api/applications/reconcile-history` reconciles `/myapply/historypage` against local rows — additive-only, never downgrades, never touches protected jobs 81/87/114/120, refuses to run while a cycle holds the browser profile. Application records are idempotent (one open attempt per job); interrupted attempts resolve to `NEEDS_ATTENTION`; `EXTERNAL_APPLICATION` requires positive destination evidence. **Live evidence:** 31 local rows inspected, 28 historical applications reconciled (117 → 145 rows, additive, 0 new on re-run); no application submitted during E5-R16.
+
+---
+
+## E5-R15 - DB-Backed Cycle Lock, Stop Control, Browser Profile Lock
+
+**Status:** E5-R15 IMPLEMENTED, TESTED (997 tests pass; frontend production build succeeds). Commit `51e3813` (2026-10-12).
+
+**Contract change:** the process-local lock is replaced by an atomic claim on a `cycle_run_control` singleton row — simultaneous runs are prevented across restarts and processes. `POST /autonomous-cycle/stop` is idempotent and honored at safe boundaries; a stopped run reports `CANCELLED` (never `COMPLETED`) and never begins a new application after Stop. `BrowserSessionLock` gives one process exclusive ownership of the persistent Chrome profile. Dashboard gains a Stop button with single-request guards and a `CANCELLING` state. Attribution: the E5-R12/R13/R14 code and tests were committed inside this commit (no separate R12–R14 commits exist).
+
+---
+
+## E5-R14 - Screening-QA Answering & IT-Scope Structural Rules
+
+**Status:** E5-R14 IMPLEMENTED within commit `51e3813` (no separate commit). Contract change: screening questions are answered from profile skills/projects; the IT gate orders explicit non-IT `role_category` rejection first, allows `role_category` matches when industry is missing or the title carries IT keywords, consults `department` only when industry is missing, and treats a matched industry as strongest (the job 105 `Apprentice - Trainee` / Software Product case passes). Conversational answering clicks radio `<label>`s and verifies the checked state; the application drawer is excluded from overlay dismissal. Discrepancy: a prior checklist's "apprenticeship exclusion" label is unsupported — apprenticeship is an allowed curated role family (`engine.py:65`) at interest tier 2.
+
+---
+
+## E5-R13 - Native-Only Recovery Path & Structural Matching Awareness
+
+**Status:** E5-R13 IMPLEMENTED within commit `51e3813` (no separate commit). Contract change: the recovery apply path accepts `NAUKRI_NATIVE` jobs only; the IT gate considers `role_category`/`department` alongside industry (Data Science in Pharma passes; a non-IT industry still requires an IT-keyword title); blocking overlays are dismissed before interacting with the application surface.
+
+---
+
+## E5-R12 - Native-First AI Queue Priority & Deterministic Fallback
+
+**Status:** E5-R12 IMPLEMENTED within commit `51e3813` (no separate commit). Contract change: AI-queue priority is deterministic and aligned with the runner's candidate prioritization (`NAUKRI_NATIVE` first); jobs without an AI analysis that pass deterministic filters enter candidacy through an explicit fallback instead of being dropped; quota exhaustion never marks jobs analyzed. Covered by the dedicated `test_e5_r12_native_priority.py` regression file.
+
+---
+
+## E5-R10 / E5-R10B - Application Quotas Removed, Interest-Tier Prioritization
+
+**Status:** E5-R10/R10B IMPLEMENTED, TESTED. Commit `616f24c` (2026-10-11).
+
+**Contract change:** hourly/daily application quotas and the Gemini budget slice are removed — manual runs process all eligible matching jobs until the eligible queue is exhausted; `max_applications` is accepted for API compatibility but display-only. Candidates rank by `interest_priority_rank` (tier 0 analytics/BI → 1 engineering/data/cloud/AI → 2 graduate/trainee/apprenticeship → 3 other; within tier: native Apply → freshness → match score). E5-R10B adds word-boundary multi-token target phrases and HARD role exclusions (Sales/Support/Admin/Managerial/Creative/Trade always tier 3, even with a domain keyword co-occurrence). **This supersedes §29 Application Limits below** (status note added there).
+
+---
+
+## E5-R9 - Application-Mode Classification During Discovery
+
+**Status:** E5-R9 IMPLEMENTED, TESTED. Commits `d4386ba` + `1eb3302` (2026-10-11).
+
+**Contract change:** `Job.application_mode` (`NAUKRI_NATIVE` / `EXTERNAL` / `AMBIGUOUS`) is classified on the search-result page already open during discovery enrichment (no second visit), stored additively with unknowns staying `NULL` and ranking as ambiguous; candidate sort key is mode rank → freshness → match score, with external jobs still eligible. `application_mode` is backfilled on rediscovery of unclassified jobs; only classifier-known values persist.
+
+---
+
+## E5-R8 - Pagination Fix & Multi-Location Search
+
+**Status:** E5-R8 IMPLEMENTED, TESTED. Commit `8158b42` (2026-10-11).
+
+**Contract change:** discovery searches every configured location (one search URL per ordered, de-duplicated location; pre-R8 fallback when none configured), not only `locations[0]`; the broken next-page selector (`a.styles_btn-secondary__2BqIV`) is replaced with a live-verified picker, with regressions locking both the multi-location behaviour and the stale-selector failure.
+
+---
+
 ## E5-R7 - Native Apply Container Detection & Conversational Drawer Support
 
 **Status:** E5-R7 IMPLEMENTED, TESTED, AND LIVE-VALIDATED (surgical single-job apply). Run 66 (2026-10-10, `max_applications=2`) discovered 79 jobs, queued 4 candidates (114/112/68/35), produced 0 applications — every native candidate returned NEEDS_ATTENTION with "no questions detected". Live DOM diagnostics proved native Apply opens a conversational right-side drawer (`chatbot_Drawer chatbot_right`) with `.botMsg` question text, `input[type=radio].ssrc__radio` + `label[for=...]` choices, a hidden file-uploader `<form>`, a `[contenteditable=true]` composer, and a `div.sendMsg` save control (DIV, not button). Job pages have 0 visible `<form>` and 0 `role="dialog"`, so legacy container selectors never matched.
@@ -2024,6 +2149,8 @@ The user resolves the challenge manually and restarts/resumes the agent.
 ---
 
 # 29. Application Limits
+
+> **Status note (E5-R10, 2026-10-11):** this section is original vision and is **superseded**. Commit `616f24c` removed the hourly/daily application quota infrastructure entirely — `backend/services/applications/limits.py` is a documented stub ("no project-imposed hourly or daily application cap"), quota APIs/schemas and their tests were deleted, and `max_applications` is accepted for API compatibility but only recorded for display. Manual runs process all eligible matching jobs until the eligible queue is exhausted. Candidate volume is governed by the deterministic eligibility gates and interest-tier prioritization (E5-R10/R10B), not by counters. The retained safety boundaries are unchanged: hard filters always override any aggressiveness notion, and applications remain bounded by eligibility, duplicate protection, and evidence requirements rather than by quotas.
 
 Application volume must be configurable.
 
