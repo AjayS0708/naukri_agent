@@ -1084,6 +1084,8 @@ The root `vercel.json` installs, builds, and publishes the Vite app in `frontend
 
 `VITE_` values are public browser configuration. Never put Gemini keys, database URLs with credentials, Naukri credentials, cookies, sessions, or private tokens in them. Configure the deployed Vercel origin separately in `NAUKRI_AGENT_FRONTEND_ORIGINS` on the backend. The dashboard uses in-page state and hash links, not browser-path routing, so no SPA rewrite was added. API failures use safe user-facing messages and a request timeout; raw backend error details are not displayed.
 
+**Vercel Deployment Identity Requirement (Hobby Plan):** The Vercel Hobby Plan does not support collaboration for private repositories. To deploy this private repository, the GitHub account connected to your Vercel project must match the repository owner, and all commit authors must match that connected GitHub account. Verify your Vercel Dashboard → Settings → Git → Login Connections to ensure the correct GitHub account is linked.
+
 ## Production Readiness (Phase 8.1)
 
 The backend has been prepared for production hosting with enhanced configuration, security, and monitoring:
@@ -1282,6 +1284,8 @@ Production readiness rejects SQLite, a missing Gemini key, missing origins, and 
 The root `vercel.json` installs, builds, and publishes the Vite app in `frontend/` (`npm --prefix frontend ci`, `npm --prefix frontend run build`, and `frontend/dist`). Set `VITE_API_BASE_URL` in Vercel to the public HTTPS FastAPI origin, for example `https://your-api-host.example`; the client normalizes it to `/api`. Locally, omit the variable to use `http://127.0.0.1:8000`.
 
 `VITE_` values are public browser configuration. Never put Gemini keys, database URLs with credentials, Naukri credentials, cookies, sessions, or private tokens in them. Configure the deployed Vercel origin separately in `NAUKRI_AGENT_FRONTEND_ORIGINS` on the backend. The dashboard uses in-page state and hash links, not browser-path routing, so no SPA rewrite was added. API failures use safe user-facing messages and a request timeout; raw backend error details are not displayed.
+
+**Vercel Deployment Identity Requirement (Hobby Plan):** The Vercel Hobby Plan does not support collaboration for private repositories. To deploy this private repository, the GitHub account connected to your Vercel project must match the repository owner, and all commit authors must match that connected GitHub account. Verify your Vercel Dashboard → Settings → Git → Login Connections to ensure the correct GitHub account is linked.
 
 ## Production Readiness (Phase 8.1)
 
