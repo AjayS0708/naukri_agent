@@ -98,6 +98,33 @@ UNWANTED_SPECIALIZATIONS = [
     "customer support", "customer service",
     "call center", "call centre",
     "apprentice", "apprenticeship",
+    # E5-R23: exclusions taken from the third controlled live run (run #82)
+    # and the persisted irrelevant-job backlog. Bare "voice" catches the
+    # variants E5-R22 missed ("International Voice", "Semi Voice Process",
+    # "Non-Voice"). "fea"/"piping" caught the mechanical "Walk-in || Graduate
+    # Trainee FEA and Piping Analysis" leak (job #535) at title level;
+    # "fea" itself is deliberately NOT listed because it substring-matches
+    # "feature"/"feasible" — that job is caught by "piping" and by the JD
+    # responsibility phrases below. "tax" is likewise omitted ("tax" is a
+    # substring of "syntax"); "taxation" and "accounts & finance" phrases
+    # cover the actual postings.
+    "voice",
+    "non voice", "non-voice", "semi voice", "semi-voice",
+    "voice process", "voice process executive",
+    "customer care", "customer success", "customer executive",
+    "customer officer", "customer relation", "customer relations",
+    "customer handling",
+    "piping", "ansys", "harness",
+    "data entry", "back office",
+    "operation executive", "operations executive",
+    "accounts", "accounting", "finance", "payroll", "taxation",
+    "recruiter", "recruitment",
+    "graphic designer", "ui/ux", "ux designer",
+    "field executive", "field sales", "field marketing",
+    "jewels", "retail store",
+    "procurement", "purchase executive",
+    "front office", "receptionist",
+    "technical support", "tech support", "helpdesk", "help desk",
 ]
 
 # Modifiers stripped from configured job_titles when deriving generic role
@@ -119,8 +146,14 @@ _TITLE_MODIFIER_TOKENS = (
 EXCLUDED_ROLE_SCOPE_PHRASES = (
     "sales", "business development", "marketing", "human resource",
     "production", "manufacturing", "customer success",
-    "customer support", "customer service",
+    "customer support", "customer service", "customer care",
+    "customer relations",
     "service & operations", "service and operations", "bpo", "voice",
+    # E5-R23: mechanical / civil / electrical engineering departments and
+    # research scopes that leaked through as "Research & Development" on
+    # the FEA / piping walk-in posting (job #535). "research & development"
+    # itself is NOT excluded (software / data R&D roles are in scope).
+    "mechanical", "civil", "electrical",
 )
 
 # Responsibility phrases identifying the described work as an excluded role.
@@ -145,6 +178,21 @@ EXCLUDED_RESPONSIBILITY_PHRASES = (
     # manufacturing / production
     "assembly line", "shop floor", "production line", "production floor",
     "manufacturing plant", "automotive component",
+    # E5-R23: mechanical / civil / piping / FEA engineering domains (job #535
+    # "Walk-in || Graduate Trainee FEA and Piping Analysis"). These appear
+    # only in true mechanical/civil JDs, never in the user's data / software
+    # / BI target roles, so they count toward the two-hit threshold (a lone
+    # "manufacturing data" mention in a data JD stays safe).
+    "mechanical engineering", "civil engineering", "electrical engineering",
+    "piping analysis", "ansys", "caesar ii", "fea and piping",
+    "harness design", "cad design", "autocad", "solidworks",
+    # E5-R23: finance / accounts / payroll / recruitment processing work.
+    "accounts payable", "accounts receivable", "journal entry",
+    "gst filing", "income tax", "payroll processing",
+    "sourcing candidates", "resume screening", "campus recruitment",
+    # E5-R23: data-entry / back-office / merchandising process work.
+    "data entry", "back office", "merchandising", "stock replenishment",
+    "billing process", "invoice processing",
 )
 MIN_EXCLUDED_RESPONSIBILITY_HITS = 2
 
@@ -159,6 +207,17 @@ STRONG_EXCLUDED_RESPONSIBILITY_PHRASES = (
     "telemarketing", "telecalling", "tele calling",
     "call centre", "call center",
     "customer support", "customer service",
+    # E5-R23: unambiguous process phrases from run #82 and the persisted
+    # backlog (non-voice / semi-voice call-centre variants, customer-care
+    # desks, domain tools of the FEA/piping leak). Walk-in drives are NOT
+    # blanket-rejected here — only when the actual position is an excluded
+    # role, which the title-level phrases above already catch (e.g.
+    # "Walk-in || Customer Service Officer" → "customer service").
+    "non voice process", "non-voice process", "semi voice process",
+    "semi-voice process", "voice support", "customer care",
+    "ansys", "caesar ii", "piping analysis",
+    "data entry", "back office", "invoice processing",
+    "payroll processing", "gst filing", "resume screening",
 )
 
 # Technical work signals used only to rescue a job whose structural scope

@@ -3,7 +3,7 @@
 > Planning document only. Nothing in this roadmap changes current runtime behavior,
 > authorizes automation, or represents future work as implemented.
 
-**Updated:** 2026-10-13 (documentation pass after E5-R20; HEAD = `c2868d0`).
+**Updated:** 2026-10-13 (documentation pass after E5-R23; HEAD = `9dbc2e3`, E5-R23 uncommitted).
 This file is the stand-in for the requested `docs/FUTURE_IMPLEMENTATION.md`,
 which does not exist in this repository.
 
@@ -51,10 +51,11 @@ The application-submission objective that Run #52 left unresolved was subsequent
 met by later checkpoints (D5/D7 single and multi native applications; E5-R7 surgical
 live validation of job 114).
 
-**E5 status: substantial but not finished.** Checkpoints E5-R1 through E5-R22 are
+**E5 status: substantial but not finished.** Checkpoints E5-R1 through E5-R23 are
 implemented and documented in `docs/DEVELOPMENT_STATUS.md`. Offline suite:
-**1161 passed / 0 failed** including the new E5-R22 run-guard/candidate-filter
-suite (verified 2026-10-13; E5-R22 changes uncommitted in the working tree).
+**1206 passed / 0 failed**
+including the new E5-R23 explicit-start/dedup suite (45 tests; verified
+2026-10-13; E5-R23 changes uncommitted in the working tree).
 Live-verified since E5-R7: single-job surgical apply (job 114, row 82) and
 history-confirmed application (job 462, row 148 via reconciliation after
 attempt #147). E5-R21 delivered the shared-runner multi-job orchestration,
@@ -66,6 +67,12 @@ orchestrator, safety gates and reconciliation — but exposed three defects
 single-application symptom caused by the over-broad candidate query) that
 E5-R22 fixes offline; the multi-job acceptance criteria (≥2 native
 applications in one live run) remain NOT MET until a post-E5-R22 live run.
+E5-R23 (2026-10-13) closed the E5-R22 investigation checkpoint: the perceived
+automatic restart was proven to be a phase transition inside a single run (not
+a second run), discovery now reports per-search progress so the transition is
+legible, repeated job fetching is bounded and deduplicated by canonical URL,
+and excluded specializations (FEA/piping/mechanical etc.) that appear only in
+a description now reject the job before any lookup.
 
 **Known limitations / open items:**
 
@@ -76,13 +83,15 @@ applications in one live run) remain NOT MET until a post-E5-R22 live run.
   (2026-10-13) pre-filters candidates through the shared relevance gate so
   the next live run sees only relevant candidates; the top roadmap priority
   is now a post-E5-R22 dashboard-initiated run completing ≥2 native
-  applications.
+  applications. E5-R23 added identity-based dedup and relevance pre-checks on
+  top, so the discovery sweep should present a smaller, cleaner candidate set.
 - 13 `NEEDS_ATTENTION` application rows remain for human review (incl. #146 job 105
   and #147 job 462 — remote status uncertain; #148 is the history-confirmed
   companion row of 462). No bulk resolution mechanism exists by design.
 - Data anomaly: discovery run 74 (2026-10-11) still shows `status=RUNNING` with
   `completed_at=NULL` while later runs completed — a stale control row, not an
-  active run.
+  active run. E5-R23 proved this is unrelated to any restart symptom (the
+  coordinator never re-entered a run from a stale discovery row).
 - E5-R18 exists only as an operational record (discovery run 78, no code, no
   commit); E5-R11 has no recorded evidence anywhere (assumed unused sequence number).
 
@@ -94,12 +103,14 @@ multi-job execution has not been demonstrated since the E5-R7 code changes. Rema
 work, in priority order:
 
 1. **Multi-application live verification.** Infrastructure delivered by E5-R21
-   (shared-runner orchestration, progress, HITL, answer memory) and hardened by
-   E5-R22 (idempotent start guard, shared relevance candidate pre-filter — both
-   offline test-verified, 1161 passed). Run #80 (2026-10-13) completed one live
+   (shared-runner orchestration, progress, HITL, answer memory), hardened by
+   E5-R22 (idempotent start guard, shared relevance candidate pre-filter), and
+   clarified by E5-R23 (explicit-start proof, per-search discovery progress,
+   canonical-URL dedup, extended irrelevant-role exclusions — all offline
+   test-verified, 1206 passed). Run #80 (2026-10-13) completed one live
    cycle end-to-end but applied to only 1 of 82 candidates because the old
    candidate query selected mostly irrelevant jobs. Remaining: one
-   dashboard-initiated live run (post-E5-R22) that discovers → hard-filters →
+   dashboard-initiated live run (post-E5-R22/R23) that discovers → hard-filters →
    evaluates → attempts → truthfully verifies **at least two** native
    applications in a single cycle. Acceptance criteria are recorded in
    `docs/MASTER_PRD.md` ("Multi-job acceptance criteria"). Status:

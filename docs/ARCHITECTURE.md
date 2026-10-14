@@ -1,5 +1,101 @@
 # Architecture
 
+## E5-R23 — Automatic-Restart Root Cause, Explicit-Start Enforcement & Identity-Based Dedup
+
+**Status:** IMPLEMENTED, TESTED (1206 passed, 0 failed, 45 new) — offline only; no live application run in this checkpoint. Not committed (working tree).
+
+**Root-cause model — one run, three phases (not a restart):**
+
+```text
+POST /api/autonomous-cycle/run          # the ONLY start trigger
+  └─ coordinator.try_acquire            # atomic UPDATE WHERE status='IDLE'
+  └─ one run_token → cycle.run() once
+       └─ [phase 1] discovery sweep     # 54 searches × terms × locations
+       │    └─ each search restarts at page 1; 0 persisted progress (pre-R23)
+       └─ [phase 2] login probe
+       └─ [phase 3] application session
+  └─ complete() / fail() → IDLE         # no re-entry path
+
+Perceived "restart" = phase 1 → 2 transition inside the same run
+```
+
+**Per-search discovery progress (makes the transition legible):**
+
+```text
+DiscoveryService.run_discovery
+  └─ progress_hook(search_index, search_total, current_search,
+        jobs_new, jobs_duplicate)      # hook exceptions swallowed
+       └─ AutonomousCycle._discovery_progress_hook
+            └─ _run_progress + current_step=discovery_search_X_of_Y
+                 └─ _persist_progress   # resumable/observable
+                      └─ frontend: "Discovery X / Y searches"
+                                   + jobs_new / jobs_duplicate / current_search
+```
+
+**Identity-based dedup + relevance pre-check (incident run #82: 688 cards, 684 dups, 4 new):**
+
+```text
+for each search card:
+  └─ irrelevant_role_reason(title, description)      # BEFORE any lookup
+       ├─ excluded → jobs_discovered--, skip          # no _find_existing_job,
+       │             no refresh, no backfill,         # no current_run_job_ids
+       └─ passed   → _find_existing_job
+            ├─ exact URL (indexed)
+            └─ canonical-URL fallback: _url_match_variants()
+                 (https/http × www/no-www × trailing-slash)  → Job.url.in_(variants)
+                      └─ match → duplicate; else → new Job row
+
+Mode backfills bounded: MAX_MODE_BACKFILLS_PER_RUN = 25 (counter reset per run)
+```
+
+**Irrelevant-role exclusion extension (engine.py) — incident job #535:**
+
+```text
+job #535 "Walk-in || Graduate Trainee FEA and Piping Analysis"
+  excluded specializations (piping / ansys / mechanical) appear ONLY in the
+  description; CURATED_ROLE_FAMILIES["graduate_trainee"] allowed the title.
+
+UNWANTED_SPECIALIZATIONS        += voice, non/semi-voice, customer care/success/
+                                   executive/officer/relation(s)/handling, piping,
+                                   ansys, harness, data entry, back office,
+                                   operation(s) executive, accounts/accounting/
+                                   finance/payroll/taxation, recruiter/recruitment,
+                                   graphic designer, ui/ux, ux designer, field
+                                   executive/sales/marketing, jewels, retail store,
+                                   procurement, purchase executive, front office,
+                                   receptionist, technical support, tech support,
+                                   helpdesk
+EXCLUDED_ROLE_SCOPE_PHRASES     += customer care/relations, mechanical, civil,
+                                   electrical          (role_category/department only;
+                                                        "research & development" kept)
+EXCLUDED_RESPONSIBILITY_PHRASES += mechanical/civil/electrical engineering,
+                                   piping analysis, ansys, caesar ii, fea and piping,
+                                   harness design, cad design, autocad, solidworks,
+                                   accounts payable/receivable, journal entry,
+                                   gst filing, income tax, payroll processing,
+                                   sourcing candidates, resume screening,
+                                   campus recruitment, data entry, back office,
+                                   merchandising, stock replenishment, billing
+                                   process, invoice processing   (two-hit)
+STRONG_..._RESPONSIBILITY_PHRASES += non-voice / semi-voice process, voice support,
+                                   customer care, ansys, caesar ii, piping analysis,
+                                   data entry, back office, invoice processing,
+                                   payroll processing, gst filing, resume screening
+                                   (single-hit)
+
+NOT added as bare substrings: "fea" (matches "feature"), "tax" (matches "syntax")
+Walk-in NOT blanket-rejected: walk-in strong phrases removed; a walk-in posting for
+  an allowed position stays eligible and is rejected only for its excluded
+  specializations.
+```
+
+**Safety floor (Phase 5) — unchanged:** limits `max_hourly_applications=4` /
+`max_daily_applications=20`; ambiguous-submission no-retry; records #146–#150
+preserved; E5-R21 screening-answer memory + HITL; shared DB run lock + cooperative
+cancellation. No one-job-only workaround. `normalize_naukri_url_for_comparison`
+relocated to `matching/normalizer.py` (re-exported from `applications`) so discovery
+does not import the playwright adapter chain.
+
 ## E5-R22 — Idempotent Start Guard & Shared Relevance Candidate Filtering
 
 **Status:** IMPLEMENTED, TESTED (1161 passed, 29 new) — offline only; no live application run in this checkpoint. Not committed (working tree).

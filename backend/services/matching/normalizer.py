@@ -1,6 +1,36 @@
 import re
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
+
+
+def normalize_naukri_url_for_comparison(url: Optional[str]) -> Optional[str]:
+    """
+    Safe normalization of equivalent URL forms for reconciliation matching.
+
+    E5-R23: relocated here (from backend/services/applications/service.py,
+    which re-exports it for backward compatibility) so the discovery
+    deduplicator can use the same canonical form without importing the
+    heavy applications package.
+
+    Trims whitespace, lowercases the host, treats http/https as equivalent,
+    drops the fragment and default ports, and strips a trailing slash from
+    the path. Returns None when the URL is missing or unparseable so callers
+    treat the row as ambiguous rather than matching it.
+    """
+    if not url or not url.strip():
+        return None
+    try:
+        parts = urlsplit(url.strip())
+        host = (parts.hostname or "").lower()
+        if not host:
+            return None
+        port = parts.port
+        netloc = f"{host}:{port}" if port is not None and port not in (80, 443) else host
+        path = parts.path.rstrip("/")
+        return urlunsplit(("https", netloc, path, parts.query, ""))
+    except ValueError:
+        return None
 
 
 def normalize_location(location: str) -> str:

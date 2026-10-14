@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from typing import Optional
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,6 +21,7 @@ from backend.services.matching.normalizer import (
     extract_experience_years,
     is_employment_type_allowed,
     compute_profile_experience_years,
+    normalize_naukri_url_for_comparison,
 )
 from backend.services.matching.engine import (
     experience_passes_fresher_rule,
@@ -80,28 +81,11 @@ PROTECTED_RECONCILE_JOB_IDS = {87, 120}
 PROTECTED_HISTORY_JOB_IDS = {81, 87, 114, 120}
 
 
-def normalize_naukri_url_for_comparison(url: Optional[str]) -> Optional[str]:
-    """
-    Safe normalization of equivalent URL forms for reconciliation matching.
-
-    Trims whitespace, lowercases the host, treats http/https as equivalent,
-    drops the fragment and default ports, and strips a trailing slash from
-    the path. Returns None when the URL is missing or unparseable so callers
-    treat the row as ambiguous rather than matching it.
-    """
-    if not url or not url.strip():
-        return None
-    try:
-        parts = urlsplit(url.strip())
-        host = (parts.hostname or "").lower()
-        if not host:
-            return None
-        port = parts.port
-        netloc = f"{host}:{port}" if port is not None and port not in (80, 443) else host
-        path = parts.path.rstrip("/")
-        return urlunsplit(("https", netloc, path, parts.query, ""))
-    except ValueError:
-        return None
+# E5-R23: normalize_naukri_url_for_comparison now lives in
+# backend.services.matching.normalizer (imported above) so the discovery
+# deduplicator shares the exact same canonical form without importing this
+# heavy module. The name is re-exported here for backward compatibility —
+# existing callers import it from this module.
 
 
 class SafetyGateError(Exception):

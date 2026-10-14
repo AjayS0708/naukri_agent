@@ -490,11 +490,16 @@ export function App() {
                 <div className="status-meta">
                   <span>Progress</span>
                   <b>
-                    {`${cycleProgress.processed ?? 0} / ${cycleProgress.candidates_total ?? "?"} processed`}
+                    {typeof cycleProgress.search_total === "number" && cycleProgress.search_total > 0
+                      ? `Discovery ${cycleProgress.search_index ?? 0} / ${cycleProgress.search_total} searches`
+                      : `${cycleProgress.processed ?? 0} / ${cycleProgress.candidates_total ?? "?"} processed`}
                     {typeof cycleProgress.applied === "number" ? ` · ${cycleProgress.applied} applied` : ""}
                     {typeof cycleProgress.skipped === "number" && cycleProgress.skipped > 0 ? ` · ${cycleProgress.skipped} skipped` : ""}
                     {typeof cycleProgress.needs_attention === "number" && cycleProgress.needs_attention > 0 ? ` · ${cycleProgress.needs_attention} needs attention` : ""}
                     {typeof cycleProgress.remaining === "number" ? ` · ${cycleProgress.remaining} remaining` : ""}
+                    {typeof cycleProgress.jobs_new === "number" ? ` · ${cycleProgress.jobs_new} new` : ""}
+                    {typeof cycleProgress.jobs_duplicate === "number" ? ` · ${cycleProgress.jobs_duplicate} duplicates` : ""}
+                    {cycleProgress.current_search ? ` · ${cycleProgress.current_search}` : ""}
                     {cycleProgress.current_job_title ? ` · current: ${cycleProgress.current_job_title}` : ""}
                     {cycleProgress.current_step && !isWaitingForAnswer ? ` (${cycleProgress.current_step.replaceAll("_", " ")})` : ""}
                   </b>

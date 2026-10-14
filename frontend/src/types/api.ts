@@ -160,6 +160,15 @@ export interface CycleProgress {
   waiting_for_user?: boolean;
   current_question?: string | null;
   pending_question_id?: number | null;
+  // E5-R23: discovery-sweep progress (set during the discovery phase, before
+  // any application candidates exist).
+  phase?: string | null;
+  search_index?: number;
+  search_total?: number;
+  current_search?: string | null;
+  jobs_new?: number;
+  jobs_duplicate?: number;
+  status?: string | null;
 }
 
 export interface PendingQuestion {

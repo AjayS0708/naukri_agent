@@ -571,6 +571,11 @@ class AutonomousCycle:
                 # pass so Stop takes effect at the next card/search boundary
                 # rather than only after discovery finishes.
                 cancel_check=self._cancellation_requested,
+                # E5-R23: publish per-search discovery progress so the
+                # dashboard shows one continuous run (search X of Y) during
+                # the multi-search sweep instead of appearing stalled and
+                # then restarting at page 1 on each new search.
+                progress_hook=self._discovery_progress_hook,
             )
             await discovery_service.run_discovery(db)
 
@@ -1280,6 +1285,29 @@ class AutonomousCycle:
             coordinator.update_progress(self.run_token, dict(self._run_progress))
         except Exception as exc:
             logger.warning(f"Failed to persist run progress: {exc}")
+
+    def _discovery_progress_hook(self, payload: dict) -> None:
+        """E5-R23: fold discovery sweep progress into the run progress doc.
+
+        Discovery runs before any application candidates exist, so this is the
+        only signal that the single run is still progressing through its
+        multi-search sweep. Without it the dashboard showed no movement for the
+        whole discovery pass, which read as the cycle having finished and
+        restarted.
+        """
+        if not isinstance(payload, dict):
+            return
+        progress = self._run_progress
+        progress.update(payload)
+        search_index = payload.get("search_index")
+        search_total = payload.get("search_total")
+        if search_index and search_total:
+            progress["current_step"] = (
+                f"discovery_search_{search_index}_of_{search_total}"
+            )
+            progress["processed"] = search_index
+            progress["remaining"] = max(0, search_total - search_index)
+        self._persist_progress()
 
     def _record_progress_outcome(self, result: str) -> None:
         """E5-R21: fold one finished job's outcome into the progress document."""

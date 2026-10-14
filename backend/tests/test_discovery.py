@@ -26,6 +26,25 @@ def _initialize_discovery_run(run: DiscoveryRun) -> None:
     run.pages_processed = 0
 
 
+def _serve_then_none(*preference_rows):
+    """Stateful ``first()`` side effect: serve preference rows, then None.
+
+    E5-R23: every job card triggers an external-id lookup and, on a miss, a
+    canonical-URL variant lookup before the title/company lookup. The number
+    of dedup queries is an implementation detail, so tests here script the
+    *shape* (preferences first, then "no existing job") rather than an exact
+    call count, which would break whenever a lookup is added.
+    """
+    rows = list(preference_rows)
+
+    def _first(*_args, **_kwargs):
+        if rows:
+            return rows.pop(0)
+        return None
+
+    return _first
+
+
 @pytest.fixture
 def mock_db_session():
     mock = MagicMock(spec=Session)
@@ -101,13 +120,7 @@ async def test_discovery_run_flow_and_state_transitions(
         mock_preferences.locations = ["Bengaluru"]
         mock_preferences.max_required_experience_years = 0
 
-        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-            mock_preferences,
-            None,
-            None,
-            None,
-        ]
-
+        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
         await service.run_discovery(mock_db_session)
 
     add_calls = mock_db_session.add.call_args_list
@@ -165,16 +178,7 @@ async def test_discovery_tracks_multiple_pages_processed(
     mock_preferences.locations = ["Bengaluru"]
 
     # Preferences fetch, then three deduplication lookups per job
-    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-        mock_preferences,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    ]
-
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
     await service.run_discovery(mock_db_session)
 
     assert service.current_run.pages_processed == 2
@@ -224,11 +228,7 @@ async def test_discovery_searches_every_configured_location(
     mock_preferences.locations = ["Bengaluru", "Remote"]
 
     # Preferences + 2 jobs × 3 dedup lookups (external_job_id, url, title+company)
-    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-        mock_preferences,
-        None, None, None,
-        None, None, None,
-    ]
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
 
     await service.run_discovery(mock_db_session)
 
@@ -285,10 +285,7 @@ async def test_discovery_pages_processed_can_exceed_searches_attempted(
     mock_preferences.locations = ["Bengaluru"]
 
     # Preferences + 3 jobs × 2 dedup lookups
-    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-        mock_preferences,
-        None, None, None, None, None, None,
-    ]
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
 
     await service.run_discovery(mock_db_session)
 
@@ -329,9 +326,7 @@ async def test_discovery_empty_locations_still_searches_india_fallback(
     mock_preferences.job_titles = ["Developer"]
     mock_preferences.locations = []
 
-    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-        mock_preferences, None, None,
-    ]
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
 
     await service.run_discovery(mock_db_session)
 
@@ -394,9 +389,7 @@ async def test_discovery_halts_on_auth_required_exception(
         mock_preferences.job_titles = ["Developer"]
         mock_preferences.locations = []
 
-        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-            mock_preferences,
-        ]
+        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
 
         await service.run_discovery(mock_db_session)
 
@@ -427,9 +420,7 @@ async def test_discovery_halts_on_security_required_exception(
         mock_preferences.job_titles = ["Developer"]
         mock_preferences.locations = []
 
-        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-            mock_preferences,
-        ]
+        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
 
         await service.run_discovery(mock_db_session)
 
@@ -459,9 +450,7 @@ async def test_discovery_halts_on_browser_start_failure(
             mock_preferences.job_titles = ["Developer"]
             mock_preferences.locations = []
 
-            mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-                mock_preferences,
-            ]
+            mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
 
             await service.run_discovery(mock_db_session)
 
@@ -497,12 +486,7 @@ async def test_discovery_user_stop(
         mock_preferences.job_titles = ["Developer"]
         mock_preferences.locations = []
 
-        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-            mock_preferences,
-            None,  # external_id check
-            None,  # url check
-            None,  # title+company check
-        ]
+        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
 
         await service.run_discovery(mock_db_session)
 
@@ -651,12 +635,7 @@ async def test_discovery_handles_malformed_job_data(
     mock_preferences.job_titles = ["Developer"]
     mock_preferences.locations = []
 
-    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-        mock_preferences,
-        None,  # external_id check
-        None,  # url check
-        None,  # title+company check
-    ]
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
 
     await service.run_discovery(mock_db_session)
 
@@ -668,7 +647,7 @@ async def test_discovery_handles_malformed_job_data(
 
 @pytest.mark.asyncio
 async def test_discovery_description_fetch_failure_doesnt_crash(
-    state_manager, mock_db_session, mock_adapter
+    state_manager, mock_db_session, mock_adapter, no_targeted_terms
 ):
     async def mock_search_jobs(*args, **kwargs):
         yield {
@@ -690,12 +669,7 @@ async def test_discovery_description_fetch_failure_doesnt_crash(
     mock_preferences.job_titles = ["Developer"]
     mock_preferences.locations = []
 
-    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-        mock_preferences,
-        None,  # external_id check
-        None,  # url check
-        None,  # title+company check
-    ]
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
 
     await service.run_discovery(mock_db_session)
 
@@ -707,7 +681,7 @@ async def test_discovery_description_fetch_failure_doesnt_crash(
 
 @pytest.mark.asyncio
 async def test_discovery_background_task_db_session_handling(
-    state_manager, mock_adapter
+    state_manager, mock_adapter, no_targeted_terms
 ):
     """Test that discovery can handle its own DB session when called from background task."""
     async def mock_search_jobs(*args, **kwargs):
@@ -737,12 +711,7 @@ async def test_discovery_background_task_db_session_handling(
                 _initialize_discovery_run(obj)
         
         mock_db_session.add.side_effect = add_side_effect
-        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-            mock_preferences,
-            None,  # external_id check
-            None,  # url check
-            None,  # title+company check
-        ]
+        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
         MockSessionLocal.return_value = mock_db_session
 
         # Call without passing db session (simulating background task)
@@ -836,7 +805,7 @@ async def test_duplicate_unknown_posted_at_does_not_overwrite_known(
 
 @pytest.mark.asyncio
 async def test_duplicates_do_not_starve_fresh_jobs(
-    state_manager, mock_db_session, mock_adapter
+    state_manager, mock_db_session, mock_adapter, no_targeted_terms
 ):
     """The scan budget counts NEW jobs, so old duplicates cannot consume it."""
     async def mock_search_jobs(*args, **kwargs):
@@ -879,14 +848,14 @@ async def test_duplicates_do_not_starve_fresh_jobs(
     dup2.posted_at = None
     dup2.id = 9002
 
-    # Preferences, two duplicate lookups (external id), then 3 lookups per new
-    # job (external id / url / title+company).
+    # Preferences, two duplicate lookups (external id), then 4 lookups per new
+    # job (external id / exact url / canonical-url variants / title+company).
     mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
         mock_preferences,
         dup1,
         dup2,
-        None, None, None,
-        None, None, None,
+        None, None, None, None,
+        None, None, None, None,
     ]
 
     # Assign integer ids to freshly persisted jobs so the run's tracked id set
@@ -979,9 +948,7 @@ async def test_discovery_stop_via_cycle_cancel_check(
         mock_preferences = MagicMock(spec=JobPreference)
         mock_preferences.job_titles = ["Developer"]
         mock_preferences.locations = []
-        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-            mock_preferences
-        ]
+        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
 
         await service.run_discovery(mock_db_session)
 
@@ -1010,9 +977,7 @@ async def test_discovery_cancel_check_is_silent_when_not_requested(
     mock_preferences = MagicMock(spec=JobPreference)
     mock_preferences.job_titles = ["Developer"]
     mock_preferences.locations = []
-    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-        mock_preferences
-    ]
+    mock_db_session.execute.return_value.scalars.return_value.first.side_effect = _serve_then_none(mock_preferences)
 
     await service.run_discovery(mock_db_session)
 

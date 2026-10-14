@@ -333,17 +333,34 @@ class TestAutonomousCycleLogic:
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference, eligible_native_job: Job
     ):
         """Test that an eligible native job passes hard filters."""
+        from backend.schemas.ai import JobAnalysis, JobQuality
         from backend.services.matching.engine import MatchEngine
-        from backend.services.gemini.queue import AIQueueService
 
-        match_engine = MatchEngine(db_session)
-        ai_queue_service = AIQueueService(db_session)
+        # Stub AI provider returns a fixed APPLY analysis so this test exercises the
+        # real deterministic hard filters plus AI-result application without any
+        # network / Gemini dependency (a live call is nondeterministic and flaky).
+        stub_ai = MagicMock()
+        stub_ai.analyze_job.return_value = JobAnalysis(
+            match_score=85,
+            role_match=True,
+            skill_match=True,
+            experience_match=True,
+            location_match=True,
+            salary_match=True,
+            job_quality=JobQuality.GOOD,
+            duplicate_probability=0.05,
+            suspicious=False,
+            recommendation=AIRecommendation.APPLY,
+            short_reason="Strong match",
+        )
+        match_engine = MatchEngine(db_session, ai_provider=stub_ai)
 
         # Evaluate hard filters
         match_decision = match_engine.evaluate_job(eligible_native_job, confirmed_profile, job_preferences)
 
         # Should pass hard filters
         assert match_decision.decision.value == "APPLY"
+        stub_ai.analyze_job.assert_called_once()
 
     def test_unpaid_job_fails_hard_filters(
         self, db_session: Session, confirmed_profile: Profile, job_preferences: JobPreference, unpaid_job: Job

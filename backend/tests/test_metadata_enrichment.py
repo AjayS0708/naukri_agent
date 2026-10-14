@@ -28,6 +28,45 @@ def _initialize_discovery_run(run: DiscoveryRun) -> None:
     run.pages_processed = 0
 
 
+def _stateful_dedup_results(mock, first_value, *subsequent):
+    """Serve `first_value` then `None` for every later dedup lookup.
+
+    The dedup path issues a variable number of `first()` lookups per card
+    (external-id, exact-url, canonical-url variants, title+company). Pinning an
+    exact count makes the test brittle across lookup-count changes, so this
+    serves the one meaningful value (the preferences row) and `None` forever
+    after, meaning "no existing job matched" regardless of how many lookups run.
+    """
+    values = [first_value, *subsequent]
+
+    def _side_effect(*_args, **_kwargs):
+        if values:
+            return values.pop(0)
+        return None
+
+    mock.execute.return_value.scalars.return_value.first.side_effect = _side_effect
+    return mock
+
+
+def _one_search_then_stop(service, caplog_marker="search"):
+    """Stop discovery after the first search term so the run is deterministic.
+
+    These tests assert a single new job, so they must not sweep every
+    configured search term. `search_jobs` yields one card, then raises to end
+    the async generator, and the stop flag prevents further terms from running.
+    """
+    service._stop_requested = False
+    original = service.adapter.search_jobs
+
+    async def _bounded_search(*args, **kwargs):
+        async for card in original(*args, **kwargs):
+            yield card
+        service._stop_requested = True
+
+    service.adapter.search_jobs = _bounded_search
+    return service
+
+
 @pytest.fixture
 def mock_db_session():
     mock = MagicMock(spec=Session)
@@ -93,12 +132,8 @@ async def test_new_job_receives_metadata_from_fetch_details(
         mock_preferences.locations = ["Bengaluru"]
         mock_preferences.max_required_experience_years = 0
 
-        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-            mock_preferences,
-            None,  # external_id check
-            None,  # url check
-            None,  # title+company check
-        ]
+        _stateful_dedup_results(mock_db_session, mock_preferences)
+        _one_search_then_stop(service)
 
         await service.run_discovery(mock_db_session)
 
@@ -142,12 +177,8 @@ async def test_new_job_with_partial_metadata(
         mock_preferences.locations = ["Bengaluru"]
         mock_preferences.max_required_experience_years = 0
 
-        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-            mock_preferences,
-            None,  # external_id check
-            None,  # url check
-            None,  # title+company check
-        ]
+        _stateful_dedup_results(mock_db_session, mock_preferences)
+        _one_search_then_stop(service)
 
         await service.run_discovery(mock_db_session)
 
@@ -179,12 +210,8 @@ async def test_new_job_with_no_metadata(
         mock_preferences.locations = ["Bengaluru"]
         mock_preferences.max_required_experience_years = 0
 
-        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-            mock_preferences,
-            None,  # external_id check
-            None,  # url check
-            None,  # title+company check
-        ]
+        _stateful_dedup_results(mock_db_session, mock_preferences)
+        _one_search_then_stop(service)
 
         await service.run_discovery(mock_db_session)
 
@@ -237,11 +264,10 @@ async def test_fetch_details_called_for_every_new_job(
         mock_preferences.job_titles = ["Developer"]
         mock_preferences.locations = ["Bengaluru"]
 
-        mock_db_session.execute.return_value.scalars.return_value.first.side_effect = [
-            mock_preferences,
-            None, None, None,  # Job A dedup checks
-            None, None, None,  # Job B dedup checks
-        ]
+        # Both cards are new: preferences row, then no existing job matches,
+        # no matter how many dedup lookups each card performs.
+        _stateful_dedup_results(mock_db_session, mock_preferences)
+        _one_search_then_stop(service)
 
         await service.run_discovery(mock_db_session)
 

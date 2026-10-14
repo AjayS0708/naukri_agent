@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 import inspect
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -12,7 +12,10 @@ from backend.models.job import Job
 from backend.models.matching import JobPreference
 from backend.services.naukri.adapter import NaukriAdapter
 from backend.services.matching.engine import experience_passes_fresher_rule, irrelevant_role_reason
-from backend.services.matching.normalizer import parse_salary_to_range
+from backend.services.matching.normalizer import (
+    parse_salary_to_range,
+    normalize_naukri_url_for_comparison,
+)
 from backend.database.database import SessionLocal
 from backend.core.logging import get_logger
 from backend.core.config import get_settings
@@ -68,6 +71,14 @@ DISCOVERY_EXTRA_SEARCH_TERMS: tuple[str, ...] = (
     + DISCOVERY_SEARCH_GROUPS["p3_graduate_software"]
 )
 
+# E5-R23: upper bound on page-visit backfills performed for rediscovered jobs
+# whose application_mode is still NULL. Run #82 re-visited known jobs' detail
+# pages every cycle purely to backfill a classifier column; that is capped so
+# a run's page-visit budget goes to fresh coverage, not re-classification of
+# the existing corpus. Known NULL-mode jobs without a backfill stay NULL and
+# are still handled by the existing ambiguous-mode application path.
+MAX_MODE_BACKFILLS_PER_RUN = 25
+
 # Preserved pre-E5-R19 fallback used only when preferences carry no titles.
 DISCOVERY_FALLBACK_SEARCH_TERMS: tuple[str, ...] = (
     "Data Analyst Fresher",
@@ -92,6 +103,7 @@ class DiscoveryService:
         state_manager: AgentStateManager,
         max_cards: int = 150,
         cancel_check: Optional[Any] = None,
+        progress_hook: Optional[Callable[[dict[str, Any]], Any]] = None,
     ):
         self.state_manager = state_manager
         settings = get_settings()
@@ -106,6 +118,24 @@ class DiscoveryService:
         # discovery at the next safe boundary instead of only after the whole
         # search/enrichment pass finishes.
         self.cancel_check = cancel_check
+        # E5-R23: optional progress hook. The autonomous cycle passes a
+        # callback that persists per-search progress (search X of Y, current
+        # query, new/duplicate counts) so the dashboard shows one continuous
+        # run during the multi-search discovery sweep instead of appearing
+        # stalled and then restarting at page 1 on every new search.
+        self.progress_hook = progress_hook
+        # E5-R23: bounded application_mode backfill counter (see
+        # MAX_MODE_BACKFILLS_PER_RUN).
+        self._mode_backfills_used = 0
+
+    def _report_progress(self, **fields: Any) -> None:
+        """E5-R23: surface discovery progress through the optional hook."""
+        if self.progress_hook is None:
+            return
+        try:
+            self.progress_hook({"phase": "discovery", **fields})
+        except Exception as exc:
+            logger.debug(f"discovery progress hook failed (continuing): {exc}")
 
     def _should_stop(self) -> bool:
         """True when discovery must stop: explicit stop or external cancel."""
@@ -147,6 +177,7 @@ class DiscoveryService:
         db = db or SessionLocal()
 
         self._stop_requested = False
+        self._mode_backfills_used = 0
         self.state_manager.transition_to(AgentState.RUNNING)
 
         run = DiscoveryRun(status=DISCOVERY_STATUS_RUNNING)
@@ -205,6 +236,19 @@ class DiscoveryService:
 
             self.state_manager.transition_to(AgentState.SEARCHING)
 
+            # E5-R23: total planned searches surfaced up front so the
+            # dashboard can show "search X of Y" instead of a frozen spinner
+            # that made the single run look like repeated restarts.
+            search_total = len(search_terms) * len(search_locations)
+            self._report_progress(
+                search_index=0,
+                search_total=search_total,
+                current_search=None,
+                jobs_new=self.current_run.new_jobs,
+                jobs_duplicate=self.current_run.duplicate_jobs,
+            )
+
+            search_index = 0
             for term in search_terms:
                 if self._should_stop():
                     break
@@ -222,6 +266,14 @@ class DiscoveryService:
                     )
                     self.current_run.searches_attempted += 1
                     db.commit()
+                    search_index += 1
+                    self._report_progress(
+                        search_index=search_index,
+                        search_total=search_total,
+                        current_search=self.current_search,
+                        jobs_new=self.current_run.new_jobs,
+                        jobs_duplicate=self.current_run.duplicate_jobs,
+                    )
 
                     jobs_before_term = self.current_run.jobs_discovered
                     seen_pages: set[int] = set()
@@ -249,6 +301,30 @@ class DiscoveryService:
                                 self.current_run.jobs_discovered -= 1
                                 continue
 
+                            # E5-R23: reject irrelevant roles from card metadata
+                            # BEFORE the dedup lookup. Pre-E5-R23 a known-irrelevant
+                            # job (walk-in / voice / customer-service / FEA-piping)
+                            # was rediscovered, counted, mode-backfilled via a fresh
+                            # page visit, and re-added to current_run_job_ids every
+                            # run. Title-only matching on the card is enough because
+                            # every persisted irrelevant job in the backlog carries
+                            # an excluded title phrase; description-bearing checks
+                            # still run later for new jobs in _build_job.
+                            card_reason = irrelevant_role_reason(
+                                title=job_data.get("title"),
+                                description=self._normalize_optional_str(
+                                    job_data.get("description")
+                                ),
+                            )
+                            if card_reason:
+                                self.current_run.jobs_discovered -= 1
+                                logger.debug(
+                                    "Skipping irrelevant rediscovered card '%s': %s",
+                                    job_data.get("title"),
+                                    card_reason,
+                                )
+                                continue
+
                             existing_job = self._find_existing_job(db, job_data)
 
                             if existing_job:
@@ -257,10 +333,15 @@ class DiscoveryService:
                                 # when still unknown, reusing the same page visit
                                 # path as new-job enrichment. Known modes are left
                                 # alone so we never invent a new classification.
+                                # E5-R23: bounded by MAX_MODE_BACKFILLS_PER_RUN so
+                                # a run cannot re-visit the whole existing corpus
+                                # purely to backfill a classifier column.
                                 if (
                                     not getattr(existing_job, "application_mode", None)
                                     and job_data.get("url")
+                                    and self._mode_backfills_used < MAX_MODE_BACKFILLS_PER_RUN
                                 ):
+                                    self._mode_backfills_used += 1
                                     try:
                                         details_result = await self.adapter.fetch_job_details(
                                             job_data["url"]
@@ -339,6 +420,14 @@ class DiscoveryService:
                 self._finalize_run(db, DISCOVERY_STATUS_STOPPED, None)
             else:
                 self._finalize_run(db, DISCOVERY_STATUS_COMPLETED, None)
+            self._report_progress(
+                search_index=search_index,
+                search_total=search_total,
+                current_search=None,
+                jobs_new=self.current_run.new_jobs,
+                jobs_duplicate=self.current_run.duplicate_jobs,
+                status=self.current_run.status,
+            )
             self._return_to_idle_from_active()
 
         except Exception as e:
@@ -433,6 +522,18 @@ class DiscoveryService:
             existing_job = db.execute(
                 select(Job).where(Job.url == job_data["url"])
             ).scalars().first()
+            # E5-R23: canonical-URL fallback. The exact-match query above is
+            # byte-for-byte, so the same posting re-listed with a different
+            # scheme, host case, default port, fragment, or trailing slash
+            # created a second row. Query the bounded variant set of the
+            # canonical form instead (indexed IN query, not a table scan) so
+            # a rediscovery of the same posting always lands on the one row.
+            if not existing_job:
+                variants = self._url_match_variants(job_data["url"])
+                if variants:
+                    existing_job = db.execute(
+                        select(Job).where(Job.url.in_(variants))
+                    ).scalars().first()
 
         if not existing_job and job_data.get("title") and job_data.get("company"):
             existing_job = db.execute(
@@ -440,6 +541,30 @@ class DiscoveryService:
             ).scalars().first()
 
         return existing_job
+
+    @staticmethod
+    def _url_match_variants(url: str) -> list[str]:
+        """Bounded set of equivalent URL spellings for the canonical form.
+
+        E5-R23: schemes (http/https), the optional "www." host prefix, and a
+        trailing slash are the concrete variants observed across Naukri card
+        links, detail-page links, and stored rows. Everything else is already
+        collapsed by normalize_naukri_url_for_comparison. Returns [] when the
+        URL cannot be normalized at all.
+        """
+        canonical = normalize_naukri_url_for_comparison(url)
+        if not canonical:
+            return []
+        variants: set[str] = {canonical, canonical + "/"}
+        for base in (canonical, canonical + "/"):
+            if base.startswith("https://"):
+                variants.add(base.replace("https://", "http://", 1))
+            if "://www." in base:
+                variants.add(base.replace("://www.", "://", 1))
+            elif "://" in base:
+                scheme, rest = base.split("://", 1)
+                variants.add(f"{scheme}://www.{rest}")
+        return sorted(variants)
 
     def _as_aware_utc(self, value: datetime | None) -> datetime | None:
         if value is None:
