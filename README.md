@@ -1001,7 +1001,7 @@ Phase 8.5A Checkpoint is complete: Worker Foundation and Registration. Persisten
 
 Phase 8.4.1 Checkpoint is complete: Responsive Mobile Naukri-Inspired UX. The frontend is now fully responsive across mobile (320px-480px), tablet (768px-1024px), and desktop (1024px+) viewports. Mobile experience features a compact header with hamburger menu, sidebar drawer, and bottom navigation bar inspired by Naukri mobile app patterns. All touch targets are minimum ~44x44px. Desktop layout and functionality are preserved. No backend changes. Build passes; no TypeScript errors.
 
-Phase 8.4 Checkpoint is complete: Vercel frontend preparation. All frontend API calls use a single public `VITE_API_BASE_URL` configuration, and the existing Vercel configuration builds the `frontend` Vite app. No Vercel deployment has been performed.
+Phase 8.4 Checkpoint is complete: Vercel frontend preparation. All frontend API calls use a single public `VITE_API_BASE_URL` configuration, and the Vercel project Root Directory `frontend` builds the Vite app (no `vercel.json` remains after commit `b646607`). No Vercel deployment has been performed.
 
 Phase 8.3 Checkpoint is complete: hosted FastAPI deployment preparation. The repository includes Render and Procfile service definitions, explicit production configuration validation, secure structured logs, and environment-driven CORS/frontend API configuration. This is preparation only; no service has been deployed.
 
@@ -1080,11 +1080,11 @@ Production readiness rejects SQLite, a missing Gemini key, missing origins, and 
 
 ## Vercel Frontend Preparation (Phase 8.4)
 
-The root `vercel.json` installs, builds, and publishes the Vite app in `frontend/` (`npm --prefix frontend ci`, `npm --prefix frontend run build`, and `frontend/dist`). Set `VITE_API_BASE_URL` in Vercel to the public HTTPS FastAPI origin, for example `https://your-api-host.example`; the client normalizes it to `/api`. Locally, omit the variable to use `http://127.0.0.1:8000`.
+The repository has no `vercel.json`: the root file that ran `npm --prefix frontend ci`, `npm --prefix frontend run build`, and published `frontend/dist` was removed in commit `b646607` ("fix: align Vercel frontend root configuration"). Deployment therefore depends on the Vercel project's Root Directory being set to `frontend`, which lets Vercel's Vite preset run `npm run build` in `frontend/` and publish `frontend/dist`. Build the app locally with `npm --prefix frontend ci` and `npm --prefix frontend run build`. Set `VITE_API_BASE_URL` in Vercel to the public HTTPS FastAPI origin, for example `https://your-api-host.example`; the client normalizes it to `/api`. Locally, omit the variable to use `http://127.0.0.1:8000`.
 
 `VITE_` values are public browser configuration. Never put Gemini keys, database URLs with credentials, Naukri credentials, cookies, sessions, or private tokens in them. Configure the deployed Vercel origin separately in `NAUKRI_AGENT_FRONTEND_ORIGINS` on the backend. The dashboard uses in-page state and hash links, not browser-path routing, so no SPA rewrite was added. API failures use safe user-facing messages and a request timeout; raw backend error details are not displayed.
 
-**Vercel Deployment Identity Requirement (Hobby Plan):** The Vercel Hobby Plan does not support collaboration for private repositories. To deploy this private repository, the GitHub account connected to your Vercel project must match the repository owner, and all commit authors must match that connected GitHub account. Verify your Vercel Dashboard → Settings → Git → Login Connections to ensure the correct GitHub account is linked.
+**Vercel Deployment Identity Requirement (Hobby Plan):** The Vercel Hobby Plan does not support collaboration for private repositories; that is supported for public repositories only. For a private repository Vercel's documented rule is that the **commit author** must be the owner of the Hobby team that contains the Vercel project, and Vercel verifies this by comparing that team owner (shown in Vercel Dashboard → Settings → Git → Login Connections) with the commit author. Matching the GitHub *repository owner* alone is not what Vercel checks. Confirm that the GitHub account connected under Login Connections is the same account that authored the commits in this repository. This check is Vercel-side and cannot be verified from the repository itself; no Vercel deployment of this repository has been confirmed.
 
 ## Production Readiness (Phase 8.1)
 
@@ -1202,7 +1202,7 @@ Phase 8.5A Checkpoint is complete: Worker Foundation and Registration. Persisten
 
 Phase 8.4.1 Checkpoint is complete: Responsive Mobile Naukri-Inspired UX. The frontend is now fully responsive across mobile (320px-480px), tablet (768px-1024px), and desktop (1024px+) viewports. Mobile experience features a compact header with hamburger menu, sidebar drawer, and bottom navigation bar inspired by Naukri mobile app patterns. All touch targets are minimum ~44x44px. Desktop layout and functionality are preserved. No backend changes. Build passes; no TypeScript errors.
 
-Phase 8.4 Checkpoint is complete: Vercel frontend preparation. All frontend API calls use a single public `VITE_API_BASE_URL` configuration, and the existing Vercel configuration builds the `frontend` Vite app. No Vercel deployment has been performed.
+Phase 8.4 Checkpoint is complete: Vercel frontend preparation. All frontend API calls use a single public `VITE_API_BASE_URL` configuration, and the Vercel project Root Directory `frontend` builds the Vite app (no `vercel.json` remains after commit `b646607`). No Vercel deployment has been performed.
 
 Phase 8.3 Checkpoint is complete: hosted FastAPI deployment preparation. The repository includes Render and Procfile service definitions, explicit production configuration validation, secure structured logs, and environment-driven CORS/frontend API configuration. This is preparation only; no service has been deployed.
 
@@ -1281,11 +1281,11 @@ Production readiness rejects SQLite, a missing Gemini key, missing origins, and 
 
 ## Vercel Frontend Preparation (Phase 8.4)
 
-The root `vercel.json` installs, builds, and publishes the Vite app in `frontend/` (`npm --prefix frontend ci`, `npm --prefix frontend run build`, and `frontend/dist`). Set `VITE_API_BASE_URL` in Vercel to the public HTTPS FastAPI origin, for example `https://your-api-host.example`; the client normalizes it to `/api`. Locally, omit the variable to use `http://127.0.0.1:8000`.
+The repository has no `vercel.json`: the root file that ran `npm --prefix frontend ci`, `npm --prefix frontend run build`, and published `frontend/dist` was removed in commit `b646607` ("fix: align Vercel frontend root configuration"). Deployment therefore depends on the Vercel project's Root Directory being set to `frontend`, which lets Vercel's Vite preset run `npm run build` in `frontend/` and publish `frontend/dist`. Build the app locally with `npm --prefix frontend ci` and `npm --prefix frontend run build`. Set `VITE_API_BASE_URL` in Vercel to the public HTTPS FastAPI origin, for example `https://your-api-host.example`; the client normalizes it to `/api`. Locally, omit the variable to use `http://127.0.0.1:8000`.
 
 `VITE_` values are public browser configuration. Never put Gemini keys, database URLs with credentials, Naukri credentials, cookies, sessions, or private tokens in them. Configure the deployed Vercel origin separately in `NAUKRI_AGENT_FRONTEND_ORIGINS` on the backend. The dashboard uses in-page state and hash links, not browser-path routing, so no SPA rewrite was added. API failures use safe user-facing messages and a request timeout; raw backend error details are not displayed.
 
-**Vercel Deployment Identity Requirement (Hobby Plan):** The Vercel Hobby Plan does not support collaboration for private repositories. To deploy this private repository, the GitHub account connected to your Vercel project must match the repository owner, and all commit authors must match that connected GitHub account. Verify your Vercel Dashboard → Settings → Git → Login Connections to ensure the correct GitHub account is linked.
+**Vercel Deployment Identity Requirement (Hobby Plan):** The Vercel Hobby Plan does not support collaboration for private repositories; that is supported for public repositories only. For a private repository Vercel's documented rule is that the **commit author** must be the owner of the Hobby team that contains the Vercel project, and Vercel verifies this by comparing that team owner (shown in Vercel Dashboard → Settings → Git → Login Connections) with the commit author. Matching the GitHub *repository owner* alone is not what Vercel checks. Confirm that the GitHub account connected under Login Connections is the same account that authored the commits in this repository. This check is Vercel-side and cannot be verified from the repository itself; no Vercel deployment of this repository has been confirmed.
 
 ## Production Readiness (Phase 8.1)
 

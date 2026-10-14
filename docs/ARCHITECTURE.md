@@ -2040,7 +2040,7 @@ Browser/API Separation (no auto-start)
 
 ### Vercel Frontend Configuration (Phase 8.4)
 
-- The existing root `vercel.json` builds the `frontend` subproject with `npm --prefix frontend ci`, `npm --prefix frontend run build`, and output `frontend/dist`.
+- There is no root `vercel.json` (the file that ran `npm --prefix frontend ci`, `npm --prefix frontend run build`, and published `frontend/dist` was removed in commit `b646607`). The build is driven by the Vercel project Root Directory `frontend`, which installs `frontend/package.json`, runs the Vite build, and publishes `frontend/dist`.
 - `VITE_API_BASE_URL` is public browser configuration only. It must not contain API keys, credentials, cookies, session data, or private tokens.
 - The Vercel origin is configured on the backend through `NAUKRI_AGENT_FRONTEND_ORIGINS`; multiple explicit origins remain supported.
 - The current dashboard uses in-page state and hash links rather than client-side browser-path routes, so no Vercel SPA rewrite is required.

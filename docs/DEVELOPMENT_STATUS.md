@@ -1996,7 +1996,7 @@ Prepared the existing Vite dashboard for Vercel hosting and hosted API connectiv
 - Development retains `http://127.0.0.1:8000` as an omitted-variable fallback. Production requires a configured API URL and never silently uses localhost.
 - Normalized configured origins and `/api` suffixes, added a 15-second request timeout, and mapped network, HTTP, timeout, and malformed-response errors to safe user-facing messages.
 - Replaced direct/relative frontend `fetch` calls in agent control, analytics, preferences, and AI status with the shared client.
-- Updated the existing root `vercel.json` to install/build `frontend/` and publish `frontend/dist`.
+- Updated the existing root `vercel.json` to install/build `frontend/` and publish `frontend/dist`. (That file was later removed in commit `b646607`; the Vercel project Root Directory `frontend` now drives the build instead.)
 - Verified no rewrite is needed because the dashboard uses hash links and in-page state rather than browser-path routes.
 - Preserved backend Phase 8.3 CORS; a deployed Vercel origin must be supplied through `NAUKRI_AGENT_FRONTEND_ORIGINS`.
 
