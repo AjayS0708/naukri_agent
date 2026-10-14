@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, select
 
 from backend.models.application import Application
-from backend.models.job import Job
+from backend.models.job import Job, utc_now
 from backend.models.profile import Profile
 from backend.models.matching import JobPreference
 from backend.models.ai import JobAnalysisModel
@@ -454,6 +454,29 @@ class ApplicationRunner:
 
             app_type = await self.adapter.detect_application_type(page)
 
+            # E5-R25: evidence-based application-mode correction for jobs
+            # recovered from the existing-job backlog whose stored mode is
+            # AMBIGUOUS / NULL. Detection ran live on the open page above; the
+            # result only ever *upgrades* an unclassified row — a stored
+            # NAUKRI_NATIVE or EXTERNAL is never overwritten here. NAUKRI_NATIVE
+            # is stamped only when the page returned positive native evidence
+            # (visible Apply control); EXTERNAL only with a destination URL.
+            stored_mode = (job.application_mode or "").strip().upper()
+            if stored_mode in ("", "AMBIGUOUS", "NULL"):
+                if app_type == "NAUKRI_NATIVE":
+                    job.application_mode = "NAUKRI_NATIVE"
+                    job.mode_reverified_at = utc_now()
+                    self.session.commit()
+                    logger.info(
+                        "Job %s re-classified NAUKRI_NATIVE from live evidence",
+                        job_id,
+                    )
+                elif app_type == "EXTERNAL":
+                    # Confirmation requires the destination URL, checked below
+                    # in the EXTERNAL branch; stamp it there so no EXTERNAL is
+                    # written without evidence.
+                    pass
+
             if app_type == "EXTERNAL":
                 external_url = await self.adapter.get_external_redirect_url(page)
                 if not external_url:
@@ -469,6 +492,14 @@ class ApplicationRunner:
                         job, "Application destination unresolved (no external link evidence)"
                     )
                     return "NEEDS_ATTENTION"
+                # E5-R25: positive destination evidence upgrades an
+                # unclassified row to EXTERNAL and records when the live
+                # re-verification happened (used by the recovery cooldown).
+                # Set before record_external_application so its commit
+                # persists the correction.
+                if stored_mode in ("", "AMBIGUOUS", "NULL"):
+                    job.application_mode = "EXTERNAL"
+                job.mode_reverified_at = utc_now()
                 self.application_service.record_external_application(
                     job,
                     external_url,
@@ -488,6 +519,12 @@ class ApplicationRunner:
                 return "EXTERNAL"
 
             if app_type == "AMBIGUOUS":
+                # E5-R25: stamp the re-verification time so the recovery
+                # cooldown stops this still-ambiguous posting from being
+                # re-visited on every subsequent run. No application row is
+                # created on this path, so commit the stamp directly.
+                job.mode_reverified_at = utc_now()
+                self.session.commit()
                 logger.warning("Application type is ambiguous for job %s", job_id)
                 return "NEEDS_ATTENTION"
 

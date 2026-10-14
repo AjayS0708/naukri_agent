@@ -125,6 +125,8 @@ def initialize_database() -> None:
             connection.execute(text("ALTER TABLE jobs ADD COLUMN role_category VARCHAR(255)"))
         if "application_mode" not in job_columns:
             connection.execute(text("ALTER TABLE jobs ADD COLUMN application_mode VARCHAR(32)"))
+        if "mode_reverified_at" not in job_columns:
+            connection.execute(text("ALTER TABLE jobs ADD COLUMN mode_reverified_at DATETIME"))
         if "max_required_experience_years" not in preference_columns:
             connection.execute(text("ALTER TABLE job_preferences ADD COLUMN max_required_experience_years INTEGER NOT NULL DEFAULT 0"))
         if "it_industry_allowlist" not in preference_columns:

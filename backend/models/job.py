@@ -44,6 +44,12 @@ class Job(Base):
     # NULL when never classified. Ranking treats unknown as ambiguous.
     application_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
+    # E5-R25: stamp of the most recent live-page application-mode
+    # re-verification for a job whose stored mode is AMBIGUOUS/NULL. The
+    # existing-job recovery stage uses it as a cooldown so a still-ambiguous
+    # posting is not re-visited on every run.
+    mode_reverified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

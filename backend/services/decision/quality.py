@@ -20,7 +20,8 @@ from backend.services.matching.normalizer import (
     has_overlapping_location,
     extract_lowest_salary_lpa,
     extract_experience_years,
-    is_employment_type_allowed
+    is_employment_type_allowed,
+    evaluate_salary_gate,
 )
 from backend.core.logging import get_logger
 
@@ -171,51 +172,54 @@ class DecisionQualityService:
                         reason=f"Experience compatibility: {experience_compatibility:.2f}"
                     ))
         
-        # 4. Salary hard filter
+        # 4. Salary hard filter (E5-R25: shared gate — unpaid and
+        # disclosed-below-min reject; undisclosed/ambiguous never rejects).
+        salary_ok, salary_reason = evaluate_salary_gate(
+            job.salary, job.salary_max, preference.min_salary_lpa
+        )
+        if not salary_ok:
+            salary_suitability = 0.0
+            hard_filter_failed = True
+            primary_reason = DecisionReasonCode.SALARY_BELOW_MINIMUM
+            reason_codes.append(DecisionReasonCode.SALARY_BELOW_MINIMUM)
+            signals.append(DecisionSignal(
+                signal_type="salary_suitability",
+                value=0.0,
+                weight=2.0,
+                reason=salary_reason or "Salary does not meet the minimum preference"
+            ))
+            return DecisionQuality(
+                priority=DecisionPriority.HARD_REJECT,
+                decision_score=0,
+                role_relevance_score=0,
+                skill_relevance_score=0,
+                experience_compatibility_score=experience_compatibility,
+                location_match_score=location_match,
+                salary_suitability_score=0,
+                job_quality_score=0,
+                freshness_score=0,
+                duplicate_probability=0,
+                suspicious_probability=0,
+                feedback_adjustment=0,
+                primary_reason_code=primary_reason,
+                reason_codes=reason_codes,
+                explanation=salary_reason or "Salary does not meet the minimum preference",
+                hard_filter_failed=True,
+                signals=signals
+            )
         if job.salary and preference.min_salary_lpa is not None:
             salary_lpa = extract_lowest_salary_lpa(job.salary)
             if salary_lpa is not None:
-                if salary_lpa < preference.min_salary_lpa:
-                    salary_suitability = 0.0
-                    hard_filter_failed = True
-                    primary_reason = DecisionReasonCode.SALARY_BELOW_MINIMUM
-                    reason_codes.append(DecisionReasonCode.SALARY_BELOW_MINIMUM)
-                    signals.append(DecisionSignal(
-                        signal_type="salary_suitability",
-                        value=0.0,
-                        weight=2.0,
-                        reason=f"Salary ({salary_lpa} LPA) below minimum ({preference.min_salary_lpa} LPA)"
-                    ))
-                    return DecisionQuality(
-                        priority=DecisionPriority.HARD_REJECT,
-                        decision_score=0,
-                        role_relevance_score=0,
-                        skill_relevance_score=0,
-                        experience_compatibility_score=experience_compatibility,
-                        location_match_score=location_match,
-                        salary_suitability_score=0,
-                        job_quality_score=0,
-                        freshness_score=0,
-                        duplicate_probability=0,
-                        suspicious_probability=0,
-                        feedback_adjustment=0,
-                        primary_reason_code=primary_reason,
-                        reason_codes=reason_codes,
-                        explanation=f"Salary ({salary_lpa} LPA) below minimum ({preference.min_salary_lpa} LPA)",
-                        hard_filter_failed=True,
-                        signals=signals
-                    )
-                else:
-                    # Calculate suitability score (bonus for higher salaries)
-                    salary_suitability = min(1.0, salary_lpa / (preference.min_salary_lpa * 1.5))
-                    signals.append(DecisionSignal(
-                        signal_type="salary_suitability",
-                        value=salary_suitability,
-                        weight=1.0,
-                        reason=f"Salary suitability: {salary_suitability:.2f}"
-                    ))
-                    if salary_lpa >= preference.min_salary_lpa * 1.5:
-                        reason_codes.append(DecisionReasonCode.HIGH_SALARY)
+                # Calculate suitability score (bonus for higher salaries)
+                salary_suitability = min(1.0, salary_lpa / (preference.min_salary_lpa * 1.5))
+                signals.append(DecisionSignal(
+                    signal_type="salary_suitability",
+                    value=salary_suitability,
+                    weight=1.0,
+                    reason=f"Salary suitability: {salary_suitability:.2f}"
+                ))
+                if salary_lpa >= preference.min_salary_lpa * 1.5:
+                    reason_codes.append(DecisionReasonCode.HIGH_SALARY)
         
         # 5. Employment type hard filter
         if job.employment_type and preference.employment_types:

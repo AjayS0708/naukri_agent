@@ -77,124 +77,153 @@ def has_overlapping_location(job_locations_str: str, preferred_locations: list[s
     return any(jl in pref_locs for jl in job_locs if jl)
 
 
+# E5-R25: unit markers for the unit-aware salary parser. Detection runs on the
+# lowercased original text (before comma stripping) so comma-formatted rupee
+# amounts stay distinguishable from lacs-scale plain numbers. The abbreviated
+# forms use a trailing (?!\w) instead of \b so trailing-dot spellings like
+# "p.m." / "p.a." still match at end of string.
+_SALARY_MONTHLY_MARKER = re.compile(r"(?:/|\bper\s*)\s*month\b|\bp\.?\s?m\.?(?!\w)", re.I)
+_SALARY_ANNUAL_MARKER = re.compile(r"\bp\.?\s?a\.?(?!\w)|\bper\s*annum\b|\bpa\b|\byearly\b|\bannually\b", re.I)
+_SALARY_LACS_MARKER = re.compile(r"\b(?:lacs?|lakhs?|lpa)\b", re.I)
+# Numeric tokens: digits with optional Indian-style comma grouping and decimals.
+_SALARY_NUMBER_TOKEN = re.compile(r"(\d[\d,]*(?:\.\d+)?)")
+
+
+def _annualize_monthly(value: float) -> float:
+    """Monthly rupees -> LPA (value * 12 / 100,000)."""
+    return (value * 12) / 100000.0
+
+
+def _rupees_to_lpa(value: float) -> float:
+    """Annual rupees -> LPA (value / 100,000)."""
+    return value / 100000.0
+
+
+def _parse_salary_endpoint(
+    raw_token: str,
+    *,
+    range_has_lacs: bool,
+    range_has_monthly: bool,
+    range_has_annual: bool,
+) -> Optional[float]:
+    """Convert one numeric salary endpoint to LPA, or None when ambiguous.
+
+    Decision rules (E5-R25), auditable and order-stable:
+
+    1. A token directly followed by lacs/lakh/lpa in the original text is an
+       LPA value as written ("3 Lacs" -> 3.0).
+    2. A comma-grouped or >=100000 token is a rupee amount:
+       annual marker -> /1e5 ("50,000 PA" -> 0.5), monthly marker ->
+       *12/1e5 ("50,000 per month" -> 6.0), no marker but >=100000 ->
+       annual rupees (legacy "400000 to 600000" -> 4.0). A rupee-scale
+       token inside a lacs-marked range still uses the range unit marker
+       when present ("50,000-3 Lacs PA" -> left endpoint 0.5).
+    3. A small comma-less token inherits the range unit: lacs marker ->
+       LPA as written ("2-3 Lacs PA" -> 2.0), monthly marker -> annualized
+       ("300/month" -> 0.036). With an annual marker only, a bare small
+       number ("5 PA") is genuinely ambiguous and stays unknown.
+    4. Anything else (bare small numbers with no unit context) is unknown;
+       callers must treat unknown as "salary not disclosed", never as a
+       confirmed below-minimum value.
+    """
+    has_comma = "," in raw_token
+    try:
+        value = float(raw_token.replace(",", ""))
+    except ValueError:
+        return None
+
+    # Rule 1: rupee-scale or comma-grouped tokens are rupee amounts.
+    if has_comma or value >= 100000:
+        if range_has_monthly:
+            return _annualize_monthly(value)
+        if range_has_annual:
+            return _rupees_to_lpa(value)
+        if value >= 100000:
+            return _rupees_to_lpa(value)
+        return None
+
+    # Rule 2: small comma-less tokens inherit the range unit.
+    if range_has_lacs:
+        return value
+    if range_has_monthly:
+        return _annualize_monthly(value)
+    return None
+
+
 def parse_salary_to_range(salary_str: str) -> tuple[Optional[float], Optional[float]]:
     """
     Parses salary string to (salary_min, salary_max) in LPA.
     Handles: "Unpaid", "Not disclosed", "3-5 Lacs PA", "50,000/month", etc.
-    Returns (min_lpa, max_lpa) or (None, None) for undisclosed.
+    Returns (min_lpa, max_lpa) or (None, None) for undisclosed/ambiguous.
 
     Special case: "Unpaid" (any case, with/without "P.M"/"per month") -> (0.0, 0.0)
-    "Not disclosed"/empty -> (None, None)
+    "Not disclosed"/"Undisclosed"/empty -> (None, None)
 
-    Monthly amounts are annualized: 50,000/month -> 50,000 * 12 / 100,000 = 6.0 LPA
+    E5-R25: unit-aware endpoint parsing. Monthly amounts are annualized
+    (50,000/month -> 6.0 LPA); annual rupee amounts are scaled to LPA
+    (60,000-80,000 PA -> 0.6-0.8 LPA); mixed lacs/rupee ranges normalize each
+    endpoint by its own unit ("50,000-3 Lacs PA" -> 0.5-3.0 LPA). Genuinely
+    ambiguous strings (bare uncomma'd numbers with no unit, e.g. "50,000-80,000")
+    return (None, None) so the salary gate continues consideration instead of
+    inventing a confirmed value.
     """
     if not salary_str or not isinstance(salary_str, str):
         return None, None
 
-    s = salary_str.strip().lower().replace(",", "")
+    s = salary_str.strip().lower()
 
     # Check for undisclosed or empty
-    if not s or "not disclos" in s:
+    if not s or "not disclos" in s or "undisclosed" in s:
         return None, None
 
     # Check for unpaid (including "Unpaid P.M", "Unpaid per month", etc.)
     if "unpaid" in s:
         return 0.0, 0.0
 
-    # Handle "Lacs PA" or "Lacs" (common Naukri format)
-    # Example: "3-5 Lacs PA" -> (3.0, 5.0)
-    lacs_match = re.search(r'([\d\.]+)\s*(?:-|to)\s*([\d\.]+)\s*(?:lacs?|lakhs?)\s*(?:pa)?', s)
-    if lacs_match:
-        try:
-            min_val = float(lacs_match.group(1))
-            max_val = float(lacs_match.group(2))
-            return min(min_val, max_val), max(min_val, max_val)
-        except ValueError:
-            pass
+    # Unit markers are evaluated against the comma-preserving text so
+    # "50,000" stays identifiable as a rupee amount.
+    has_monthly = bool(_SALARY_MONTHLY_MARKER.search(s))
+    has_annual = bool(_SALARY_ANNUAL_MARKER.search(s))
+    has_lacs = bool(_SALARY_LACS_MARKER.search(s))
 
-    # Handle single "Lacs PA" value
-    single_lacs = re.search(r'([\d\.]+)\s*(?:lacs?|lakhs?)\s*(?:pa)?', s)
-    if single_lacs:
-        try:
-            val = float(single_lacs.group(1))
-            return val, val
-        except ValueError:
-            pass
+    tokens = _SALARY_NUMBER_TOKEN.findall(s)
+    if not tokens:
+        return None, None
 
-    # Handle monthly ranges FIRST (before single monthly amounts)
-    # Example: "Rs 15,000 - 20,000 per month" -> (1.8, 2.4)
-    #          "30,000-50,000/month" -> (3.6, 6.0)
-    monthly_range_match = re.search(r'([\d\.]+)\s*(?:-|to)\s*([\d\.]+)\s*(?:(?:/|per)\s*month|p\.?m\.?)', s)
-    if monthly_range_match:
-        try:
-            min_monthly = float(monthly_range_match.group(1))
-            max_monthly = float(monthly_range_match.group(2))
-            # Annualize both: monthly * 12 / 100,000 = LPA
-            min_lpa = (min_monthly * 12) / 100000.0
-            max_lpa = (max_monthly * 12) / 100000.0
-            return min(min_lpa, max_lpa), max(min_lpa, max_lpa)
-        except ValueError:
-            pass
+    values: list[float] = []
+    for token in tokens:
+        # Direct lacs/lakh/lpa suffix on THIS token -> LPA as written.
+        suffix_match = re.search(
+            re.escape(token) + r"\s*(lacs?|lakhs?|lpa)\b", s
+        )
+        if suffix_match:
+            try:
+                values.append(float(token.replace(",", "")))
+                continue
+            except ValueError:
+                pass
+        endpoint = _parse_salary_endpoint(
+            token,
+            range_has_lacs=has_lacs,
+            range_has_monthly=has_monthly,
+            range_has_annual=has_annual,
+        )
+        if endpoint is None:
+            # One unparseable endpoint in a multi-endpoint range makes the
+            # range incomparable; a lone unknown token is undisclosed. The
+            # single-known-endpoint case is handled after the loop only when
+            # every token parsed, so an ambiguous partner never fabricates a
+            # bound.
+            return None, None
+        values.append(endpoint)
 
-    # Handle single monthly amounts ("/month", "per month", "p.m.", "pm")
-    # Example: "50,000/month" -> annualize to 6.0 LPA, "15,000 p.m." -> 1.8 LPA
-    monthly_match = re.search(r'([\d\.]+)\s*(?:(?:/|per)\s*month|p\.?m\.?)', s)
-    if monthly_match:
-        try:
-            monthly_val = float(monthly_match.group(1))
-            # Annualize: monthly * 12 / 100,000 = LPA
-            annualized_lpa = (monthly_val * 12) / 100000.0
-            return annualized_lpa, annualized_lpa
-        except ValueError:
-            pass
-
-    # Handle "LPA" format ranges
-    # Example: "5-7 LPA" -> (5.0, 7.0)
-    lpa_range_match = re.search(r'([\d\.]+)\s*(?:-|to)\s*([\d\.]+)\s*(?:lakhs?|lpa)', s)
-    if lpa_range_match:
-        try:
-            min_val = float(lpa_range_match.group(1))
-            max_val = float(lpa_range_match.group(2))
-            return min(min_val, max_val), max(min_val, max_val)
-        except ValueError:
-            pass
-
-    # Handle single "LPA" value
-    single_lpa_match = re.search(r'([\d\.]+)\s*(?:lakhs?|lpa)', s)
-    if single_lpa_match:
-        try:
-            val = float(single_lpa_match.group(1))
-            return val, val
-        except ValueError:
-            pass
-
-    # Handle absolute values in rupees (e.g., "400000 - 600000" without currency)
-    # Only if values are large enough (> 100k implies yearly)
-    abs_match = re.search(r'([\d\.]+)\s*(?:-|to)\s*([\d\.]+)', s)
-    if abs_match:
-        try:
-            val1 = float(abs_match.group(1))
-            val2 = float(abs_match.group(2))
-            # If both are large, assume yearly rupees
-            if val1 >= 100000 and val2 >= 100000:
-                min_val = (min(val1, val2)) / 100000.0
-                max_val = (max(val1, val2)) / 100000.0
-                return min_val, max_val
-        except ValueError:
-            pass
-
-    # Handle single absolute value
-    single_abs = re.search(r'^([\d\.]+)$', s)
-    if single_abs:
-        try:
-            val = float(single_abs.group(1))
-            if val >= 100000:
-                lpa = val / 100000.0
-                return lpa, lpa
-        except ValueError:
-            pass
-
-    return None, None
+    if not values:
+        return None, None
+    if len(values) == 1:
+        return values[0], values[0]
+    low = min(values)
+    high = max(values)
+    return low, high
 
 
 def extract_lowest_salary_lpa(salary_str: str) -> Optional[float]:
@@ -208,6 +237,42 @@ def extract_lowest_salary_lpa(salary_str: str) -> Optional[float]:
     """
     min_lpa, _ = parse_salary_to_range(salary_str)
     return min_lpa
+
+
+def evaluate_salary_gate(
+    salary_text: Optional[str],
+    salary_max: Optional[float],
+    min_salary_lpa: Optional[float],
+) -> tuple[bool, Optional[str]]:
+    """
+    E5-R25: single source of truth for the disclosed-salary preference gate.
+
+    Shared by the MatchEngine deterministic filter, the final application
+    safety gate, decision-quality scoring, and the existing-job recovery stage
+    so no two pipeline stages can disagree about the same job.
+
+    Behavior:
+    - Unpaid / disclosed 0 LPA -> rejected ("Salary is unpaid...").
+    - Disclosed salary strictly below ``min_salary_lpa`` -> rejected.
+    - Disclosed salary at/above the minimum -> allowed.
+    - Missing, "Not disclosed", or genuinely ambiguous/malformed salary ->
+      allowed (never treated as a confirmed below-minimum value).
+
+    Returns ``(passed, reason)``; ``reason`` is None when passed.
+    """
+    # Unpaid safeguard: the normalized salary_max column is 0 for "Unpaid",
+    # and a parsed 0.0 LPA floor is the same disclosure.
+    parsed_low = extract_lowest_salary_lpa(salary_text) if salary_text else None
+    if salary_max == 0 or parsed_low == 0.0:
+        return False, "Salary is unpaid (disclosed 0 LPA)."
+
+    if parsed_low is not None and min_salary_lpa is not None:
+        if parsed_low < min_salary_lpa:
+            return False, (
+                f"Salary ({parsed_low} LPA) is below minimum {min_salary_lpa} LPA."
+            )
+
+    return True, None
 
 
 def extract_experience_years(exp_str: str) -> tuple[Optional[int], Optional[int]]:

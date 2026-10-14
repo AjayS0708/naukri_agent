@@ -17,11 +17,11 @@ from backend.schemas.application import (
 from backend.schemas.ai import JobAnalysis
 from backend.services.matching.normalizer import (
     has_overlapping_location,
-    extract_lowest_salary_lpa,
     extract_experience_years,
     is_employment_type_allowed,
     compute_profile_experience_years,
     normalize_naukri_url_for_comparison,
+    evaluate_salary_gate,
 )
 from backend.services.matching.engine import (
     experience_passes_fresher_rule,
@@ -238,16 +238,14 @@ class ApplicationService:
         if not is_strict_it_job(job, preference.it_industry_allowlist, preference.it_keyword_list):
             return False, "Industry/department/role category is not an allowed IT value or title has no IT keyword"
         
-        # 6. Salary minimum rule: treat salary_max == 0 (disclosed "Unpaid") as below minimum
-        # salary NULL/None (undisclosed) is NOT rejected
-        if job.salary_max == 0:
-            # Disclosed zero pay (unpaid) - always reject
-            return False, "Salary is unpaid (disclosed 0 LPA)"
-
-        if job.salary and preference.min_salary_lpa is not None:
-            salary_lpa = extract_lowest_salary_lpa(job.salary)
-            if salary_lpa is not None and salary_lpa < preference.min_salary_lpa:
-                return False, f"Salary ({salary_lpa} LPA) below minimum ({preference.min_salary_lpa} LPA)"
+        # 6. Salary minimum rule (E5-R25: shared gate — unpaid and
+        # disclosed-below-min reject; salary NULL/None (undisclosed) or
+        # genuinely ambiguous is NOT rejected).
+        salary_ok, salary_reason = evaluate_salary_gate(
+            job.salary, job.salary_max, preference.min_salary_lpa
+        )
+        if not salary_ok:
+            return False, salary_reason or "Salary does not meet the minimum preference."
         
         # 7. Employment type
         if job.employment_type and preference.employment_types:

@@ -15,10 +15,10 @@ from backend.services.ai_provider import AIProvider
 from backend.services.gemini.provider import GeminiProvider
 from backend.services.matching.normalizer import (
     has_overlapping_location,
-    extract_lowest_salary_lpa,
     extract_experience_years,
     is_employment_type_allowed,
     compute_profile_experience_years,
+    evaluate_salary_gate,
 )
 
 DEFAULT_IT_INDUSTRIES = (
@@ -638,24 +638,18 @@ class MatchEngine:
             )
         matched_rules.append("IT_SCOPE_CHECK")
 
-        # Salary Check
-        if job.salary_max == 0:
+        # Salary Check (E5-R25: shared gate — unpaid and disclosed-below-min
+        # reject; missing/undisclosed/ambiguous salary never rejects).
+        salary_ok, salary_reason = evaluate_salary_gate(
+            job.salary, job.salary_max, preference.min_salary_lpa
+        )
+        if not salary_ok:
             return MatchDecision(
                 decision=MatchDecisionEnum.SKIP,
-                reason="Salary is unpaid (disclosed 0 LPA).",
+                reason=salary_reason or "Salary does not meet the minimum preference.",
                 skip_reason=SkipReason.SALARY_BELOW_MINIMUM,
                 failed_rules=["SALARY"]
             )
-
-        salary_lpa = extract_lowest_salary_lpa(job.salary)
-        if salary_lpa is not None and preference.min_salary_lpa is not None:
-            if salary_lpa < preference.min_salary_lpa:
-                return MatchDecision(
-                    decision=MatchDecisionEnum.SKIP,
-                    reason=f"Salary ({salary_lpa} LPA) is below minimum {preference.min_salary_lpa} LPA.",
-                    skip_reason=SkipReason.SALARY_BELOW_MINIMUM,
-                    failed_rules=["SALARY"]
-                )
         matched_rules.append("SALARY_CHECK")
 
         # Employment type check
