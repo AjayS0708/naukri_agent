@@ -446,6 +446,9 @@ class AutonomousCycle:
         self.run_token = run_token
         self.state_manager = AgentStateManager()
         self.tracker = DecisionTracker()
+        # E5-R24: index into tracker.decisions where the candidate stage began,
+        # so only candidate-stage reasons are persisted with the run result.
+        self._candidate_tracker_start = 0
         self.applications_count = 0
         self.stop_reason: Optional[str] = None
         self.stop_is_normal = False
@@ -739,6 +742,7 @@ class AutonomousCycle:
             # Step 4: Run applications (E5-R10: no count cap)
             self._print("\n[4/5] Running applications...")
             app_stats = await self._run_applications(db, profile, preferences)
+            app_stats["candidate_decisions"] = self._candidate_stage_decisions()
             self._print(f"  Candidates: {app_stats['candidates']}")
             self._print(f"  Applied: {app_stats['applied']}")
             self._print(f"  Submitted (unconfirmed): {app_stats.get('submitted_unconfirmed', 0)}")
@@ -1033,8 +1037,15 @@ class AutonomousCycle:
             # E5-R22: jobs rejected by the shared relevance pre-filter before
             # they enter the candidate list / progress document.
             "relevance_rejected": 0,
+            # E5-R24: jobs that reach the candidate query but fail the same
+            # deterministic hard filters the enqueue stage already applied.
+            "hard_filtered_candidates": 0,
             "errors": [],
         }
+        # E5-R24: candidate-stage decision rows are the ones added to the
+        # shared tracker from here on; run_cycle persists them so the reasons
+        # survive the run instead of only reaching stdout.
+        self._candidate_tracker_start = len(self.tracker.decisions)
 
         # E5-R12: Include jobs without AI analysis that pass deterministic filters
         # as fallback candidates. This prevents blocking native jobs when Gemini quota
@@ -1099,9 +1110,55 @@ class AutonomousCycle:
                             "reason": role_reason,
                         },
                     )
+                    self.tracker.add_decision(
+                        job.id, job.company, job.title, "N/A",
+                        False, False, False,
+                        "N/A", role_reason, "RELEVANCE_REJECTED",
+                    )
                     continue
             relevant_jobs.append(job)
         eligible_jobs = relevant_jobs
+
+        # E5-R24: the enqueue stage already ran evaluate_job_deterministic on
+        # every job in this run, but the candidate query below never re-applied
+        # it. In run 86 that pulled 19 of 23 "candidates" into the apply loop
+        # only for the runner to skip them again, so the run reported 20 skips
+        # against 2 real attempts and the funnel looked like valid jobs were
+        # being rejected. Re-run the shared gate here so only jobs that can
+        # actually be attempted are counted as candidates.
+        if eligible_jobs and profile is not None and preferences is not None:
+            match_engine = MatchEngine(db)
+            attempts = []
+            for job in eligible_jobs:
+                decision = match_engine.evaluate_job_deterministic(
+                    job, profile, preferences
+                )
+                if decision.decision.value != "APPLY":
+                    stats["hard_filtered_candidates"] += 1
+                    failed = set(decision.failed_rules or [])
+                    self.tracker.add_decision(
+                        job.id, job.company, job.title, "N/A",
+                        "SALARY" not in failed,
+                        "EXPERIENCE" not in failed,
+                        "EMPLOYMENT_TYPE" not in failed,
+                        "N/A", decision.reason, "HARD_FILTERED",
+                    )
+                    logger.info(
+                        "e5_r24_hard_filtered_candidate",
+                        extra={
+                            "job_id": job.id,
+                            "title": job.title,
+                            "reason": decision.reason,
+                            "skip_reason": (
+                                decision.skip_reason.value
+                                if decision.skip_reason
+                                else None
+                            ),
+                        },
+                    )
+                    continue
+                attempts.append(job)
+            eligible_jobs = attempts
 
         stats["candidates"] = len(eligible_jobs)
 
@@ -1274,6 +1331,25 @@ class AutonomousCycle:
             return stats
         finally:
             await self._close_shared_runner()
+
+    def _candidate_stage_decisions(self) -> list[dict]:
+        """E5-R24: compact per-candidate decision rows for the run record.
+
+        DecisionTracker only ever printed its table, so a run's skip and
+        rejection reasons vanished with stdout. The cycle control row keeps
+        this trimmed slice (candidate stage only — enqueue's 176 hard-filter
+        rows stay out of the payload) as cycle_run_control.last_result.stats.
+        """
+        rows = self.tracker.decisions[self._candidate_tracker_start:]
+        return [
+            {
+                "job_id": row["job_id"],
+                "title": row["title"],
+                "outcome": row["outcome"],
+                "reason": row["gate_result"],
+            }
+            for row in rows
+        ]
 
     def _persist_progress(self) -> None:
         """E5-R21: publish the live progress document to the control row."""

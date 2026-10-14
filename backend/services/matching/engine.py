@@ -35,6 +35,11 @@ DEFAULT_IT_KEYWORDS = (
     # "ai" in "available" or "mis" in "permission".
     "artificial intelligence", "deep learning", "computer vision",
     "computational science", "nlp", "power bi", "business intelligence",
+    # E5-R24: a bare "Business Analyst" posting (jobs #392, #527) carries no
+    # structural IT signal, so the title-keyword fallback had to reject it
+    # even though the role is an explicit P1 target. Paired with
+    # CURATED_ROLE_FAMILIES so the scope gate and the title gate agree.
+    "business analyst",
     "site reliability", "sre", "mis analyst",
 )
 
@@ -69,11 +74,20 @@ CURATED_ROLE_FAMILIES = {
         "ai/ml", "ai engineer", "ai engineering", "machine learning",
         "deep learning", "artificial intelligence", "computational science",
         "computer vision", "nlp", "ml engineer", "ai and",
+        # E5-R24: "data scientist" / "mlops" are named P2 targets of
+        # interest_priority_rank but were missing here, so real postings
+        # titled "Data Scientist" (job #231) and "MLOps Engineer" (job #336)
+        # were rejected by the title gate before any other check ran.
+        # "data science" alone does not substring-match "data scientist".
+        "data scientist", "mlops",
     ],
     "cloud": ["cloud engineer", "cloud", "site reliability", "sre"],
     "data_ext": [
         "elk", "mis analyst", "mis executive", "business analytics",
         "business intelligence", "bi analyst", "bi developer",
+        # E5-R24: named P1 target of interest_priority_rank. Reached only via
+        # the unwanted-specialization scan before this (jobs #389-#393, #527).
+        "business analyst",
     ],
     "software_ext": [
         "solution engineer", "application developer", "full stack",
