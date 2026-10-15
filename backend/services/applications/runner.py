@@ -17,6 +17,7 @@ from backend.models.screening import PendingQuestion
 from backend.schemas.agent import AgentState
 from backend.services.agent_state import AgentStateManager
 from backend.services.applications.service import ApplicationService, SafetyGateError
+from backend.services.applications.protection import protected_job_ids
 from backend.services.applications.answer_memory import (
     ScreeningAnswerService,
     normalize_question,
@@ -68,6 +69,9 @@ class ApplicationRunner:
         self.ai_provider = GeminiProvider()
         self._stop_requested = False
         self._session_started = False
+        # E5-R28: real (non-dry-run) APPLICATION_STARTED rows created by the
+        # current run_applications() call; exposed as "attempts_started".
+        self._attempts_started = 0
         self.dry_run = dry_run
         self.supervise_form = supervise_form
         self.answer_questions = get_settings().answer_questions
@@ -158,6 +162,10 @@ class ApplicationRunner:
             "auth_required": 0,
             "dry_run": 0,
             "dry_run_mode": dry_run,
+            # E5-R28: real application attempts started (page reached and a
+            # non-dry-run APPLICATION_STARTED row written) — the difference
+            # between "candidates seen" and "attempts actually begun".
+            "attempts_started": 0,
         }
 
     async def run_applications(self, job_ids: list[int], dry_run: bool = False) -> dict:
@@ -181,6 +189,9 @@ class ApplicationRunner:
             return self._empty_stats(job_ids, dry_run)
 
         self._stop_requested = False
+        # E5-R28: fresh per-call attempt counter (the shared runner serves
+        # several run_applications() calls in one cycle).
+        self._attempts_started = 0
         stats = self._empty_stats(job_ids, dry_run)
 
         try:
@@ -259,6 +270,9 @@ class ApplicationRunner:
             if self.close_session_after_run:
                 await self.close_session()
 
+        # E5-R28: publish the attempt count for this call (paths that returned
+        # earlier never started an attempt, and _empty_stats already reports 0).
+        stats["attempts_started"] = self._attempts_started
         return stats
 
     def _return_to_idle_from_active(self) -> None:
@@ -415,6 +429,18 @@ class ApplicationRunner:
             ApplicationStatus.NEEDS_ATTENTION,
         ):
             logger.info(f"Job {job_id} has an unresolved prior attempt; manual reset required")
+            return "SKIPPED"
+
+        # E5-R28: shared application-history protection, in union with — never
+        # in place of — the latest-row guard above (the external/needs-
+        # attention guard keeps its semantics even when a SKIPPED row is the
+        # newest row). This stops a job whose history blocks a new attempt
+        # before any browser page is opened: the candidate stage can no longer
+        # hand such jobs over (shared predicate), but a direct runner call or
+        # a job written between candidate selection and execution must not
+        # slip through either.
+        if protected_job_ids(self.session, [job_id]):
+            logger.info(f"Job {job_id} has blocking application history; manual reset required")
             return "SKIPPED"
 
         # Open job page
@@ -578,6 +604,9 @@ class ApplicationRunner:
                         application_method=ApplicationMethod.NAUKRI_NATIVE,
                     ),
                 )
+                # E5-R28: a real attempt began only on the non-dry-run native
+                # path — dry runs inspect a form and never submit.
+                self._attempts_started += 1
 
             if self.dry_run:
                 self.dry_run_result = {

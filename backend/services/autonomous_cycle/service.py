@@ -26,16 +26,16 @@ from backend.database.database import SessionLocal
 from backend.services.agent_state import AgentStateManager
 from backend.services.discovery.service import DiscoveryService
 from backend.services.matching.engine import MatchEngine, job_relevance_check
+from backend.services.matching.normalizer import normalize_naukri_url_for_comparison
 from backend.services.gemini.queue import AIQueueService
 from backend.services.applications.runner import ApplicationRunner
 from backend.services.applications.service import ApplicationService
+from backend.services.applications.protection import protected_job_ids
 from backend.models.profile import Profile
 from backend.models.matching import JobPreference
 from backend.models.job import Job, utc_now
 from backend.models.ai import JobAnalysisModel
 from backend.models.ai_queue import AIQueueItem
-from backend.models.application import Application
-from backend.schemas.application import ApplicationStatus
 from backend.schemas.ai_queue import AIQueueStatus
 from backend.schemas.ai import JobAnalysis
 from backend.schemas.agent import AgentState
@@ -467,6 +467,13 @@ class AutonomousCycle:
         # E5-R25: job IDs selected by the existing-job recovery stage; merged
         # into the apply-loop candidate set after the current-run filter.
         self._recovery_job_ids: list[int] = []
+        # E5-R28: the mode-reverification subset of the recovery selection, so
+        # the apply loop can report what the live re-verification produced.
+        self._recovery_reverify_job_ids: list[int] = []
+        # E5-R28: raw ApplicationRunner stats of the most recent per-job
+        # run_applications() call, keyed by job ID, so the apply loop can sum
+        # attempts_started into its own diagnostics.
+        self._last_runner_results: dict[int, dict] = {}
         self.applications_count = 0
         self.stop_reason: Optional[str] = None
         self.stop_is_normal = False
@@ -777,6 +784,22 @@ class AutonomousCycle:
             self._print(f"  Skipped: {app_stats['skipped']}")
             self._print(f"  External: {app_stats['external']}")
             self._print(f"  Needs attention: {app_stats['needs_attention']}")
+            self._print(f"  Runner entries: {app_stats.get('runner_entries', 0)}")
+            self._print(f"  Attempts started: {app_stats.get('attempted_applications', 0)}")
+            if app_stats.get("protected_excluded"):
+                self._print(
+                    f"  Blocked by application history: {app_stats['protected_excluded']}"
+                )
+            if app_stats.get("zero_candidate_reason"):
+                self._print(f"  {app_stats['zero_candidate_reason']}")
+            if app_stats.get("mode_reverify_attempted"):
+                self._print(
+                    "  Mode re-verify: "
+                    f"{app_stats['mode_reverify_attempted']} attempted, "
+                    f"{app_stats['mode_reverify_upgraded_native']} native-confirmed, "
+                    f"{app_stats['mode_reverify_external_evidence']} external-proven, "
+                    f"{app_stats['mode_reverify_remaining_ambiguous']} still ambiguous"
+                )
 
             # Step 5: Print summary
             self._print("\n[5/5] Cycle complete")
@@ -801,6 +824,21 @@ class AutonomousCycle:
             self._print(f"External: {app_stats['external']}")
             self._print(f"Needs attention: {app_stats['needs_attention']}")
             self._print(f"Failed: {app_stats['failed']}")
+            self._print(f"Runner entries: {app_stats.get('runner_entries', 0)}")
+            self._print(f"Attempts started: {app_stats.get('attempted_applications', 0)}")
+            self._print(
+                f"Blocked by application history: {app_stats.get('protected_excluded', 0)}"
+            )
+            if app_stats.get("zero_candidate_reason"):
+                self._print(f"Zero-candidate reason: {app_stats['zero_candidate_reason']}")
+            if app_stats.get("mode_reverify_attempted"):
+                self._print(
+                    "Mode re-verify: "
+                    f"attempted={app_stats['mode_reverify_attempted']} "
+                    f"native={app_stats['mode_reverify_upgraded_native']} "
+                    f"external={app_stats['mode_reverify_external_evidence']} "
+                    f"ambiguous={app_stats['mode_reverify_remaining_ambiguous']}"
+                )
             self._print("=" * 60)
 
             if self.stop_reason:
@@ -845,34 +883,73 @@ class AutonomousCycle:
         unless a later search re-listed it. This stage re-scans the existing
         corpus under the *current* preferences and filter rules:
 
-        - Same protections as the candidate query: jobs with any application
-          row other than SKIPPED (APPLIED / SUBMITTED / NEEDS_ATTENTION /
-          EXTERNAL_APPLICATION / in-flight rows) are never recovered.
-        - Same canonical identity: rows are reused; no job or application
-          record is created here.
+        - Same protections as the candidate query (E5-R28 shared predicate):
+          a job whose application history blocks a new attempt (APPLIED /
+          SUBMITTED / NEEDS_ATTENTION / in-flight rows — even alongside a
+          SKIPPED row, the Run 88 job-#81 case) is never recovered.
+        - Same canonical identity (E5-R28): rows are reused; no job or
+          application record is created here. Duplicate URLs collapse to the
+          freshest row before any budget is spent (Run 88: 552 of 561 scanned
+          cards were duplicates) and a NAUKRI_NATIVE row always wins over an
+          ambiguous twin of the same posting.
+        - Eligibility BEFORE budget (E5-R28): dedup, protection, unsupported
+          URL, relevance and hard-filter gates all run before the per-run
+          caps, so an ineligible fresher row can never consume a slot an
+          eligible job needs (Run 88: job #503 ranked 65th by freshness while
+          the raw 40-row slice was spent on rows the gates then rejected).
+        - Ambiguous / null mode is its own pool (E5-R28): AMBIGUOUS, NULL,
+          empty and literal-"NULL" rows are recovered only as bounded mode
+          re-verification candidates — including rows from the *current* run,
+          which the old current-run exclusion stranded outside both this pool
+          and the native-only candidate query. The runner re-detects the live
+          page with evidence and never forces a native Apply without a
+          visible Apply control.
         - Current rules only: relevance gate + evaluate_job_deterministic,
           so a stale decision is never blindly revived and a job that no
           longer passes (e.g. newly disclosed salary below the minimum) is
           filtered again.
-        - EXTERNAL-mode jobs are excluded (stored positive destination
-          evidence). NAUKRI_NATIVE jobs are recovered directly; AMBIGUOUS /
-          NULL-mode jobs are recovered only as bounded mode-reverification
-          candidates — the runner re-detects the live page with evidence and
-          never forces a native Apply without a visible Apply control.
+        - EXTERNAL-mode jobs are never recovered (stored positive destination
+          evidence). NAUKRI_NATIVE jobs are recovered directly (up to
+          MAX_RECOVERY_JOBS_PER_RUN); ambiguous / null jobs only up to
+          MAX_RECOVERY_MODE_REVERIFY_PER_RUN, with the 72-hour cooldown
+          applied to that pool alone — never to native jobs.
         - No AI-queue enqueue: recovered jobs without a completed analysis
           use the existing deterministic-fallback path in _process_single_job
           (E5-R12), so recovery consumes no Gemini quota.
+
+        Every gate reports its own counter, so a zero-selection run can state
+        exactly where the pool went (E5-R28 diagnostics).
         """
         stats = {
             "recovery_candidates": 0,
             "recovery_native": 0,
             "recovery_mode_reverify": 0,
+            # Legacy funnel counter (existing tests/dashboards): relevance +
+            # hard-filter rejections combined.
             "recovery_filtered": 0,
+            # E5-R28 diagnostics: raw pool and per-gate attrition.
+            "recovery_pool_raw": 0,
+            "recovery_excluded_duplicate": 0,
+            "recovery_excluded_protected": 0,
+            "recovery_excluded_cooldown": 0,
+            "recovery_excluded_unsupported": 0,
+            "recovery_relevance_rejected": 0,
+            "recovery_hard_filtered": 0,
+            "recovery_hard_filtered_reasons": {},
+            "recovery_eligible_before_cap": 0,
+            "recovery_selected_after_cap": 0,
         }
         self._recovery_job_ids = []
+        self._recovery_reverify_job_ids = []
 
-        # Exclude jobs already handled by the current discovery run; those
-        # flow through the normal enqueue path.
+        def _mode(job: Job) -> str:
+            return (getattr(job, "application_mode", None) or "").strip().upper()
+
+        # Exclude jobs already handled by the current discovery run from the
+        # native pool; those flow through the normal enqueue path. The
+        # ambiguous/null pool deliberately keeps current-run rows: a
+        # current-run AMBIGUOUS job is excluded from the native-only
+        # candidate query, so without this it could never be re-verified.
         current_run_ids: set[int] = set()
         if self.current_discovery_run and self.current_discovery_run.current_run_job_ids:
             try:
@@ -884,53 +961,91 @@ class AutonomousCycle:
             except (ValueError, AttributeError):
                 current_run_ids = set()
 
-        # Application protection: no row, or only SKIPPED rows (identical to
-        # the apply-loop candidate query).
-        blocking_app = select(Application.id).where(
-            Application.job_id == Job.id,
-            Application.status != ApplicationStatus.SKIPPED.value,
-        )
-
-        stmt = select(Job).where(~blocking_app.exists()).where(
-            or_(
-                Job.application_mode == "NAUKRI_NATIVE",
-                Job.application_mode == "AMBIGUOUS",
-                Job.application_mode.is_(None),
-            )
-        )
+        # Pool N: NAUKRI_NATIVE jobs outside the current run.
+        native_stmt = select(Job).where(Job.application_mode == "NAUKRI_NATIVE")
         if current_run_ids:
-            stmt = stmt.where(Job.id.notin_(current_run_ids))
+            native_stmt = native_stmt.where(Job.id.notin_(current_run_ids))
+        native_pool = list(db.execute(native_stmt).scalars().all())
 
-        # Cooldown for ambiguous / unclassified re-verification: a job whose
-        # live page was already re-checked recently and stayed ambiguous is
-        # skipped so the per-run page-visit budget reaches the rest of the
-        # backlog instead of re-visiting the same postings forever.
-        cooldown_cutoff = utc_now() - RECOVERY_MODE_REVERIFY_COOLDOWN
-        stmt = stmt.where(
+        # Pool R: unclassified modes (AMBIGUOUS / NULL / empty / literal
+        # "NULL") from the current run AND outside it; EXTERNAL-mode rows
+        # never enter recovery. The SQL prefilter uses notin_ because NULL
+        # comparisons yield NULL, and the Python pass classifies rows exactly
+        # like the runner's stored-mode check (.strip().upper()).
+        reverify_stmt = select(Job).where(
             or_(
-                Job.application_mode == "NAUKRI_NATIVE",
-                Job.mode_reverified_at.is_(None),
-                Job.mode_reverified_at < cooldown_cutoff,
+                Job.application_mode.is_(None),
+                Job.application_mode.notin_(("NAUKRI_NATIVE", "EXTERNAL")),
             )
         )
+        reverify_pool = [
+            job
+            for job in db.execute(reverify_stmt).scalars().all()
+            if _mode(job) in ("", "AMBIGUOUS", "NULL")
+        ]
+        stats["recovery_pool_raw"] = len(native_pool) + len(reverify_pool)
 
-        jobs = db.execute(stmt).scalars().all()
+        # Canonical-identity dedup before any budget is spent. Pools are
+        # walked freshest-first so the surviving twin is the freshest
+        # posting; a re-verify row whose canonical URL already has a native
+        # row is a duplicate of a posting that already carries native
+        # evidence. Rows without a parseable URL cannot be proven duplicate
+        # and survive to the unsupported-URL gate.
+        native_kept: dict[str, Job] = {}
+        native_unkeyed: list[Job] = []
+        for job in sorted(native_pool, key=job_freshness_key):
+            key = normalize_naukri_url_for_comparison(job.url)
+            if not key:
+                native_unkeyed.append(job)
+            elif key in native_kept:
+                stats["recovery_excluded_duplicate"] += 1
+            else:
+                native_kept[key] = job
 
-        def _mode(job: Job) -> str:
-            return (getattr(job, "application_mode", None) or "").strip().upper()
+        reverify_kept: dict[str, Job] = {}
+        reverify_unkeyed: list[Job] = []
+        for job in sorted(reverify_pool, key=job_freshness_key):
+            key = normalize_naukri_url_for_comparison(job.url)
+            if not key:
+                reverify_unkeyed.append(job)
+            elif key in native_kept or key in reverify_kept:
+                stats["recovery_excluded_duplicate"] += 1
+            else:
+                reverify_kept[key] = job
 
-        native_jobs = [j for j in jobs if _mode(j) == "NAUKRI_NATIVE"]
-        reverify_jobs = [j for j in jobs if _mode(j) != "NAUKRI_NATIVE"]
-        native_jobs.sort(key=job_freshness_key)
-        reverify_jobs.sort(key=job_freshness_key)
-        native_jobs = native_jobs[:MAX_RECOVERY_JOBS_PER_RUN]
-        reverify_jobs = reverify_jobs[:MAX_RECOVERY_MODE_REVERIFY_PER_RUN]
+        native_jobs = list(native_kept.values()) + native_unkeyed
+        reverify_jobs = list(reverify_kept.values()) + reverify_unkeyed
+
+        # Application protection: the exact rule the apply-loop candidate
+        # query uses (E5-R28 shared predicate), evaluated in bulk over both
+        # pools so recovery can never reintroduce a protected job.
+        protected_ids = protected_job_ids(
+            db, [job.id for job in native_jobs] + [job.id for job in reverify_jobs]
+        )
+        if protected_ids:
+            stats["recovery_excluded_protected"] = len(protected_ids)
+            native_jobs = [j for j in native_jobs if j.id not in protected_ids]
+            reverify_jobs = [j for j in reverify_jobs if j.id not in protected_ids]
+
+        # A posting without a usable URL cannot be re-visited by the runner
+        # (there is nothing to open), so it is reported here instead of
+        # failing later at apply time.
+        def _supported(pool: list[Job]) -> list[Job]:
+            kept = [j for j in pool if (j.url or "").strip()]
+            stats["recovery_excluded_unsupported"] += len(pool) - len(kept)
+            return kept
+
+        native_jobs = _supported(native_jobs)
+        reverify_jobs = _supported(reverify_jobs)
 
         match_engine = MatchEngine(db)
         allowed_titles = getattr(preferences, "job_titles", None)
 
-        for bucket_name, bucket in (("native", native_jobs), ("mode_reverify", reverify_jobs)):
-            for job in bucket:
+        def _gates(pool: list[Job]) -> list[Job]:
+            """Relevance gate then deterministic hard filters (Run 88 defect A:
+            these gates must run BEFORE the per-run caps, never after)."""
+            eligible: list[Job] = []
+            for job in pool:
                 role_ok, role_reason = job_relevance_check(
                     job.title,
                     allowed_titles,
@@ -939,6 +1054,7 @@ class AutonomousCycle:
                     description=job.description,
                 )
                 if not role_ok:
+                    stats["recovery_relevance_rejected"] += 1
                     stats["recovery_filtered"] += 1
                     self.tracker.add_decision(
                         job.id, job.company, job.title, "N/A",
@@ -951,8 +1067,13 @@ class AutonomousCycle:
                     job, profile, preferences
                 )
                 if decision.decision.value != "APPLY":
+                    stats["recovery_hard_filtered"] += 1
                     stats["recovery_filtered"] += 1
                     failed = set(decision.failed_rules or [])
+                    for rule in sorted(failed):
+                        stats["recovery_hard_filtered_reasons"][rule] = (
+                            stats["recovery_hard_filtered_reasons"].get(rule, 0) + 1
+                        )
                     self.tracker.add_decision(
                         job.id, job.company, job.title, "N/A",
                         "SALARY" not in failed,
@@ -963,26 +1084,73 @@ class AutonomousCycle:
                         "RECOVERY_FILTERED",
                     )
                     continue
+                eligible.append(job)
+            return eligible
 
-                self._recovery_job_ids.append(job.id)
-                stats["recovery_candidates"] += 1
-                if bucket_name == "native":
-                    stats["recovery_native"] += 1
-                else:
-                    stats["recovery_mode_reverify"] += 1
-                self.tracker.add_decision(
-                    job.id, job.company, job.title, "N/A",
-                    True, True, True, "N/A",
-                    "Recovery selected (existing eligible job, current rules)",
-                    "RECOVERED",
-                )
+        native_eligible = _gates(native_jobs)
+        reverify_eligible = _gates(reverify_jobs)
 
-        if stats["recovery_candidates"]:
+        # Cooldown for ambiguous / unclassified re-verification: a job whose
+        # live page was already re-checked recently and stayed ambiguous is
+        # skipped so the per-run page-visit budget reaches the rest of the
+        # backlog instead of re-visiting the same postings forever. Native
+        # jobs are never cooled — they carry stored native evidence and were
+        # never re-verified. Timestamps compare through _timestamp so naive
+        # SQLite datetimes never raise against the aware cutoff.
+        cooldown_cutoff = _timestamp(utc_now() - RECOVERY_MODE_REVERIFY_COOLDOWN)
+        cooled: list[Job] = []
+        for job in reverify_eligible:
+            if (
+                job.mode_reverified_at is not None
+                and _timestamp(job.mode_reverified_at) >= cooldown_cutoff
+            ):
+                stats["recovery_excluded_cooldown"] += 1
+                continue
+            cooled.append(job)
+        reverify_eligible = cooled
+
+        # Budget last: freshest eligible rows first (Run 88 defect A — the
+        # caps slice an already-gated, already-sorted pool).
+        native_eligible.sort(key=job_freshness_key)
+        reverify_eligible.sort(key=job_freshness_key)
+        stats["recovery_eligible_before_cap"] = (
+            len(native_eligible) + len(reverify_eligible)
+        )
+        native_selected = native_eligible[:MAX_RECOVERY_JOBS_PER_RUN]
+        reverify_selected = reverify_eligible[:MAX_RECOVERY_MODE_REVERIFY_PER_RUN]
+
+        for job in native_selected:
+            self._recovery_job_ids.append(job.id)
+        for job in reverify_selected:
+            self._recovery_job_ids.append(job.id)
+            self._recovery_reverify_job_ids.append(job.id)
+
+        stats["recovery_native"] = len(native_selected)
+        stats["recovery_mode_reverify"] = len(reverify_selected)
+        stats["recovery_candidates"] = len(native_selected) + len(reverify_selected)
+        stats["recovery_selected_after_cap"] = stats["recovery_candidates"]
+
+        for job in [*native_selected, *reverify_selected]:
+            self.tracker.add_decision(
+                job.id, job.company, job.title, "N/A",
+                True, True, True, "N/A",
+                "Recovery selected (existing eligible job, current rules)",
+                "RECOVERED",
+            )
+
+        if stats["recovery_pool_raw"] or stats["recovery_candidates"]:
             self._print(
-                f"  Recovery: {stats['recovery_candidates']} existing eligible job(s) "
+                f"  Recovery: pool={stats['recovery_pool_raw']} "
+                f"eligible={stats['recovery_eligible_before_cap']} "
+                f"selected={stats['recovery_candidates']} "
                 f"(native={stats['recovery_native']}, "
-                f"mode_reverify={stats['recovery_mode_reverify']}, "
-                f"filtered={stats['recovery_filtered']})"
+                f"mode_reverify={stats['recovery_mode_reverify']}); "
+                f"excluded duplicate={stats['recovery_excluded_duplicate']} "
+                f"protected={stats['recovery_excluded_protected']} "
+                f"cooldown={stats['recovery_excluded_cooldown']} "
+                f"unsupported={stats['recovery_excluded_unsupported']}; "
+                f"filtered relevance={stats['recovery_relevance_rejected']} "
+                f"hard={stats['recovery_hard_filtered']}"
             )
         return stats
 
@@ -993,7 +1161,7 @@ class AutonomousCycle:
         stats = {
             "discovered": 0, "hard_filtered": 0, "queued": 0,
             "skipped_experience": 0, "skipped_non_it": 0, "capped": 0,
-            "pre_analyzed": 0, "errors": [],
+            "pre_analyzed": 0, "protected_excluded": 0, "errors": [],
         }
 
         # Get discovered jobs ONLY from the current discovery run
@@ -1026,6 +1194,14 @@ class AutonomousCycle:
         if not jobs:
             return stats
 
+        # E5-R28: application-history protection at the enqueue stage. A job
+        # whose rows block a new attempt (APPLIED / SUBMITTED /
+        # NEEDS_ATTENTION / in-flight — the same shared predicate the
+        # candidate query and recovery stage use) never reaches the AI queue,
+        # so it spends no Gemini quota and is reported here instead of being
+        # skipped late by the runner's manual-reset guard.
+        protected_ids = protected_job_ids(db, [job.id for job in jobs])
+
         match_engine = MatchEngine(db)
         ai_queue_service = AIQueueService(db)
 
@@ -1045,6 +1221,16 @@ class AutonomousCycle:
                 stats["hard_filtered"] += 1
                 self.tracker.add_decision(
                     job.id, job.company, job.title, "EXCLUDED", False, False, False, "N/A", "N/A", "EXCLUDED"
+                )
+                continue
+
+            if job.id in protected_ids:
+                stats["protected_excluded"] += 1
+                self.tracker.add_decision(
+                    job.id, job.company, job.title, "N/A", False, False, False,
+                    "N/A",
+                    "Application history blocks a new attempt (manual reset required)",
+                    "PROTECTED",
                 )
                 continue
 
@@ -1240,12 +1426,28 @@ class AutonomousCycle:
             # E5-R24: jobs that reach the candidate query but fail the same
             # deterministic hard filters the enqueue stage already applied.
             "hard_filtered_candidates": 0,
+            # E5-R28: in-scope, mode-eligible jobs blocked by application
+            # history (shared protection predicate) — counted so a zero-
+            # candidate run explains itself instead of only showing 0.
+            "protected_excluded": 0,
+            # E5-R28: funnel diagnostics — jobs handed to the runner, real
+            # application attempts started, and what the live mode
+            # re-verification of ambiguous/null recovery jobs produced.
+            "runner_entries": 0,
+            "attempted_applications": 0,
+            "mode_reverify_attempted": 0,
+            "mode_reverify_upgraded_native": 0,
+            "mode_reverify_external_evidence": 0,
+            "mode_reverify_remaining_ambiguous": 0,
             "errors": [],
         }
         # E5-R24: candidate-stage decision rows are the ones added to the
         # shared tracker from here on; run_cycle persists them so the reasons
         # survive the run instead of only reaching stdout.
         self._candidate_tracker_start = len(self.tracker.decisions)
+        # E5-R28: per-job runner stats collected by _process_single_job during
+        # this call only.
+        self._last_runner_results = {}
 
         # E5-R12: Include jobs without AI analysis that pass deterministic filters
         # as fallback candidates. This prevents blocking native jobs when Gemini quota
@@ -1253,19 +1455,22 @@ class AutonomousCycle:
         # E5-R13: Restrict to NAUKRI_NATIVE jobs only for this recovery path.
         # EXTERNAL, AMBIGUOUS, and NULL application_mode jobs are excluded to prevent
         # external applications during native-only recovery.
-        stmt = select(Job).outerjoin(
-            JobAnalysisModel, Job.id == JobAnalysisModel.job_id
-        ).outerjoin(
-            Application, Application.job_id == Job.id
-        ).where(
-            (Application.id == None) | (Application.status == ApplicationStatus.SKIPPED.value)
-        ).distinct()
+        # E5-R28: application-history protection no longer rides on the
+        # Application outer join. The legacy *per-row* predicate
+        # `(Application.id == None) | (Application.status == SKIPPED)` matched
+        # a job that had a SKIPPED row *and* an unresolved NEEDS_ATTENTION or
+        # APPLIED row (run 88, job #81) because every joined row was evaluated
+        # alone. The shared job-level predicate is applied after the fetch
+        # instead, which also lets this run report how many in-scope jobs
+        # protection removed (`protected_excluded`).
+        stmt = select(Job)
 
         # E5-R25: mode filter. Current-run jobs keep the R13 NAUKRI_NATIVE
-        # restriction; recovery jobs (never EXTERNAL, protected by the same
-        # application filter above) may also be AMBIGUOUS / NULL-mode — they
-        # enter only for a live mode re-verification by the runner, which
-        # never forces native without an Apply-button evidence.
+        # restriction; recovery jobs (never EXTERNAL, and protected by the
+        # shared application-history rule evaluated after the fetch) may also
+        # be AMBIGUOUS / NULL-mode — they enter only for a live mode
+        # re-verification by the runner, which never forces native without an
+        # Apply-button evidence.
         recovery_ids = list(self._recovery_job_ids or [])
         mode_filter = Job.application_mode == 'NAUKRI_NATIVE'
         if recovery_ids:
@@ -1281,6 +1486,9 @@ class AutonomousCycle:
                 stmt = stmt.where(id_filter)
             except (ValueError, AttributeError):
                 self._print("WARNING: Failed to parse current_run_job_ids, returning no application candidates")
+                stats["zero_candidate_reason"] = (
+                    "0 candidates: current_run_job_ids could not be parsed"
+                )
                 return stats
         elif recovery_ids:
             # E5-R25: a run with no new discovery job IDs can still process
@@ -1288,12 +1496,33 @@ class AutonomousCycle:
             stmt = stmt.where(Job.id.in_(recovery_ids))
         else:
             self._print("WARNING: No current discovery run or current_run_job_ids, returning no application candidates")
+            stats["zero_candidate_reason"] = (
+                "0 candidates: no current discovery run and no recovery backlog"
+            )
             return stats
 
-        if self.max_jobs:
-            stmt = stmt.limit(self.max_jobs)
-
         eligible_jobs = db.execute(stmt).scalars().all()
+
+        # E5-R28: shared application-history protection, evaluated per job on
+        # the bounded in-scope id set (one query). Protected jobs never enter
+        # the candidate count, the progress document, or the apply loop; they
+        # are counted and given a decision row instead of surfacing later as a
+        # runner skip.
+        protected_ids = protected_job_ids(db, [job.id for job in eligible_jobs])
+        if protected_ids:
+            stats["protected_excluded"] = len(protected_ids)
+            for job in eligible_jobs:
+                if job.id in protected_ids:
+                    self.tracker.add_decision(
+                        job.id, job.company, job.title, "N/A",
+                        False, False, False, "N/A",
+                        "Application history blocks a new attempt (manual reset required)",
+                        "PROTECTED",
+                    )
+            eligible_jobs = [j for j in eligible_jobs if j.id not in protected_ids]
+
+        if self.max_jobs:
+            eligible_jobs = eligible_jobs[:self.max_jobs]
 
         # E5-R22: pre-filter candidates through the shared relevance gate
         # before they enter the progress document or the apply loop. Without
@@ -1379,6 +1608,27 @@ class AutonomousCycle:
         stats["candidates"] = len(eligible_jobs)
 
         if not eligible_jobs:
+            # E5-R28: a zero-candidate run must say why — "0" alone was
+            # indistinguishable between an empty scope, protected history,
+            # and filters that rejected everything in scope.
+            reasons = []
+            if stats["protected_excluded"]:
+                reasons.append(
+                    f"{stats['protected_excluded']} blocked by application history"
+                )
+            if stats["relevance_rejected"]:
+                reasons.append(
+                    f"{stats['relevance_rejected']} rejected by relevance"
+                )
+            if stats["hard_filtered_candidates"]:
+                reasons.append(
+                    f"{stats['hard_filtered_candidates']} failed hard filters"
+                )
+            stats["zero_candidate_reason"] = (
+                "0 candidates: " + ", ".join(reasons)
+                if reasons
+                else "0 candidates: no jobs in scope"
+            )
             return stats
 
         # E5-R10B: order candidates identically to enqueue — interest tier,
@@ -1462,12 +1712,19 @@ class AutonomousCycle:
             except Exception as exc:
                 logger.warning(f"Pre-run application-history reconciliation skipped: {exc}")
 
+        # E5-R28: what the live mode re-verification produced for ambiguous /
+        # null recovery jobs. Computed in the finally block below so an early
+        # stop still reports what actually ran.
+        reverify_ids = set(self._recovery_reverify_job_ids or [])
+        processed_ids: list[int] = []
+
         try:
             for job in eligible_jobs:
                 # E5-R15: never begin a new application after Stop is requested.
                 if self._check_cancellation(f"before job {job.id}"):
                     stats["stop_reason"] = self.stop_reason
                     return stats
+                stats["runner_entries"] += 1
                 self._run_progress.update(
                     {
                         "current_job_id": job.id,
@@ -1481,6 +1738,19 @@ class AutonomousCycle:
                 self._persist_progress()
                 try:
                     result = await self._process_single_job(db, job, profile, preferences)
+                    # E5-R28: the runner's own stats for this job (recorded by
+                    # _process_single_job) feed the run-level funnel: how many
+                    # candidates reached the browser and how many produced a
+                    # real, non-dry-run application attempt.
+                    processed_ids.append(job.id)
+                    runner_result = self._last_runner_results.get(job.id)
+                    if runner_result:
+                        try:
+                            stats["attempted_applications"] += int(
+                                runner_result.get("attempts_started", 0) or 0
+                            )
+                        except (TypeError, ValueError):
+                            pass
 
                     # E5-R16: an AUTH/SECURITY blocker observed while processing a
                     # job stops the whole run — it must not be counted as an
@@ -1546,7 +1816,42 @@ class AutonomousCycle:
 
             return stats
         finally:
+            try:
+                self._apply_mode_reverify_diagnostics(
+                    db, stats, processed_ids, reverify_ids
+                )
+            except Exception as exc:  # diagnostics must never fail a run
+                logger.warning(f"Mode re-verification diagnostics failed: {exc}")
             await self._close_shared_runner()
+
+    def _apply_mode_reverify_diagnostics(
+        self,
+        db: Session,
+        stats: dict,
+        processed_ids: list[int],
+        reverify_ids: set[int],
+    ) -> None:
+        """E5-R28: report what the live mode re-verification produced.
+
+        For every processed candidate that entered the recovery re-verify
+        pool: how many were attempted, how many were upgraded to
+        NAUKRI_NATIVE from positive live evidence, how many proved EXTERNAL
+        with a destination URL, and how many are still ambiguous after the
+        visit. Only counts are read — no job row is written here.
+        """
+        attempted = [job_id for job_id in processed_ids if job_id in reverify_ids]
+        stats["mode_reverify_attempted"] = len(attempted)
+        if not attempted:
+            return
+        rows = db.execute(select(Job).where(Job.id.in_(attempted))).scalars().all()
+        for job in rows:
+            mode = (job.application_mode or "").strip().upper()
+            if mode == "NAUKRI_NATIVE":
+                stats["mode_reverify_upgraded_native"] += 1
+            elif mode == "EXTERNAL":
+                stats["mode_reverify_external_evidence"] += 1
+            else:
+                stats["mode_reverify_remaining_ambiguous"] += 1
 
     def _candidate_stage_decisions(self) -> list[dict]:
         """E5-R24: compact per-candidate decision rows for the run record.
@@ -1788,6 +2093,10 @@ class AutonomousCycle:
         # runner that owns its own session.
         runner = self._runner or ApplicationRunner(db, self.state_manager, dry_run=self.dry_run)
         app_results = await runner.run_applications([job.id], dry_run=self.dry_run)
+        # E5-R28: keep the raw runner stats for this job so _run_applications
+        # can aggregate attempts_started across candidates.
+        if isinstance(app_results, dict):
+            self._last_runner_results[job.id] = app_results
 
         # E5-R16: a logged-out session is an authentication outcome, not an
         # error and not an application-mode decision.

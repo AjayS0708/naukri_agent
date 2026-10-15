@@ -551,19 +551,21 @@ class SchedulerService:
         }
 
         try:
-            # Find jobs with completed AI analysis that haven't been applied yet
-            from backend.models.application import Application
-            from backend.schemas.application import ApplicationStatus
+            # Find jobs with completed AI analysis that haven't been applied yet.
+            # E5-R28: the shared job-level protection predicate replaces the
+            # legacy per-row `(Application.id == None) | (status == SKIPPED)`
+            # filter, which let a job with a SKIPPED row *and* an unresolved
+            # attempt (the run-88 job-#81 class) count as eligible here too.
+            from backend.services.applications.protection import (
+                protected_from_candidate_selection,
+            )
 
             stmt = select(Job).where(
                 Job.id.in_(
                     select(JobAnalysisModel.job_id)
                 )
-            ).outerjoin(
-                Application, Application.job_id == Job.id
             ).where(
-                (Application.id == None) |  # Not yet applied
-                (Application.status == ApplicationStatus.SKIPPED.value)  # Previously skipped
+                ~protected_from_candidate_selection()
             ).order_by(Job.discovered_at.desc())
 
             eligible_jobs = db.execute(stmt).scalars().all()
