@@ -139,11 +139,18 @@ async def stop_autonomous_cycle(
 async def get_autonomous_cycle_status(db: Session = Depends(get_db)) -> AutonomousCycleStatusResponse:
     """Read runtime diagnostics only; this endpoint cannot start a cycle."""
     snapshot = coordinator.snapshot(db=db)
+    last_run = _run_response_from(snapshot["last_run"])
+    # E5-R29: the shared control row also stores manual-apply and scheduled
+    # runs; the autonomous-cycle panel only reports actual autonomous cycles.
+    if last_run is not None:
+        run_kind = (last_run.stats or {}).get("run_kind", "AUTONOMOUS")
+        if run_kind != "AUTONOMOUS":
+            last_run = None
     return AutonomousCycleStatusResponse(
         active_state=snapshot["active_state"],
         lock_held=snapshot["lock_held"],
         active_run=_run_response_from(snapshot["active_run"]),
-        last_run=_run_response_from(snapshot["last_run"]),
+        last_run=last_run,
     )
 
 

@@ -169,6 +169,9 @@ export interface CycleProgress {
   jobs_new?: number;
   jobs_duplicate?: number;
   status?: string | null;
+  // E5-R29: heartbeat stamped server-side on every progress write so the UI
+  // can detect a running-but-stalled cycle (no heartbeat movement).
+  progress_updated_at?: string | null;
 }
 
 export interface PendingQuestion {
@@ -261,4 +264,71 @@ export interface JobListItem {
 export interface JobsListResponse {
   jobs: JobListItem[];
   total: number;
+}
+
+// ── Manual Apply Queue types (Checkpoint E5-R29) ─────────────────────────────
+
+export interface ManualApplyEligibleItem {
+  job_id: number;
+  title: string;
+  company: string;
+  location: string | null;
+  experience: string | null;
+  application_mode: string | null;
+  discovered_at: string | null;
+  application_status: string | null;
+  eligible: boolean;
+  exclusion_reason: string | null;
+}
+
+export interface ManualApplyEligibleResponse {
+  items: ManualApplyEligibleItem[];
+  total: number;
+  eligible_count: number;
+  profile_confirmed: boolean;
+  preferences_present: boolean;
+}
+
+export interface ManualApplyStartRequest {
+  job_ids: number[];
+  dry_run?: boolean;
+}
+
+export interface ManualApplyStartResponse {
+  status: string;
+  run_token: string | null;
+  accepted_job_ids: number[];
+  dropped_job_ids: number[];
+  message: string;
+}
+
+export interface ManualApplyStopRequest {
+  run_token?: string | null;
+}
+
+export interface ManualApplyStopResponse {
+  cancel_requested: boolean;
+  active_state: string;
+  message: string;
+}
+
+export interface ManualApplyRunSummary {
+  run_token: string | null;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  stats: Record<string, unknown>;
+  error: string | null;
+  progress: Record<string, unknown> | null;
+  waiting_for_user: boolean;
+  waiting_for_question_id: number | null;
+  cancel_requested: boolean;
+}
+
+export interface ManualApplyStatusResponse {
+  active_state: string;
+  lock_held: boolean;
+  active_run: ManualApplyRunSummary | null;
+  last_manual_run: ManualApplyRunSummary | null;
+  pending_question_available: boolean;
 }

@@ -240,7 +240,11 @@ class CycleCoordinator:
                 return
             if row.status not in ("RUNNING", "CANCELLING"):
                 return
-            row.progress = dict(progress)
+            progress = dict(progress)
+            # E5-R29: heartbeat timestamp so the dashboard can distinguish
+            # "running with moving progress" from "running but stalled".
+            progress["progress_updated_at"] = datetime.now(UTC).isoformat()
+            row.progress = progress
             db.commit()
         finally:
             if owns_session:

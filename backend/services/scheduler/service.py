@@ -551,50 +551,86 @@ class SchedulerService:
         }
 
         try:
-            # Find jobs with completed AI analysis that haven't been applied yet.
-            # E5-R28: the shared job-level protection predicate replaces the
-            # legacy per-row `(Application.id == None) | (status == SKIPPED)`
-            # filter, which let a job with a SKIPPED row *and* an unresolved
-            # attempt (the run-88 job-#81 class) count as eligible here too.
-            from backend.services.applications.protection import (
-                protected_from_candidate_selection,
+            # E5-R29: the scheduler's apply phase shares the singleton cycle
+            # lock with the autonomous cycle and the manual apply queue, so it
+            # can never collide with another apply process (one browser
+            # session, no concurrent attempts, no duplicate applications).
+            from backend.services.autonomous_cycle.coordinator import coordinator
+
+            acquired, run_token, _snap = coordinator.try_acquire(
+                max_applications=None, db=db
             )
+            if not acquired:
+                logger.info("scheduler_apply_skipped_cycle_lock_held")
+                stats["skipped_lock_held"] = True
+                return stats
 
-            stmt = select(Job).where(
-                Job.id.in_(
-                    select(JobAnalysisModel.job_id)
+            try:
+                # Find jobs with completed AI analysis that haven't been applied yet.
+                # E5-R28: the shared job-level protection predicate replaces the
+                # legacy per-row `(Application.id == None) | (status == SKIPPED)`
+                # filter, which let a job with a SKIPPED row *and* an unresolved
+                # attempt (the run-88 job-#81 class) count as eligible here too.
+                from backend.services.applications.protection import (
+                    protected_from_candidate_selection,
                 )
-            ).where(
-                ~protected_from_candidate_selection()
-            ).order_by(Job.discovered_at.desc())
 
-            eligible_jobs = db.execute(stmt).scalars().all()
-            stats["candidates"] = len(eligible_jobs)
+                stmt = select(Job).where(
+                    Job.id.in_(
+                        select(JobAnalysisModel.job_id)
+                    )
+                ).where(
+                    ~protected_from_candidate_selection()
+                ).order_by(Job.discovered_at.desc())
 
-            if len(eligible_jobs) == 0:
-                logger.info("scheduler_no_eligible_jobs_for_application")
+                eligible_jobs = db.execute(stmt).scalars().all()
+                stats["candidates"] = len(eligible_jobs)
+
+                if len(eligible_jobs) == 0:
+                    logger.info("scheduler_no_eligible_jobs_for_application")
+                    return stats
+
+                # Extract job IDs for ApplicationRunner
+                job_ids = [job.id for job in eligible_jobs if job.id]
+
+                if not job_ids:
+                    logger.info("scheduler_no_valid_job_ids_for_application")
+                    return stats
+
+                logger.info("scheduler_invoking_application_runner", extra={"job_count": len(job_ids)})
+
+                # Invoke ApplicationRunner
+                runner = ApplicationRunner(db, self.state_manager)
+                app_results = await runner.run_applications(job_ids)
+
+                # Extract results from ApplicationRunner
+                stats["applied"] = app_results.get("applied", 0)
+                stats["skipped"] = app_results.get("skipped", 0)
+                stats["needs_attention"] = app_results.get("needs_attention", 0)
+                stats["failed"] = app_results.get("failed", 0)
+
+                logger.info("scheduler_application_runner_completed", extra=app_results)
                 return stats
-
-            # Extract job IDs for ApplicationRunner
-            job_ids = [job.id for job in eligible_jobs if job.id]
-
-            if not job_ids:
-                logger.info("scheduler_no_valid_job_ids_for_application")
-                return stats
-
-            logger.info("scheduler_invoking_application_runner", extra={"job_count": len(job_ids)})
-
-            # Invoke ApplicationRunner
-            runner = ApplicationRunner(db, self.state_manager)
-            app_results = await runner.run_applications(job_ids)
-
-            # Extract results from ApplicationRunner
-            stats["applied"] = app_results.get("applied", 0)
-            stats["skipped"] = app_results.get("skipped", 0)
-            stats["needs_attention"] = app_results.get("needs_attention", 0)
-            stats["failed"] = app_results.get("failed", 0)
-
-            logger.info("scheduler_application_runner_completed", extra=app_results)
+            finally:
+                # E5-R29: always release the lock, including on exceptions, so
+                # a failed scheduled apply can never block future runs.
+                try:
+                    coordinator.complete(
+                        run_token,
+                        {
+                            "run_id": None,
+                            "status": "COMPLETED",
+                            "stats": {
+                                "run_kind": "SCHEDULED",
+                                "candidates": stats.get("candidates", 0),
+                                "applied": stats.get("applied", 0),
+                            },
+                            "error": None,
+                        },
+                        db=db,
+                    )
+                except Exception:
+                    logger.exception("scheduler_lock_release_failed")
 
         except Exception as e:
             error_msg = f"Error invoking application runner: {str(e)}"

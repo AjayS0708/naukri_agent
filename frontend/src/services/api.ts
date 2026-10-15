@@ -1,4 +1,4 @@
-import type { AnswerQuestionRequest, AnswerQuestionResponse, ApplicationsListResponse, AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, AutonomousCycleStopRequest, AutonomousCycleStopResponse, DashboardSummary, HealthResponse, JobsListResponse, NeedsAttentionResponse, NotificationHistoryResponse, PendingQuestion, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse, ScreeningAnswer } from "../types/api";
+import type { AnswerQuestionRequest, AnswerQuestionResponse, ApplicationsListResponse, AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, AutonomousCycleStopRequest, AutonomousCycleStopResponse, DashboardSummary, HealthResponse, JobsListResponse, ManualApplyEligibleResponse, ManualApplyStartRequest, ManualApplyStartResponse, ManualApplyStatusResponse, ManualApplyStopRequest, ManualApplyStopResponse, NeedsAttentionResponse, NotificationHistoryResponse, PendingQuestion, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse, ScreeningAnswer } from "../types/api";
 
 const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -143,3 +143,29 @@ export const getJobsList = (limit = 50, offset = 0) => {
   params.append("offset", offset.toString());
   return apiRequest<JobsListResponse>(`/dashboard/jobs?${params.toString()}`);
 };
+
+// ── Manual Apply Queue endpoints (Checkpoint E5-R29) ─────────────────────────
+export const getManualEligible = (limit = 200, offset = 0, onlyEligible = false) => {
+  const params = new URLSearchParams();
+  params.append("limit", limit.toString());
+  params.append("offset", offset.toString());
+  params.append("only_eligible", onlyEligible ? "true" : "false");
+  return apiRequest<ManualApplyEligibleResponse>(`/manual-apply/eligible?${params.toString()}`);
+};
+
+export const startManualApply = (request: ManualApplyStartRequest) =>
+  apiRequest<ManualApplyStartResponse>("/manual-apply/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+export const getManualApplyStatus = () =>
+  apiRequest<ManualApplyStatusResponse>("/manual-apply/status");
+
+export const stopManualApply = (request: ManualApplyStopRequest = {}) =>
+  apiRequest<ManualApplyStopResponse>("/manual-apply/stop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });

@@ -519,3 +519,30 @@ h2 { margin-bottom: 8px; font-size: 18px; font-weight: 600; color: var(--color-t
 }
 
 .error-text { color: var(--color-error); font-size: 14px; font-weight: 500; }
+
+/* Manual Apply Queue (E5-R29) */
+.manual-queue-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 20px; }
+.manual-queue-search { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 220px; border: 1px solid var(--color-border); background: var(--color-white); border-radius: 6px; padding: 0 10px; color: var(--color-text-secondary); }
+.manual-queue-search input { flex: 1; min-width: 0; border: none; padding: 10px 0; font: inherit; font-size: 14px; color: var(--color-text); background: transparent; }
+.manual-queue-search input:focus { outline: none; }
+.manual-queue-search:focus-within { border-color: var(--color-primary-blue); box-shadow: 0 0 0 3px var(--color-light-blue); }
+.manual-queue-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--color-text); }
+.manual-queue-toggle input { accent-color: var(--color-primary-blue); }
+.manual-queue-summary { margin: 8px 0 16px; font-size: 13px; color: var(--color-text-secondary); }
+.manual-queue-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.manual-queue-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.manual-queue-item { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-white); }
+.manual-queue-item.ineligible { background: var(--color-bg); }
+.manual-queue-check { width: 16px; height: 16px; margin-top: 4px; accent-color: var(--color-primary-blue); flex-shrink: 0; }
+.manual-queue-item-main { display: grid; gap: 6px; min-width: 0; flex: 1; }
+.manual-queue-meta { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 12px; color: var(--color-text-secondary); }
+.manual-queue-meta > span { display: inline-flex; align-items: center; gap: 4px; }
+.manual-queue-badge { padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+.manual-queue-badge.eligible { background: #DCFCE7; color: var(--color-success); }
+.manual-queue-badge.excluded { background: #FEE2E2; color: var(--color-error); text-transform: none; letter-spacing: normal; }
+.manual-queue-banner { padding: 12px 14px; border: 1px solid var(--color-border); border-radius: 8px; margin-bottom: 12px; font-size: 14px; background: var(--color-white); }
+.manual-queue-banner.conflict { border-color: var(--color-error); color: var(--color-error); }
+.manual-queue-banner.info { border-color: var(--color-primary-blue); background: var(--color-light-blue); color: var(--color-text); }
+.manual-queue-run { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--color-border); border-left: 4px solid var(--color-primary-blue); border-radius: 8px; background: var(--color-white); margin-bottom: 16px; }
+.manual-queue-run p { margin: 4px 0 0; font-size: 14px; color: var(--color-text-secondary); }
+.manual-queue-progress { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--color-text-secondary); }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal, RefreshCw, Play, AlertTriangle, Square } from "lucide-react";
+import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal, RefreshCw, Play, AlertTriangle, Square, ListChecks } from "lucide-react";
 import { getDashboardSummary, getHealth, getNeedsAttention, getNotifications, getRecentApplications, startAutonomousCycle, getAutonomousCycleStatus, stopAutonomousCycle, getPendingQuestion, answerPendingQuestion } from "../services/api";
 import type { AnswerQuestionRequest, DashboardSummary, HealthResponse, NeedsAttentionItem, Notification, PendingQuestion, ProfileResponse, RecentApplicationItem, AutonomousCycleStatusResponse } from "../types/api";
 import { ProfileWorkspace } from "../components/ProfileWorkspace";
@@ -10,6 +10,7 @@ import { AnalyticsDashboard } from "../components/AnalyticsDashboard";
 import { BackendState } from "../components/BackendState";
 import { ApplicationsList } from "../components/ApplicationsList";
 import { JobsList } from "../components/JobsList";
+import { ManualApplyQueue } from "../components/ManualApplyQueue";
 
 const STATUS_LABEL: Record<string, string> = {
   APPLIED: "Applied",
@@ -43,7 +44,7 @@ export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [failed, setFailed] = useState(false);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
-  const [currentPage, setCurrentPage] = useState<"overview" | "profile" | "preferences" | "analytics" | "activity" | "applications" | "jobs">("overview");
+  const [currentPage, setCurrentPage] = useState<"overview" | "profile" | "preferences" | "analytics" | "activity" | "applications" | "jobs" | "apply">("overview");
   const [applicationsFilter, setApplicationsFilter] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -121,13 +122,15 @@ export function App() {
       .finally(() => setCycleLoading(false));
   }, []);
 
-  // Poll autonomous cycle status while running (E3)
+  // Poll autonomous cycle status while running (E3 / E5-R29)
   useEffect(() => {
     if (!cycleStatus || cycleStatus.active_state !== "RUNNING") {
       return;
     }
 
-    const pollInterval = setInterval(() => {
+    let stopped = false;
+
+    const pollOnce = () => {
       getAutonomousCycleStatus()
         .then((data) => {
           setCycleStatus(data);
@@ -135,6 +138,7 @@ export function App() {
           syncPendingQuestion(data);
           // Stop polling when completed or failed and refresh dashboard
           if (data.active_state === "IDLE") {
+            stopped = true;
             clearInterval(pollInterval);
             // Refresh dashboard data after completion
             setDashboardLoading(true);
@@ -152,12 +156,32 @@ export function App() {
           }
         })
         .catch(() => {
-          // Backend error - stop polling
-          clearInterval(pollInterval);
+          // E5-R29: a single failed fetch must not kill polling. The previous
+          // clearInterval here permanently froze the dashboard on RUNNING when
+          // the browser throttled or aborted one poll (e.g. background tab).
         });
+    };
+
+    const pollInterval = setInterval(() => {
+      if (!stopped) pollOnce();
     }, 4000); // Poll every 4 seconds
 
-    return () => clearInterval(pollInterval);
+    // E5-R29: re-sync immediately when the tab becomes visible again so a
+    // throttled or aborted background poll loop self-heals on return.
+    const onVisible = () => {
+      if (!stopped && document.visibilityState === "visible") {
+        pollOnce();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+
+    return () => {
+      stopped = true;
+      clearInterval(pollInterval);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
   }, [cycleStatus?.active_state]);
 
   const connection = failed ? "local_offline" : health ? "connected" : "checking";
@@ -333,6 +357,20 @@ export function App() {
   // E5-R21: the run is blocked on a screening question awaiting an answer.
   const isWaitingForAnswer = Boolean(isCycleRunning && activeCycle?.waiting_for_user);
   const cycleProgress = activeCycle?.progress ?? null;
+  // E5-R29: heartbeat-based stall detection. The backend stamps
+  // progress_updated_at on every progress write; if it stops moving while the
+  // run is still marked RUNNING, surface an honest "possibly stalled" hint
+  // instead of a flat "Running".
+  const STALL_THRESHOLD_MS = 5 * 60 * 1000;
+  const cycleProgressUpdatedAt = cycleProgress?.progress_updated_at ?? null;
+  const cyclePossiblyStalled =
+    isCycleRunning &&
+    !isWaitingForAnswer &&
+    Boolean(cycleProgressUpdatedAt) &&
+    (() => {
+      const t = new Date(cycleProgressUpdatedAt as string).getTime();
+      return !Number.isNaN(t) && Date.now() - t > STALL_THRESHOLD_MS;
+    })();
 
   return <main className="app-shell">
     <a href="#main-content" className="skip-to-content">Skip to main content</a>
@@ -362,6 +400,7 @@ export function App() {
         <a className={`nav-item ${currentPage === "overview" ? "active" : ""}`} href="#overview" onClick={(e) => { e.preventDefault(); handleNavClick("overview"); }}><LayoutDashboard size={18} />Overview</a>
         <a className={`nav-item ${currentPage === "activity" ? "active" : ""}`} href="#activity" onClick={(e) => { e.preventDefault(); handleNavClick("activity"); }}><Activity size={18} />Activity</a>
         <a className={`nav-item ${currentPage === "jobs" ? "active" : ""}`} href="#jobs" onClick={(e) => { e.preventDefault(); handleNavClick("jobs"); }}><BriefcaseBusiness size={18} />Jobs</a>
+        <a className={`nav-item ${currentPage === "apply" ? "active" : ""}`} href="#apply" onClick={(e) => { e.preventDefault(); handleNavClick("apply"); }}><ListChecks size={18} />Apply Queue</a>
         <a className={`nav-item ${currentPage === "applications" ? "active" : ""}`} href="#applications" onClick={(e) => { e.preventDefault(); handleNavClick("applications"); }}><ChartNoAxesColumn size={18} />Applications</a>
         <a className={`nav-item ${currentPage === "analytics" ? "active" : ""}`} href="#analytics" onClick={(e) => { e.preventDefault(); handleNavClick("analytics"); }}><BarChart3 size={18} />Analytics</a>
         <a className={`nav-item ${currentPage === "profile" ? "active" : ""}`} href="#profile" onClick={(e) => { e.preventDefault(); handleNavClick("profile"); }}><User size={18} />Profile</a>
@@ -379,8 +418,8 @@ export function App() {
       <header className="topbar">
         <div className="page-header">
           <p className="eyebrow">DASHBOARD</p>
-          <h1>{currentPage === "overview" ? "Agent Overview" : currentPage === "profile" ? "Profile" : currentPage === "preferences" ? "Preferences" : currentPage === "analytics" ? "Analytics" : currentPage === "applications" ? "Applications" : currentPage === "jobs" ? "Jobs" : "Activity"}</h1>
-          <p className="page-description">{currentPage === "overview" ? "Monitor and control your job search automation" : currentPage === "profile" ? "Manage your resume and professional profile" : currentPage === "preferences" ? "Configure job search preferences and automation settings" : currentPage === "analytics" ? "View performance metrics and decision analytics" : currentPage === "applications" ? "View and filter application history" : currentPage === "jobs" ? "View discovered jobs" : "Track agent activity and events"}</p>
+          <h1>{currentPage === "overview" ? "Agent Overview" : currentPage === "profile" ? "Profile" : currentPage === "preferences" ? "Preferences" : currentPage === "analytics" ? "Analytics" : currentPage === "applications" ? "Applications" : currentPage === "jobs" ? "Jobs" : currentPage === "apply" ? "Apply Queue" : "Activity"}</h1>
+          <p className="page-description">{currentPage === "overview" ? "Monitor and control your job search automation" : currentPage === "profile" ? "Manage your resume and professional profile" : currentPage === "preferences" ? "Configure job search preferences and automation settings" : currentPage === "analytics" ? "View performance metrics and decision analytics" : currentPage === "applications" ? "View and filter application history" : currentPage === "jobs" ? "View discovered jobs" : currentPage === "apply" ? "Apply to previously discovered jobs on demand" : "Track agent activity and events"}</p>
         </div>
         <div className="topbar-actions">
           <button
@@ -502,6 +541,15 @@ export function App() {
                     {cycleProgress.current_search ? ` · ${cycleProgress.current_search}` : ""}
                     {cycleProgress.current_job_title ? ` · current: ${cycleProgress.current_job_title}` : ""}
                     {cycleProgress.current_step && !isWaitingForAnswer ? ` (${cycleProgress.current_step.replaceAll("_", " ")})` : ""}
+                  </b>
+                </div>
+              )}
+              {/* E5-R29: honest stall hint when the heartbeat stops moving */}
+              {isCycleRunning && cyclePossiblyStalled && (
+                <div className="status-meta">
+                  <span>Connection</span>
+                  <b style={{ color: "var(--color-warning)" }}>
+                    No recent progress updates — the run may be stalled. Check the backend logs or retry.
                   </b>
                 </div>
               )}
@@ -808,6 +856,10 @@ export function App() {
 
         {currentPage === "jobs" && (
           <JobsList onBack={() => handleNavClick("overview")} />
+        )}
+
+        {currentPage === "apply" && (
+          <ManualApplyQueue onBack={() => handleNavClick("overview")} />
         )}
       </div>
     </section>
