@@ -1,4 +1,4 @@
-import type { AnswerQuestionRequest, AnswerQuestionResponse, ApplicationsListResponse, AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, AutonomousCycleStopRequest, AutonomousCycleStopResponse, DashboardSummary, HealthResponse, JobsListResponse, ManualApplyEligibleResponse, ManualApplyStartRequest, ManualApplyStartResponse, ManualApplyStatusResponse, ManualApplyStopRequest, ManualApplyStopResponse, NeedsAttentionResponse, NotificationHistoryResponse, PendingQuestion, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse, ScreeningAnswer } from "../types/api";
+import type { AnswerQuestionRequest, AnswerQuestionResponse, ApplicationsListResponse, AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, AutonomousCycleStopRequest, AutonomousCycleStopResponse, DashboardSummary, HealthResponse, JobsListResponse, ManualApplyEligibleResponse, ManualApplySkipRequest, ManualApplySkipResponse, ManualApplyStartRequest, ManualApplyStartResponse, ManualApplyStatusResponse, ManualApplyStopRequest, ManualApplyStopResponse, NeedsAttentionResponse, NotificationHistoryResponse, PendingQuestion, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse, ScreeningAnswer } from "../types/api";
 
 const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -214,6 +214,15 @@ export const getManualApplyStatus = () =>
 
 export const stopManualApply = (request: ManualApplyStopRequest = {}) =>
   apiRequest<ManualApplyStopResponse>("/manual-apply/stop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+// E5-R32: per-job "Skip This Job" (records immediately when idle, queues for
+// the live batch otherwise — honored at the next job boundary).
+export const skipManualJob = (request: ManualApplySkipRequest) =>
+  apiRequest<ManualApplySkipResponse>("/manual-apply/skip", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),

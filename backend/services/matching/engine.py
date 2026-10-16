@@ -17,6 +17,7 @@ from backend.services.matching.normalizer import (
     has_overlapping_location,
     extract_experience_years,
     is_employment_type_allowed,
+    normalize_employment_type,
     compute_profile_experience_years,
     evaluate_salary_gate,
 )
@@ -582,6 +583,47 @@ def experience_passes_fresher_rule(job: Job, preference: JobPreference) -> tuple
     return True, "Experience within fresher cap"
 
 
+# E5-R32: apprenticeship postings are their own employment category. Job 422
+# ("Job Type: 1-Year Apprenticeship, Stipend: 21,500/month") carried a NULL
+# employment_type (so is_employment_type_allowed passed it) and no matching
+# title keyword, yet the profile's employment preferences
+# (Full Time / Internship / Contract) never include apprenticeship.
+_APPRENTICESHIP_MARKER = "apprentic"
+
+
+def apprenticeship_excluded_reason(
+    job: Job, preference: Optional[JobPreference]
+) -> Optional[str]:
+    """Exact exclusion reason when an apprenticeship job violates the
+    employment-type preferences, else None.
+
+    Detection is conservative: the job is apprenticeship when the marker
+    appears in the employment type, the title, or the description (the
+    observed job carried it only in the description text).
+    """
+    if preference is None:
+        return None
+    allowed = getattr(preference, "employment_types", None) or []
+    allowed_norm = [normalize_employment_type(entry or "") for entry in allowed]
+    if any(_APPRENTICESHIP_MARKER in entry for entry in allowed_norm):
+        return None
+    haystack = " ".join(
+        part
+        for part in (
+            (job.employment_type or ""),
+            (job.title or ""),
+            (job.description or ""),
+        )
+        if part
+    ).lower()
+    if _APPRENTICESHIP_MARKER not in haystack:
+        return None
+    return (
+        "Apprenticeship role excluded: apprenticeship is not among the "
+        "configured employment-type preferences."
+    )
+
+
 class MatchEngine:
     def __init__(self, session: Session, ai_provider: Optional[AIProvider] = None):
         self.session = session
@@ -679,6 +721,20 @@ class MatchEngine:
                 failed_rules=["EMPLOYMENT_TYPE"]
             )
         matched_rules.append("EMPLOYMENT_TYPE_CHECK")
+
+        # E5-R32: apprenticeship gate (job 422). A NULL employment_type never
+        # reaches the check above, so an apprenticeship posting must be
+        # detected from its title/description and excluded when the profile
+        # does not list apprenticeship among its employment types.
+        apprenticeship_reason = apprenticeship_excluded_reason(job, preference)
+        if apprenticeship_reason:
+            return MatchDecision(
+                decision=MatchDecisionEnum.SKIP,
+                reason=apprenticeship_reason,
+                skip_reason=SkipReason.EMPLOYMENT_TYPE_NOT_ALLOWED,
+                failed_rules=["APPRENTICESHIP"]
+            )
+        matched_rules.append("APPRENTICESHIP_CHECK")
 
         # Location check (E5-R17 parity with the final safety gate): the job
         # must sit in one of the configured locations (Bengaluru / Remote).

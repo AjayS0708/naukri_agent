@@ -281,6 +281,8 @@ export interface ManualApplyEligibleItem {
   application_mode: string | null;
   discovered_at: string | null;
   application_status: string | null;
+  /** E5-R32: latest row's skip reason (USER_SKIPPED prefix = user-initiated). */
+  skip_reason?: string | null;
   eligible: boolean;
   exclusion_reason: string | null;
 }
@@ -315,6 +317,17 @@ export interface ManualApplyStopRequest {
 export interface ManualApplyStopResponse {
   cancel_requested: boolean;
   active_state: string;
+  message: string;
+}
+
+/** E5-R32: per-job "Skip This Job" in the Apply Queue. */
+export interface ManualApplySkipRequest {
+  job_id: number;
+}
+
+export interface ManualApplySkipResponse {
+  job_id: number;
+  mode: "RECORDED" | "QUEUED" | "ALREADY_SKIPPED" | "ALREADY_PROCESSED" | "NOT_ELIGIBLE";
   message: string;
 }
 

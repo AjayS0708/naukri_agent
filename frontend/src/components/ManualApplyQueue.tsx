@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Briefcase, ListChecks, MapPin, Play, RefreshCw, Search, Square } from "lucide-react";
-import { getManualEligible, getManualApplyStatus, startManualApply, stopManualApply } from "../services/api";
-import type { ManualApplyEligibleItem, ManualApplyStatusResponse } from "../types/api";
+import {
+  answerPendingQuestion,
+  getManualEligible,
+  getManualApplyStatus,
+  getPendingQuestion,
+  skipManualJob,
+  startManualApply,
+  stopManualApply,
+} from "../services/api";
+import type {
+  AnswerQuestionRequest,
+  ManualApplyEligibleItem,
+  ManualApplyStatusResponse,
+  PendingQuestion,
+} from "../types/api";
 
 interface ManualApplyQueueProps {
   onBack: () => void;
@@ -46,6 +59,8 @@ function exclusionLabel(reason: string | null): string {
   if (reason === "listing_expired") return "Listing expired — removed from the queue";
   if (reason === "profile_not_confirmed") return "Profile not confirmed";
   if (reason === "preferences_missing") return "Job preferences missing";
+  // E5-R32: an operator-requested skip excludes the job until a manual reset.
+  if (reason === "user_skipped") return "Skipped by you — excluded from the queue";
   if (reason.startsWith("not_relevant:")) return `Not relevant — ${reason.slice("not_relevant:".length).trim()}`;
   if (reason.startsWith("hard_filtered:")) return `Filtered — ${reason.slice("hard_filtered:".length).trim()}`;
   return reason;
@@ -76,6 +91,18 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
   const [conflict, setConflict] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // E5-R32: in-place screening question (the queue used to tell the operator
+  // to answer from the Overview page — and never fetched the question itself).
+  const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
+  const [questionLoading, setQuestionLoading] = useState(false);
+  const [questionError, setQuestionError] = useState<string | null>(null);
+  const [questionAnswerText, setQuestionAnswerText] = useState("");
+  const [questionSubmitting, setQuestionSubmitting] = useState(false);
+  const [questionNotice, setQuestionNotice] = useState<string | null>(null);
+  // E5-R32: per-row two-step "Skip This Job".
+  const [confirmSkipId, setConfirmSkipId] = useState<number | null>(null);
+  const [skipBusy, setSkipBusy] = useState(false);
+  const [skipNotice, setSkipNotice] = useState<string | null>(null);
   const statusRef = useRef<ManualApplyStatusResponse | null>(null);
   const itemsRef = useRef<ManualApplyEligibleItem[]>([]);
   // Only the latest request may apply its response (stale out-of-order
@@ -198,6 +225,105 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
   const lastManualRun = status?.last_manual_run ?? null;
   const lockBusy = Boolean(status?.lock_held);
 
+  // E5-R32: fetch the pending screening question while the run waits —
+  // polled so a stale fetch self-heals, stopped the moment the wait ends.
+  useEffect(() => {
+    if (!waitingForAnswer) {
+      setPendingQuestion(null);
+      setQuestionError(null);
+      setQuestionLoading(false);
+      return;
+    }
+    let stopped = false;
+    let timer: number | undefined;
+    setQuestionNotice(null);
+    setQuestionLoading(true);
+
+    const fetchQuestion = async () => {
+      try {
+        const data = await getPendingQuestion();
+        if (stopped) return;
+        setPendingQuestion(data);
+        setQuestionError(data.found ? null : "The question is not available yet — retrying…");
+      } catch {
+        if (!stopped) setQuestionError("The question could not be loaded — retrying…");
+      } finally {
+        if (!stopped) {
+          setQuestionLoading(false);
+          timer = window.setTimeout(fetchQuestion, 4000);
+        }
+      }
+    };
+    void fetchQuestion();
+
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [waitingForAnswer]);
+
+  const handleQuestionSubmit = async (skip: boolean) => {
+    if (!pendingQuestion?.pending_question_id || questionSubmitting) return;
+    if (!skip && !questionAnswerText.trim()) return;
+    setQuestionSubmitting(true);
+    setQuestionError(null);
+    try {
+      const request: AnswerQuestionRequest = skip
+        ? { pending_question_id: pendingQuestion.pending_question_id, skip: true }
+        : {
+            pending_question_id: pendingQuestion.pending_question_id,
+            answer: questionAnswerText.trim(),
+            remember: true,
+            scope: "JOB",
+          };
+      await answerPendingQuestion(request);
+      setPendingQuestion(null);
+      setQuestionAnswerText("");
+      setQuestionNotice(
+        skip
+          ? "Job skipped — the run is resuming with the next job."
+          : "Answer received — the run is resuming.",
+      );
+      await refreshStatus();
+    } catch (error: any) {
+      if (error?.status === 409) {
+        // Stale question id or duplicate submit — re-sync instead of failing.
+        setQuestionError("This question was already answered or has changed — refreshing…");
+        const fresh = await getPendingQuestion().catch(() => null);
+        setPendingQuestion(fresh);
+      } else {
+        setQuestionError(
+          error?.message ?? "The answer could not be submitted. Please try again.",
+        );
+      }
+    } finally {
+      setQuestionSubmitting(false);
+    }
+  };
+
+  // E5-R32: two-step per-row skip (accidental single clicks never skip).
+  const handleSkipJob = async (jobId: number) => {
+    if (skipBusy) return;
+    if (confirmSkipId !== jobId) {
+      setConfirmSkipId(jobId);
+      return;
+    }
+    setSkipBusy(true);
+    setSkipNotice(null);
+    try {
+      const result = await skipManualJob({ job_id: jobId });
+      setSkipNotice(result.message);
+      setConfirmSkipId(null);
+      await loadEligible(true);
+      await refreshStatus();
+    } catch (error: any) {
+      setSkipNotice(error?.message ?? "The job could not be skipped.");
+      setConfirmSkipId(null);
+    } finally {
+      setSkipBusy(false);
+    }
+  };
+
   // E5-R30: search, eligibility filtering, and counts are computed
   // server-side; the loaded pages are already the matched set.
   const filtered = items;
@@ -311,6 +437,12 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
       )}
       {actionError && <p className="error-text">{actionError}</p>}
       {notice && <p className="manual-queue-banner info">{notice}</p>}
+      {/* E5-R32: result of a per-job skip (recorded / queued / refused). */}
+      {skipNotice && (
+        <p className="manual-queue-banner info" role="status" aria-live="polite">
+          {skipNotice}
+        </p>
+      )}
 
       {meta && !meta.profile_confirmed && (
         <p className="warning-text">Confirm your profile before starting an apply run — jobs are excluded until then.</p>
@@ -365,7 +497,7 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
             </strong>
             <p>
               {waitingForAnswer
-                ? "A screening question is waiting. Answer it from the Overview page to resume."
+                ? "A screening question is waiting — answer it below to resume."
                 : cancelling
                   ? "Cancellation requested. Finishing the current safe step…"
                   : "Applications are being processed with the standard safety checks."}
@@ -422,6 +554,74 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
             </button>
           </div>
         </div>
+      )}
+
+      {/* E5-R32: the waiting screening question, answered in place — with
+          Waiting / Answer received / Resuming states. */}
+      {runActive && waitingForAnswer && (
+        <div className="manual-queue-run" role="alert" style={{ marginTop: "0.5rem" }}>
+          <div>
+            <p className="eyebrow" style={{ marginBottom: 4 }}>
+              SCREENING QUESTION
+              {pendingQuestion?.job_title ? ` — ${pendingQuestion.job_title}` : ""}
+              {pendingQuestion?.employer ? ` · ${pendingQuestion.employer}` : ""}
+            </p>
+            {questionLoading && !pendingQuestion ? (
+              <p>Loading the question…</p>
+            ) : pendingQuestion?.found && pendingQuestion.question_text ? (
+              <>
+                <p style={{ margin: "0.35rem 0" }}>
+                  <strong>{pendingQuestion.question_text}</strong>
+                </p>
+                {pendingQuestion.options && pendingQuestion.options.length > 0 ? (
+                  <select
+                    value={questionAnswerText}
+                    onChange={(e) => setQuestionAnswerText(e.target.value)}
+                    aria-label="Choose an answer"
+                  >
+                    <option value="">Select an answer…</option>
+                    {pendingQuestion.options.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={questionAnswerText}
+                    onChange={(e) => setQuestionAnswerText(e.target.value)}
+                    placeholder="Type your answer"
+                    aria-label="Your answer"
+                  />
+                )}
+                {questionError && <p className="error-text">{questionError}</p>}
+                <div className="control-buttons" style={{ marginTop: "0.5rem" }}>
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => void handleQuestionSubmit(false)}
+                    disabled={questionSubmitting || !questionAnswerText.trim()}
+                  >
+                    {questionSubmitting ? "Submitting…" : "Answer & resume"}
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => void handleQuestionSubmit(true)}
+                    disabled={questionSubmitting}
+                  >
+                    Skip this job
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p>{questionError ?? "Waiting for the question…"}</p>
+            )}
+          </div>
+        </div>
+      )}
+      {/* Answer received — the wait has cleared, the run is resuming. */}
+      {questionNotice && !waitingForAnswer && (
+        <p className="manual-queue-banner info" role="status" aria-live="polite">
+          {questionNotice}
+        </p>
       )}
 
       {!runActive && conflict && status?.lock_held && (
@@ -539,8 +739,15 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
                     )}
                     <span className="data-item-date">Discovered {fmtDate(item.discovered_at)}</span>
                     {item.application_status && (
-                      <span className="status-badge">
-                        {item.application_status.replace(/_/g, " ")}
+                      <span
+                        className="status-badge"
+                        title={item.skip_reason ?? undefined}
+                      >
+                        {/* E5-R32: distinguish operator skips from automated ones. */}
+                        {item.application_status === "SKIPPED" &&
+                        (item.skip_reason ?? "").startsWith("USER_SKIPPED")
+                          ? "Skipped by you"
+                          : item.application_status.replace(/_/g, " ")}
                       </span>
                     )}
                     {item.eligible ? (
@@ -551,6 +758,29 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
                       </span>
                     )}
                   </div>
+                  {/* E5-R32: per-job Skip This Job — two-step confirm. During
+                      a live batch the backend queues the skip for the next
+                      job boundary (never interrupts a submission). */}
+                  {item.eligible && (
+                    <div className="control-buttons" style={{ marginTop: "0.4rem" }}>
+                      <button
+                        className={`btn ${confirmSkipId === item.job_id ? "btn-danger" : "btn-secondary"}`}
+                        onClick={() => void handleSkipJob(item.job_id)}
+                        disabled={skipBusy}
+                        aria-label={
+                          confirmSkipId === item.job_id
+                            ? `Confirm skipping ${item.title}`
+                            : `Skip ${item.title}`
+                        }
+                      >
+                        {skipBusy && confirmSkipId === item.job_id
+                          ? "Skipping…"
+                          : confirmSkipId === item.job_id
+                            ? "Confirm skip"
+                            : "Skip this job"}
+                      </button>
+                    </div>
+                  )}
                 </div>
               </li>
             );

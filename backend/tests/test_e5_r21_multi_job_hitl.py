@@ -686,7 +686,11 @@ class TestHumanInTheLoop:
         assert outcome == "SKIPPED"
         db_session.refresh(application)
         assert application.status == "SKIPPED"
-        assert application.skip_reason == "User skipped the screening question"
+        # E5-R32: the USER_SKIPPED prefix marks user-initiated skips so
+        # application-history protection excludes the job from later runs.
+        assert application.skip_reason == (
+            "USER_SKIPPED: user skipped the screening question"
+        )
 
     @pytest.mark.asyncio
     async def test_cancel_check_finalizes_pending_row_cancelled(

@@ -63,16 +63,48 @@ BLOCKING_APPLICATION_STATUSES: frozenset[str] = frozenset(
 
 _SKIPPED = ApplicationStatus.SKIPPED.value
 
+# E5-R32: reason prefix that marks a *user-initiated* skip ("Skip This Job"
+# in the apply queue, or the Skip button on a screening question). Automated
+# eligibility skips keep plain reasons and stay re-processable; a job the
+# operator explicitly skipped is protected until a deliberate manual reset.
+USER_SKIP_PREFIX = "USER_SKIPPED"
 
-def is_protected_statuses(statuses: Iterable[str | None]) -> bool:
-    """Pure-Python protection rule for one job's application statuses."""
-    seen = {(status or "").strip() for status in statuses}
+
+def is_user_skip_reason(skip_reason: str | None) -> bool:
+    """True when a skip_reason was written by an explicit user skip."""
+    return bool(skip_reason) and skip_reason.strip().startswith(USER_SKIP_PREFIX)
+
+
+def is_protected_history(rows: Iterable[tuple[str | None, str | None]]) -> bool:
+    """Protection rule for one job's application history of (status, skip_reason).
+
+    E5-R32: any user-initiated skip row protects the job (a strict superset of
+    the status-only rule — protection is never weakened). Without user-skip
+    knowledge the result equals :func:`is_protected_statuses`.
+    """
+    seen: set[str] = set()
+    user_skipped = False
+    for status, skip_reason in rows:
+        seen.add((status or "").strip())
+        if (status or "").strip() == _SKIPPED and is_user_skip_reason(skip_reason):
+            user_skipped = True
     if not seen:
         return False
     if seen & set(BLOCKING_APPLICATION_STATUSES):
         return True
+    if user_skipped:
+        return True
     # Rows exist but none of them is a deliberate SKIPPED record.
     return _SKIPPED not in seen
+
+
+def is_protected_statuses(statuses: Iterable[str | None]) -> bool:
+    """Pure-Python protection rule for one job's application statuses.
+
+    Status-only shape kept for callers without skip_reason access; user-skip
+    semantics live in :func:`is_protected_history`.
+    """
+    return is_protected_history((status, None) for status in statuses)
 
 
 def protected_from_candidate_selection():
@@ -90,8 +122,16 @@ def protected_from_candidate_selection():
         Application.job_id == Job.id,
         Application.status.in_(sorted(BLOCKING_APPLICATION_STATUSES)),
     )
+    # E5-R32: a user-initiated skip always protects, even though an ordinary
+    # SKIPPED row does not.
+    user_skip_row = select(Application.id).where(
+        Application.job_id == Job.id,
+        Application.status == _SKIPPED,
+        Application.skip_reason.like(f"{USER_SKIP_PREFIX}%"),
+    )
     return or_(
         blocking_row.exists(),
+        user_skip_row.exists(),
         and_(any_row.exists(), ~skipped_row.exists()),
     )
 
@@ -100,7 +140,7 @@ def protected_job_ids(session: Session, job_ids: Sequence[int]) -> set[int]:
     """Bulk lookup: which of ``job_ids`` are protected by application history.
 
     Issues a single query over the bounded id set and applies
-    :func:`is_protected_statuses` per job. Returns an empty set for an empty
+    :func:`is_protected_history` per job. Returns an empty set for an empty
     input so call sites can call it unconditionally.
     """
     ids: set[int] = set()
@@ -113,17 +153,41 @@ def protected_job_ids(session: Session, job_ids: Sequence[int]) -> set[int]:
         return set()
 
     rows = session.execute(
-        select(Application.job_id, Application.status).where(
+        select(Application.job_id, Application.status, Application.skip_reason).where(
             Application.job_id.in_(ids)
         )
     ).all()
 
-    statuses_by_job: dict[int, set[str]] = {}
-    for job_id, status in rows:
-        statuses_by_job.setdefault(job_id, set()).add(status or "")
+    history_by_job: dict[int, list[tuple[str | None, str | None]]] = {}
+    for job_id, status, skip_reason in rows:
+        history_by_job.setdefault(job_id, []).append((status, skip_reason))
 
     return {
         job_id
-        for job_id, statuses in statuses_by_job.items()
-        if is_protected_statuses(statuses)
+        for job_id, history in history_by_job.items()
+        if is_protected_history(history)
     }
+
+
+def user_skipped_job_ids(session: Session, job_ids: Sequence[int]) -> set[int]:
+    """E5-R32: which of ``job_ids`` hold at least one user-initiated skip row.
+
+    Used to surface an honest per-queue exclusion reason ("user_skipped")
+    instead of the generic application-history one.
+    """
+    ids: set[int] = set()
+    for job_id in job_ids:
+        try:
+            ids.add(int(job_id))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return set()
+    rows = session.execute(
+        select(Application.job_id).where(
+            Application.job_id.in_(ids),
+            Application.status == _SKIPPED,
+            Application.skip_reason.like(f"{USER_SKIP_PREFIX}%"),
+        )
+    ).all()
+    return {job_id for (job_id,) in rows}

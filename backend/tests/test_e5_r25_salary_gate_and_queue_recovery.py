@@ -737,8 +737,13 @@ class TestRunnerModeCorrection:
     async def test_ambiguous_outcome_stamps_cooldown_without_applying(
         self, db_session, confirmed_profile, job_preferences
     ):
-        """AMBIGUOUS returns NEEDS_ATTENTION but stamps mode_reverified_at so
-        the recovery cooldown stops re-visiting the same posting."""
+        """E5-R32: AMBIGUOUS returns SKIPPED with a recorded reason (no
+        attempt was ever started) and stamps mode_reverified_at so the
+        recovery cooldown stops re-visiting the same posting.
+
+        It used to report NEEDS_ATTENTION in the stats while creating *no*
+        row at all — the stats/row mismatch seen in run 09:06.
+        """
         job = self._prepare_job(db_session, application_mode="AMBIGUOUS")
         runner = self._runner(db_session)
 
@@ -764,12 +769,16 @@ class TestRunnerModeCorrection:
             stats = await runner.run_applications([job.id])
 
         db_session.refresh(job)
-        assert stats.get("needs_attention", 0) == 1
+        assert stats.get("skipped", 0) == 1
+        assert stats.get("needs_attention", 0) == 0
+        # Reconciliation guard: the recorded row and the stats agree.
+        assert stats.get("outcome_total", 0) == stats.get("processed", 0) == 1
         assert job.mode_reverified_at is not None
-        # No application row was created on the ambiguous path.
-        assert (
-            db_session.execute(
-                select(Application).where(Application.job_id == job.id)
-            ).scalars().all()
-            == []
-        )
+        rows = db_session.execute(
+            select(Application).where(Application.job_id == job.id)
+        ).scalars().all()
+        assert len(rows) == 1, "the ambiguous path must leave a truthful row"
+        assert rows[0].status == "SKIPPED"
+        assert "ambiguous" in (rows[0].skip_reason or "").lower()
+        # No attempt was ever started (skip rows carry a creation timestamp).
+        assert stats.get("attempts_started", 0) == 0

@@ -19,6 +19,8 @@ from backend.core.logging import get_logger
 from backend.schemas.manual_apply import (
     ManualApplyEligibleResponse,
     ManualApplyRunSummary,
+    ManualApplySkipRequest,
+    ManualApplySkipResponse,
     ManualApplyStartRequest,
     ManualApplyStartResponse,
     ManualApplyStatusResponse,
@@ -26,7 +28,11 @@ from backend.schemas.manual_apply import (
     ManualApplyStopResponse,
 )
 from backend.services.autonomous_cycle.coordinator import coordinator
-from backend.services.manual_apply.service import ManualApplyService, get_last_manual_run
+from backend.services.manual_apply.service import (
+    ManualApplyService,
+    get_last_manual_run,
+    request_job_skip,
+)
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/manual-apply", tags=["manual-apply"])
@@ -227,6 +233,21 @@ async def get_manual_apply_status(db: Session = Depends(get_db)) -> ManualApplyS
             active_run and active_run.waiting_for_question_id
         ),
     )
+
+
+@router.post("/skip", response_model=ManualApplySkipResponse)
+async def skip_manual_apply_job(
+    request: ManualApplySkipRequest, db: Session = Depends(get_db)
+) -> ManualApplySkipResponse:
+    """E5-R32: skip one job from the Apply Queue ("Skip This Job").
+
+    Records a USER_SKIPPED row immediately when no batch is running; queues
+    the request for the live batch otherwise (honored at the next job
+    boundary — an in-progress submission is never interrupted). User-skipped
+    jobs are excluded from future runs by application-history protection.
+    """
+    result = request_job_skip(request.job_id, db)
+    return ManualApplySkipResponse(**result)
 
 
 @router.post("/stop", response_model=ManualApplyStopResponse)

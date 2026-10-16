@@ -1612,15 +1612,23 @@ class NaukriAdapter(JobPlatformAdapter):
 
         Returns a dict {question, type ('radio'|'text'), options, required} or
         None when the container is not a conversational drawer.
+
+        E5-R32: the *last* visible bot message wins. Naukri appends new
+        messages at the bottom, so the active question is the newest one;
+        picking the first message answered stale intros/prompts while the real
+        question waited below (job 422).
         """
         bot_msg = None
         for selector in (".botMsg span", ".botMsg"):
-            el = await container.query_selector(selector)
-            if el is not None and await el.is_visible():
-                text = (await el.inner_text()).strip()
-                if text:
-                    bot_msg = text
-                    break
+            texts = []
+            for el in await container.query_selector_all(selector):
+                if await el.is_visible():
+                    text = (await el.inner_text()).strip()
+                    if text:
+                        texts.append(text)
+            if texts:
+                bot_msg = texts[-1]
+                break
         if bot_msg is None:
             return None
 
@@ -1661,6 +1669,11 @@ class NaukriAdapter(JobPlatformAdapter):
     # E5-R20: informational bot messages that must never be answered.
     # Answering them only re-renders the same nudge (observed 12x in a row
     # during the E5-R19 attempt on job 462).
+    # E5-R32: recruiter intro wrappers ("thank you for showing interest.
+    # Kindly answer all the recruiter's questions…") announce the questionnaire
+    # without being a question themselves. Classified "question" they opened a
+    # human-in-the-loop wait on static intro text while the real Yes/No
+    # questions sat unanswered (job 422 stalled >5 minutes in run 09:06).
     CONVERSATIONAL_NUDGE_PATTERNS = (
         "update your profile",
         "update the profile",
@@ -1669,6 +1682,14 @@ class NaukriAdapter(JobPlatformAdapter):
         "we request you",
         "profile is not up to date",
         "please update your profile",
+        "thank you for showing interest",
+        "kindly answer all",
+        "please answer all",
+        "answer all the recruiter",
+        "recruiter's questions",
+        "answer all the questions",
+        "answer the questions below",
+        "kindly answer the",
     )
 
     @staticmethod
@@ -1965,15 +1986,37 @@ class NaukriAdapter(JobPlatformAdapter):
         logger.warning("No visible conversational Save control found")
         return False
 
+    # E5-R32: one in-browser scan of every element, replacing the legacy
+    # Python walk (one visibility + text CDP round trip per element — with
+    # thousands of elements this dominated the confirm/conversational stages).
+    # Visibility mirrors Playwright's is_visible (non-empty bounding box,
+    # not visibility:hidden). Returns the evidence text, or null when absent.
+    _APPLIED_PAGE_WALK_JS = """
+() => {
+  const match = (t) => t === 'Applied' || t.startsWith('Applied to "');
+  const els = document.querySelectorAll('*');
+  for (const el of els) {
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    if (getComputedStyle(el).visibility === 'hidden') continue;
+    const t = (el.innerText || '').trim();
+    if (match(t)) return t;
+  }
+  return null;
+}
+"""
+
     async def detect_applied_state(
         self, page: Page, scan_whole_page: bool = True
     ) -> tuple[bool, str]:
         """Return explicit post-Apply evidence without inferring from navigation.
 
         ``scan_whole_page`` controls the last-resort page-wide element scan.
-        It is the expensive step (one visibility/text round trip per element on
-        the page), so bounded polling passes ``scan_whole_page=False`` and runs
-        the page-wide scan once after the window instead.
+        It is the expensive step, so bounded polling passes
+        ``scan_whole_page=False`` and runs the page-wide scan once after the
+        window instead. E5-R32: the scan itself now runs *in the browser* in a
+        single round trip; when the environment cannot execute the script
+        (offline fakes / mocks) the legacy per-element walk still runs.
         """
         try:
             # The header is authoritative when it renders an applied state.
@@ -2000,6 +2043,20 @@ class NaukriAdapter(JobPlatformAdapter):
                         return True, (await element.inner_text()).strip()
             if not scan_whole_page:
                 return False, ""
+            found: object
+            try:
+                found = await page.evaluate(NaukriAdapter._APPLIED_PAGE_WALK_JS)
+            except Exception:
+                found = False  # non-str sentinel: run the legacy walk below
+            if isinstance(found, str):
+                # Real page: str (matched evidence) or "" / None (absent).
+                if found:
+                    return True, found
+                return False, ""
+            if found is None:
+                return False, ""
+            # Non-str result (offline fakes / mocks): fall back to the legacy
+            # per-element walk so existing fixtures keep their semantics.
             for element in await page.query_selector_all("*"):
                 if not await element.is_visible():
                     continue

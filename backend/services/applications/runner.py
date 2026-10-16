@@ -17,7 +17,7 @@ from backend.models.screening import PendingQuestion
 from backend.schemas.agent import AgentState
 from backend.services.agent_state import AgentStateManager
 from backend.services.applications.service import ApplicationService, SafetyGateError
-from backend.services.applications.protection import protected_job_ids
+from backend.services.applications.protection import USER_SKIP_PREFIX, protected_job_ids
 from backend.services.applications.answer_memory import (
     ScreeningAnswerService,
     normalize_question,
@@ -80,6 +80,9 @@ class ApplicationRunner:
         run_token: Optional[str] = None,
         progress_hook: Optional[Callable[[dict], Any]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        # E5-R32: per-job user skip requests from the apply queue (checked at
+        # the job boundary — never mid-submission).
+        skip_request_check: Optional[Callable[[int], bool]] = None,
         hitl: bool = False,
         close_session_after_run: bool = True,
         recover_stale_state: bool = False,
@@ -102,6 +105,7 @@ class ApplicationRunner:
         self.run_token = run_token
         self.progress_hook = progress_hook
         self.cancel_check = cancel_check
+        self.skip_request_check = skip_request_check
         self.hitl = hitl
         self.close_session_after_run = close_session_after_run
         self.recover_stale_state = recover_stale_state
@@ -473,6 +477,34 @@ class ApplicationRunner:
             logger.warning("Cancellation check failed (continuing run): %s", exc)
             return False
 
+    def _user_skip_requested(self, job_id: int) -> bool:
+        """E5-R32: has the operator asked to skip this job from the queue?
+
+        Honored only at the job boundary (top of _execute_single_job), never
+        mid-submission; a faulty owner callback must not break the run.
+        """
+        if not self.skip_request_check:
+            return False
+        try:
+            return bool(self.skip_request_check(job_id))
+        except Exception as exc:
+            logger.warning("Skip-request check failed (continuing run): %s", exc)
+            return False
+
+    def _record_job_queue_skip(self, job: Job) -> str:
+        """E5-R32: durable record for an operator-requested skip (USER_SKIPPED
+        reason prefix protects the job from later candidate stages)."""
+        try:
+            self.application_service.record_application_skip(
+                job,
+                f"{USER_SKIP_PREFIX}: skipped by the user in the apply queue",
+            )
+        except Exception as exc:
+            logger.warning("Failed to record user queue skip for job %s: %s", job.id, exc)
+            return "ERROR"
+        logger.info("Job %s skipped by user request at the job boundary", job.id)
+        return "SKIPPED"
+
     def _record_job_outcome(self, job_id: int, reason: str) -> str:
         """E5-R31: record a truthful skip row for a job the session could not
         attempt (or could no longer attempt) and report SKIPPED."""
@@ -637,6 +669,11 @@ class ApplicationRunner:
         if not job:
             logger.warning(f"Job {job_id} not found")
             return "ERROR"
+
+        # E5-R32: an operator-requested skip is honored before any gate,
+        # page open or attempt — the first safe boundary for this job.
+        if self._user_skip_requested(job_id):
+            return self._record_job_queue_skip(job)
 
         queue_item = self.session.execute(
             select(AIQueueItem).where(AIQueueItem.job_id == job_id)
@@ -859,12 +896,21 @@ class ApplicationRunner:
             if app_type == "AMBIGUOUS":
                 # E5-R25: stamp the re-verification time so the recovery
                 # cooldown stops this still-ambiguous posting from being
-                # re-visited on every subsequent run. No application row is
-                # created on this path, so commit the stamp directly.
+                # re-visited on every subsequent run.
+                # E5-R32: no attempt was ever started (no Apply control was
+                # visible), so this is a truthful SKIP with a recorded
+                # reason — not NEEDS_ATTENTION. It previously counted as
+                # needs_attention in the run stats while creating no row at
+                # all (stats said 10, only 7 rows existed in run 09:06).
                 job.mode_reverified_at = utc_now()
                 self.session.commit()
                 logger.warning("Application type is ambiguous for job %s", job_id)
-                return "NEEDS_ATTENTION"
+                self.application_service.record_application_skip(
+                    job,
+                    "Application type ambiguous - no visible Apply control "
+                    "(no attempt started)",
+                )
+                return "SKIPPED"
 
             # Phase 10: Re-classify immediately before the click (non-dry-run only)
             if not self.dry_run:
@@ -897,7 +943,17 @@ class ApplicationRunner:
                         "(unresolved; no external record created)",
                         recheck_type,
                     )
-                    return "NEEDS_ATTENTION"
+                    # E5-R32: still no attempt started — a truthful recorded
+                    # skip (with the same cooldown stamp as the first-detection
+                    # path) instead of a row-less NEEDS_ATTENTION.
+                    job.mode_reverified_at = utc_now()
+                    self.session.commit()
+                    self.application_service.record_application_skip(
+                        job,
+                        "Application type re-check unresolved before the "
+                        "Apply click (no attempt started)",
+                    )
+                    return "SKIPPED"
 
             # E5-R31: last safe boundary before an attempt begins — a Stop
             # must not start a new application. No attempt row exists yet,
@@ -1058,12 +1114,17 @@ class ApplicationRunner:
                 )
                 answer_source = "SAVED" if answer else None
 
-                if not answer:
+                # E5-R32: apprenticeship-willingness questions are human-only
+                # (saved answers remain honored — they were approved by the
+                # operator); profile inference and AI must never answer them.
+                human_only = self._is_human_only_question(question_text)
+
+                if not answer and not human_only:
                     # Try to answer from profile
                     answer = self._get_answer_from_profile(question_text, profile)
                     answer_source = "PROFILE" if answer else None
 
-                if not answer and self.answer_questions:
+                if not answer and not human_only and self.answer_questions:
                     # Try AI-generated answer
                     answer = self._get_ai_answer(question_text, job, profile)
                     if answer:
@@ -1087,6 +1148,10 @@ class ApplicationRunner:
                         return self._record_user_skip(application, job)
                     elif status == "CANCELLED":
                         return self._record_stop_while_waiting(application, job)
+                    elif status == "EXPIRED":
+                        # E5-R32: explicit timeout reason (the wait window
+                        # elapsed with no answer); the batch continues.
+                        return self._record_wait_timeout(application, job)
 
                 if answer:
                     prepared_answers.append({
@@ -1432,6 +1497,8 @@ class ApplicationRunner:
                 )
 
             # Answerable question: saved answer â†’ profile â†’ AI â†’ human.
+            # E5-R32: apprenticeship-willingness questions skip profile/AI
+            # (human-only); an operator-approved saved answer still applies.
             saved = self._lookup_saved_answer(
                 question_text,
                 options=options or None,
@@ -1440,13 +1507,18 @@ class ApplicationRunner:
                 profile=profile,
             )
             answer = saved
-            if not answer:
+            human_only = self._is_human_only_question(question_text)
+            if not answer and not human_only:
                 answer = self._get_answer_from_profile(question_text, profile)
             if options:
                 if not answer or self.adapter._normalize_choice(answer) not in [
                     self.adapter._normalize_choice(o) for o in options
                 ]:
-                    answer = self._answer_radio_via_ai(question_text, options, job, profile)
+                    answer = (
+                        None
+                        if human_only
+                        else self._answer_radio_via_ai(question_text, options, job, profile)
+                    )
                 if not answer:
                     status, human_answer = await self._await_user_answer(
                         job=job,
@@ -1463,13 +1535,15 @@ class ApplicationRunner:
                         return self._record_user_skip(application, job)
                     elif status == "CANCELLED":
                         return self._record_stop_while_waiting(application, job)
+                    elif status == "EXPIRED":
+                        return self._record_wait_timeout(application, job)
                     if not answer:
                         return await self._reconcile_unconfirmed_attempt(
                             application, job,
                             f"Could not choose an option for: {question_text}",
                         )
             else:
-                if not answer:
+                if not answer and not human_only:
                     answer = self._get_ai_answer(question_text, job, profile)
                 if not answer:
                     status, human_answer = await self._await_user_answer(
@@ -1486,6 +1560,8 @@ class ApplicationRunner:
                         return self._record_user_skip(application, job)
                     elif status == "CANCELLED":
                         return self._record_stop_while_waiting(application, job)
+                    elif status == "EXPIRED":
+                        return self._record_wait_timeout(application, job)
                     if not answer:
                         return await self._reconcile_unconfirmed_attempt(
                             application, job,
@@ -1849,15 +1925,31 @@ class ApplicationRunner:
         self.state_manager.transition_to(AgentState.AUTH_REQUIRED)
         return False
 
+    def _is_human_only_question(self, question_text: str) -> bool:
+        """E5-R32: True when only a human may answer this screening question.
+
+        Apprenticeship willingness ("are you okay with a 1-year
+        apprenticeship…", job 422) is a career decision: profile inference
+        and the AI answerer must never choose it. Saved answers stay allowed
+        (operator-approved via answer memory).
+        """
+        normalized = " ".join((question_text or "").lower().split())
+        return "apprentic" in normalized
+
     def _record_user_skip(self, application, job: Job) -> str:
-        """E5-R21: the human skipped this job at a screening question."""
+        """E5-R21: the human skipped this job at a screening question.
+
+        E5-R32: the USER_SKIPPED reason prefix marks it as user-initiated so
+        application-history protection excludes the job from later runs
+        (automated skips stay re-processable).
+        """
         try:
             self.application_service.update_application(
                 application.id,
                 ApplicationUpdate(
                     status=ApplicationStatus.SKIPPED,
                     needs_attention=False,
-                    skip_reason="User skipped the screening question",
+                    skip_reason=f"{USER_SKIP_PREFIX}: user skipped the screening question",
                 ),
             )
         except Exception as exc:
@@ -1882,6 +1974,32 @@ class ApplicationRunner:
         # E5-R31: "the run was stopped" must actually stop the batch — the
         # loop polls this flag at the next job boundary.
         self._stop_requested = True
+        return "NEEDS_ATTENTION"
+
+    def _record_wait_timeout(self, application, job: Job) -> str:
+        """E5-R32: the screening wait window expired with no answer.
+
+        The batch continues (a timeout is not a user stop); the attempt row
+        carries the explicit reason so the dashboard shows *why* the job is
+        unresolved instead of a generic "Could not answer question".
+        """
+        try:
+            self.application_service.update_application(
+                application.id,
+                ApplicationUpdate(
+                    status=ApplicationStatus.NEEDS_ATTENTION,
+                    needs_attention=True,
+                    skip_reason=(
+                        "Screening question timed out - no answer received "
+                        "within the wait window"
+                    ),
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Failed to record wait timeout for job %s: %s", job.id, exc)
+        logger.info(
+            "Job %s left NEEDS_ATTENTION: screening question timed out", job.id
+        )
         return "NEEDS_ATTENTION"
 
 

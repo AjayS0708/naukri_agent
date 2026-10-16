@@ -687,11 +687,13 @@ class TestApplicationRunner:
         job_preferences: JobPreference,
         db_session: Session,
     ):
-        """E5-R16: an unresolved pre-click re-check is never EXTERNAL.
+        """E5-R16/E5-R32: an unresolved pre-click re-check is never EXTERNAL.
 
         This is the historical bug: a logged-out page renders the Apply button
         hidden (AMBIGUOUS) and the re-check path recorded the job's own Naukri
-        URL as an external application.
+        URL as an external application. E5-R32: the path also records a
+        truthful SKIPPED row (still no attempt started) instead of a row-less
+        NEEDS_ATTENTION, and stamps the re-verification cooldown.
         """
         with patch('backend.services.applications.runner.NaukriAdapter.start_session', new_callable=AsyncMock, return_value=True), \
              patch('backend.services.applications.runner.NaukriAdapter.stop_session', new_callable=AsyncMock), \
@@ -707,8 +709,17 @@ class TestApplicationRunner:
             stats = await application_runner.run_applications([eligible_job.id])
 
         assert stats["external"] == 0
-        assert stats["needs_attention"] == 1
+        assert stats["needs_attention"] == 0
+        assert stats["skipped"] == 1
+        db_session.refresh(eligible_job)
+        assert eligible_job.mode_reverified_at is not None
         rows = db_session.execute(
             select(Application).where(Application.job_id == eligible_job.id)
         ).scalars().all()
-        assert rows == [], "an unresolved re-check must not create any row"
+        assert len(rows) == 1, "E5-R32: the unresolved re-check leaves a row"
+        assert rows[0].status == ApplicationStatus.SKIPPED.value
+        assert "re-check unresolved" in (rows[0].skip_reason or "")
+        assert rows[0].external_url is None
+        # "No attempt started" is proven by the run stats, not by started_at
+        # (skip rows are timestamped by record_application_skip).
+        assert stats["attempts_started"] == 0

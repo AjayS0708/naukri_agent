@@ -78,9 +78,14 @@ export function App() {
   const [rememberAllJobs, setRememberAllJobs] = useState(false);
   const [answerSubmitting, setAnswerSubmitting] = useState(false);
   const [answerError, setAnswerError] = useState<string | null>(null);
+  // E5-R32: transient "Answer received / resuming" confirmation after a
+  // successful submit or question-skip (the panel itself disappears).
+  const [answerNotice, setAnswerNotice] = useState<string | null>(null);
 
   const syncPendingQuestion = (status: AutonomousCycleStatusResponse) => {
     if (status.active_run?.waiting_for_user) {
+      // E5-R32: a new wait supersedes any stale "answer received" notice.
+      setAnswerNotice(null);
       getPendingQuestion()
         .then(setPendingQuestion)
         .catch(() => setPendingQuestion(null));
@@ -122,55 +127,62 @@ export function App() {
       .finally(() => setCycleLoading(false));
   }, []);
 
-  // Poll autonomous cycle status while running (E3 / E5-R29)
+  // Poll autonomous cycle status continuously (E3 / E5-R29 / E5-R32).
+  // E5-R32: the loop no longer *depends* on a (possibly stale) RUNNING status
+  // to exist — the previous gate could never start when a manual apply run
+  // began after the last fetch, so a waiting screening question was never
+  // surfaced (the run-09:06 stall: zero pending-question requests while the
+  // backend waited 5+ minutes). The loop always runs: 4s while a run is
+  // active, 10s while idle, and a failed fetch never kills it.
+  const cycleActiveRef = useRef(false);
   useEffect(() => {
-    if (!cycleStatus || cycleStatus.active_state !== "RUNNING") {
-      return;
-    }
-
     let stopped = false;
+    let timer: number | undefined;
 
-    const pollOnce = () => {
-      getAutonomousCycleStatus()
-        .then((data) => {
-          setCycleStatus(data);
-          setCycleConflict(false);
-          syncPendingQuestion(data);
-          // Stop polling when completed or failed and refresh dashboard
-          if (data.active_state === "IDLE") {
-            stopped = true;
-            clearInterval(pollInterval);
-            // Refresh dashboard data after completion
-            setDashboardLoading(true);
-            setRecentAppsLoading(true);
-            setNeedsAttentionLoading(true);
-            Promise.all([
-              getDashboardSummary().then((d) => { setDashboard(d); setDashboardError(false); }).catch(() => setDashboardError(true)),
-              getRecentApplications(10).then((d) => { setRecentApps(d.applications); setRecentAppsError(false); }).catch(() => setRecentAppsError(true)),
-              getNeedsAttention(10).then((d) => { setNeedsAttention(d.applications); setNeedsAttentionError(false); }).catch(() => setNeedsAttentionError(true)),
-            ]).finally(() => {
-              setDashboardLoading(false);
-              setRecentAppsLoading(false);
-              setNeedsAttentionLoading(false);
-            });
-          }
-        })
-        .catch(() => {
-          // E5-R29: a single failed fetch must not kill polling. The previous
-          // clearInterval here permanently froze the dashboard on RUNNING when
-          // the browser throttled or aborted one poll (e.g. background tab).
-        });
+    const refreshDashboardAfterRun = () => {
+      setDashboardLoading(true);
+      setRecentAppsLoading(true);
+      setNeedsAttentionLoading(true);
+      Promise.all([
+        getDashboardSummary().then((d) => { setDashboard(d); setDashboardError(false); }).catch(() => setDashboardError(true)),
+        getRecentApplications(10).then((d) => { setRecentApps(d.applications); setRecentAppsError(false); }).catch(() => setRecentAppsError(true)),
+        getNeedsAttention(10).then((d) => { setNeedsAttention(d.applications); setNeedsAttentionError(false); }).catch(() => setNeedsAttentionError(true)),
+      ]).finally(() => {
+        setDashboardLoading(false);
+        setRecentAppsLoading(false);
+        setNeedsAttentionLoading(false);
+      });
     };
 
-    const pollInterval = setInterval(() => {
-      if (!stopped) pollOnce();
-    }, 4000); // Poll every 4 seconds
+    const pollOnce = async () => {
+      try {
+        const data = await getAutonomousCycleStatus();
+        if (stopped) return;
+        const wasActive = cycleActiveRef.current;
+        const isActive = data.active_state === "RUNNING";
+        cycleActiveRef.current = isActive;
+        setCycleStatus(data);
+        setCycleConflict(false);
+        syncPendingQuestion(data);
+        // Refresh dashboard data when a run completes.
+        if (wasActive && !isActive) refreshDashboardAfterRun();
+      } catch {
+        // E5-R29: a single failed fetch must not kill polling.
+      } finally {
+        if (!stopped) {
+          timer = window.setTimeout(pollOnce, cycleActiveRef.current ? 4000 : 10000);
+        }
+      }
+    };
 
-    // E5-R29: re-sync immediately when the tab becomes visible again so a
-    // throttled or aborted background poll loop self-heals on return.
+    void pollOnce();
+
+    // Re-sync immediately when the tab becomes visible again so a throttled
+    // or aborted background poll loop self-heals on return.
     const onVisible = () => {
       if (!stopped && document.visibilityState === "visible") {
-        pollOnce();
+        if (timer !== undefined) window.clearTimeout(timer);
+        void pollOnce();
       }
     };
     document.addEventListener("visibilitychange", onVisible);
@@ -178,11 +190,11 @@ export function App() {
 
     return () => {
       stopped = true;
-      clearInterval(pollInterval);
+      if (timer !== undefined) window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };
-  }, [cycleStatus?.active_state]);
+  }, []);
 
   const connection = failed ? "local_offline" : health ? "connected" : "checking";
   // Use dashboard profile data when available; fall back to local profile state
@@ -321,6 +333,16 @@ export function App() {
       setPendingQuestion(null);
       setAnswerText("");
       setRememberAllJobs(false);
+      // E5-R32: confirm the submit visibly — the question panel disappears
+      // the moment the wait clears, and without this the answer looked like
+      // it had vanished with no effect.
+      const notice = skip
+        ? "Job skipped — the run is resuming with the next job."
+        : "Answer received — the run is resuming.";
+      setAnswerNotice(notice);
+      window.setTimeout(() => {
+        setAnswerNotice((current) => (current === notice ? null : current));
+      }, 8000);
       await refreshCycleStatus();
     } catch (error: any) {
       setAnswerError(error?.message ?? "The answer could not be submitted. Please try again.");
@@ -334,9 +356,25 @@ export function App() {
   };
 
   const handleNavClick = (page: typeof currentPage) => {
+    const openedOverview = page === "overview" && page !== currentPage;
     setCurrentPage(page);
     setApplicationsFilter(null);
     setSidebarOpen(false);
+    // E5-R32: arriving at Overview re-syncs the run state immediately, so a
+    // screening question that started while the status was stale (or while
+    // the user was on another page) is fetched and rendered without waiting
+    // for the next poll tick.
+    if (openedOverview) {
+      void getAutonomousCycleStatus()
+        .then((data) => {
+          setCycleStatus(data);
+          setCycleConflict(false);
+          syncPendingQuestion(data);
+        })
+        .catch(() => {
+          // The always-on polling loop retries; a miss here is not fatal.
+        });
+    }
   };
 
   const handleViewApplications = (filter: string | null = null) => {
@@ -620,6 +658,13 @@ export function App() {
                     </button>
                   </div>
                 </div>
+              )}
+              {/* E5-R32: confirmation that the answer landed and the run is
+                  resuming (the question panel disappears on submit). */}
+              {answerNotice && !isWaitingForAnswer && (
+                <p className="manual-queue-banner info" role="status" aria-live="polite">
+                  {answerNotice}
+                </p>
               )}
             </section>
 

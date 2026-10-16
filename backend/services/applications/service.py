@@ -24,6 +24,7 @@ from backend.services.matching.normalizer import (
     evaluate_salary_gate,
 )
 from backend.services.matching.engine import (
+    apprenticeship_excluded_reason,
     experience_passes_fresher_rule,
     is_strict_it_job,
     job_relevance_check,
@@ -251,6 +252,15 @@ class ApplicationService:
         if job.employment_type and preference.employment_types:
             if not is_employment_type_allowed(job.employment_type, preference.employment_types):
                 return False, f"Employment type '{job.employment_type}' not allowed"
+
+        # 7b. E5-R32: apprenticeship gate (job 422) — a NULL employment_type
+        # never reaches check 7, so detect apprenticeship postings from their
+        # title/description and exclude them when the profile does not allow
+        # apprenticeship employment types. Shares the exact reason string with
+        # the deterministic gate so the dashboard badge stays consistent.
+        apprenticeship_reason = apprenticeship_excluded_reason(job, preference)
+        if apprenticeship_reason:
+            return False, apprenticeship_reason
         
         # 8. Role relevance — shared deterministic gate (E5-R17): title/search
         # scope plus the job's actual role category/department and described

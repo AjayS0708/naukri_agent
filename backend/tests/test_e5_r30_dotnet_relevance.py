@@ -50,6 +50,7 @@ from backend.services.matching.engine import (
     EXCLUDED_RESPONSIBILITY_PHRASES,
     STRONG_EXCLUDED_RESPONSIBILITY_PHRASES,
     UNWANTED_SPECIALIZATIONS,
+    apprenticeship_excluded_reason,
     job_relevance_check,
 )
 
@@ -212,6 +213,10 @@ class TestActualObservedRecords:
     def test_job_422_record_end_to_end_queue_verdict(
         self, db_session, confirmed_profile, job_preferences
     ) -> None:
+        """E5-R32: relevance of #422's JD is fine (asserted above), but the
+        queue must EXCLUDE the record — its "1-Year Apprenticeship" is not
+        among the profile's employment-type preferences (job #422 stalled the
+        09:06 run while its apprenticeship question went unanswered)."""
         job = _make_job(
             db_session,
             422,
@@ -220,8 +225,10 @@ class TestActualObservedRecords:
         )
         payload = ManualApplyService(db_session).list_eligible()
         by_id = {item["job_id"]: item for item in payload["items"]}
-        assert by_id[job.id]["eligible"] is True
-        assert by_id[job.id]["exclusion_reason"] is None
+        assert by_id[job.id]["eligible"] is False
+        assert by_id[job.id]["exclusion_reason"] == (
+            f"hard_filtered: {apprenticeship_excluded_reason(job, job_preferences)}"
+        )
 
 
 class TestRelevantDotNetRoles:
@@ -329,11 +336,14 @@ class TestQueueConsistencyAndProtections:
         self, db_session, confirmed_profile, job_preferences
     ) -> None:
         """Eligibility badges must reflect the current shared-gate decision:
-        the relevant .NET rows show Eligible; the mechanical .NET-titled row
-        shows the backend's not_relevant reason (the same string the gate
-        returns), not a stale or frontend-specific label."""
+        the relevant .NET row (technical JD — E5-R32: deliberately NOT the
+        apprenticeship JD, which the queue now excludes; see
+        test_job_422_record_end_to_end_queue_verdict) shows Eligible; the
+        mechanical .NET-titled row shows the backend's not_relevant reason
+        (the same string the gate returns), not a stale or frontend-specific
+        label."""
         relevant = _make_job(
-            db_session, 1, title="Dot Net Developer", description=JOB_422_DESCRIPTION
+            db_session, 1, title="Dot Net Developer", description=TECHNICAL_DOTNET_JD
         )
         irrelevant = _make_job(
             db_session,

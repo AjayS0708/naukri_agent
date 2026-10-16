@@ -24,6 +24,9 @@ class ManualApplyEligibleItem(BaseModel):
     application_mode: Optional[str] = None
     discovered_at: Optional[datetime] = None
     application_status: Optional[str] = None
+    # E5-R32: latest row's skip reason so the queue can distinguish a
+    # user-initiated skip (USER_SKIPPED prefix) from automated skips.
+    skip_reason: Optional[str] = None
     eligible: bool
     exclusion_reason: Optional[str] = None
 
@@ -82,6 +85,25 @@ class ManualApplyStopResponse(BaseModel):
 
     cancel_requested: bool
     active_state: str
+    message: str
+
+
+class ManualApplySkipRequest(BaseModel):
+    """E5-R32: skip one job from the Apply Queue (two-step confirm client-side)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: int = Field(description="Job to skip in the apply queue")
+
+
+class ManualApplySkipResponse(BaseModel):
+    """Result of a per-job skip request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: int
+    # RECORDED | QUEUED | ALREADY_SKIPPED | ALREADY_PROCESSED | NOT_ELIGIBLE
+    mode: str
     message: str
 
 

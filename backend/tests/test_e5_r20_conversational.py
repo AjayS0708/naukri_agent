@@ -120,6 +120,13 @@ class FakeContainer:
         return None
 
     async def query_selector_all(self, sel: str):
+        # E5-R32: _detect_conversational_question now reads the LAST visible
+        # bot message via query_selector_all (first-message detection picked
+        # stale intros while the real question waited below).
+        if sel in (".botMsg span", ".botMsg"):
+            if not self.bot_text:
+                return []
+            return [FakeElement(text=self.bot_text)]
         if sel == 'input[type="radio"]':
             return self.radios
         if sel in (

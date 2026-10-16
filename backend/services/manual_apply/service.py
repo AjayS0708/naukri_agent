@@ -32,7 +32,10 @@ from backend.models.job import Job
 from backend.models.matching import JobPreference
 from backend.models.profile import Profile
 from backend.services.agent_state import AgentStateManager
-from backend.services.applications.protection import protected_job_ids
+from backend.services.applications.protection import (
+    protected_job_ids,
+    user_skipped_job_ids,
+)
 from backend.services.applications.runner import ApplicationRunner
 from backend.services.autonomous_cycle.coordinator import coordinator
 from backend.services.matching.engine import MatchEngine, job_relevance_check
@@ -75,6 +78,11 @@ _OUTCOME_KEYS = {
 # (display only; the durable record is always the applications table).
 _last_manual_run: Optional[dict[str, Any]] = None
 
+# E5-R32: the currently running manual apply service (if any), so the skip
+# endpoint can queue a per-job skip request for the live batch instead of
+# touching a page mid-submission. Set for the duration of run() only.
+_active_manual_service: Optional["ManualApplyService"] = None
+
 
 def _now_iso() -> str:
     """E5-R31: UTC timestamp for progress-doc clock fields (job/step start)."""
@@ -84,6 +92,95 @@ def _now_iso() -> str:
 def get_last_manual_run() -> Optional[dict[str, Any]]:
     """Summary of the last completed manual apply run, if any."""
     return dict(_last_manual_run) if _last_manual_run else None
+
+
+def request_job_skip(job_id: int, db: Session) -> dict[str, Any]:
+    """E5-R32: skip one job from the Apply Queue ("Skip This Job").
+
+    - An active batch queues the request; the runner honors it at the next
+      job boundary (never mid-submission).
+    - With no batch running the skip is recorded immediately.
+    - A job with blocking application history (already applied / unresolved
+      attempt) or an existing user skip is refused honestly — no fake rows.
+
+    Returns ``{"job_id", "mode", "message"}`` with mode one of
+    RECORDED / QUEUED / ALREADY_SKIPPED / ALREADY_PROCESSED / NOT_ELIGIBLE.
+    """
+    from backend.services.applications.protection import (
+        USER_SKIP_PREFIX,
+        user_skipped_job_ids,
+    )
+    from backend.services.applications.service import ApplicationService
+
+    job = db.get(Job, int(job_id))
+    if job is None:
+        return {
+            "job_id": job_id,
+            "mode": "NOT_ELIGIBLE",
+            "message": f"Job {job_id} no longer exists.",
+        }
+
+    if job.id in user_skipped_job_ids(db, [job.id]):
+        return {
+            "job_id": job.id,
+            "mode": "ALREADY_SKIPPED",
+            "message": "This job was already skipped by you.",
+        }
+
+    active = _active_manual_service
+    if active is not None and active._run_token:
+        if job.id in active._processed_job_ids:
+            return {
+                "job_id": job.id,
+                "mode": "ALREADY_PROCESSED",
+                "message": "The run already processed this job; the skip was not queued.",
+            }
+        active._skip_requests.add(job.id)
+        logger.info(
+            "manual_apply_skip_queued",
+            extra={"job_id": job.id, "run_token": active._run_token},
+        )
+        return {
+            "job_id": job.id,
+            "mode": "QUEUED",
+            "message": (
+                "Queued — the run will skip this job at the next job boundary "
+                "(an in-progress submission is never interrupted)."
+            ),
+        }
+
+    # No active batch: refuse to append a skip row over blocking history,
+    # otherwise record the user skip immediately.
+    existing = ApplicationService(db).get_application_by_job(job.id)
+    existing_status = getattr(existing, "status", None)
+    existing_status = (
+        existing_status.value if hasattr(existing_status, "value") else existing_status
+    )
+    if existing and existing_status in (
+        "DISCOVERED",
+        "PRE_APPLY",
+        "APPLICATION_STARTED",
+        "APPLIED",
+        "SUBMITTED",
+        "NEEDS_ATTENTION",
+    ):
+        return {
+            "job_id": job.id,
+            "mode": "NOT_ELIGIBLE",
+            "message": (
+                f"This job has an existing '{existing_status}' record; "
+                "a skip would not change it."
+            ),
+        }
+    ApplicationService(db).record_application_skip(
+        job, f"{USER_SKIP_PREFIX}: skipped by the user in the apply queue"
+    )
+    logger.info("manual_apply_skip_recorded", extra={"job_id": job.id})
+    return {
+        "job_id": job.id,
+        "mode": "RECORDED",
+        "message": "Job skipped — it is excluded from future apply runs.",
+    }
 
 
 class ManualApplyService:
@@ -98,6 +195,14 @@ class ManualApplyService:
         self.state_manager = state_manager or AgentStateManager()
         self._run_token: Optional[str] = None
         self._run_progress: dict[str, Any] = {}
+        # E5-R32: per-job user skip requests for the live batch.
+        self._skip_requests: set[int] = set()
+        self._accepted_job_ids: set[int] = set()
+        self._processed_job_ids: set[int] = set()
+
+    def _is_skip_requested(self, job_id: int) -> bool:
+        """E5-R32: runner callback — is a user skip queued for this job?"""
+        return int(job_id) in self._skip_requests
 
     # ── eligibility ──────────────────────────────────────────────────────
 
@@ -118,6 +223,7 @@ class ManualApplyService:
         profile: Optional[Profile],
         preferences: Optional[JobPreference],
         match_engine: Optional[MatchEngine],
+        user_skipped_ids: Optional[set[int]] = None,
     ) -> tuple[bool, Optional[str]]:
         """The single eligibility rule for the manual queue (and start-time
         re-validation). Returns ``(eligible, exclusion_reason)``.
@@ -127,6 +233,8 @@ class ManualApplyService:
         autonomous cycle uses. AMBIGUOUS / unclassified modes stay eligible:
         the runner re-verifies them live and never forces native without an
         Apply-button evidence.
+        E5-R32: user-skipped jobs are excluded with their own reason before
+        the generic application-history one.
         """
         mode = (getattr(job, "application_mode", None) or "").strip().upper()
         if mode == "EXTERNAL":
@@ -135,6 +243,8 @@ class ManualApplyService:
             # E5-R30: the runner confirmed from visible evidence that this
             # listing expired; every candidate stage now excludes it.
             return False, "listing_expired"
+        if user_skipped_ids and job.id in user_skipped_ids:
+            return False, "user_skipped"
         if job.id in protected_ids:
             return False, "application_history"
         if job.title:
@@ -192,23 +302,28 @@ class ManualApplyService:
             ]
         profile, preferences, match_engine = self._load_context(self.session)
         protected = protected_job_ids(self.session, [job.id for job in jobs])
+        # E5-R32: user-initiated skips get their own exclusion reason (and
+        # protection) distinct from automated eligibility history.
+        user_skipped = user_skipped_job_ids(self.session, [job.id for job in jobs])
 
         latest_status: dict[int, str] = {}
+        latest_skip_reason: dict[int, Optional[str]] = {}
         if jobs:
             rows = self.session.execute(
-                select(Application.job_id, Application.status)
+                select(Application.job_id, Application.status, Application.skip_reason)
                 .where(Application.job_id.in_([job.id for job in jobs]))
                 .order_by(Application.id.desc())
             ).all()
-            for job_id, status_value in rows:
+            for job_id, status_value, skip_reason in rows:
                 latest_status.setdefault(job_id, status_value or None)
+                latest_skip_reason.setdefault(job_id, skip_reason or None)
 
         items: list[dict[str, Any]] = []
         eligible_count = 0
         eligible_job_ids: list[int] = []
         for job in jobs:
             eligible, reason = self._eligibility(
-                job, protected, profile, preferences, match_engine
+                job, protected, profile, preferences, match_engine, user_skipped
             )
             if eligible:
                 eligible_count += 1
@@ -225,6 +340,7 @@ class ManualApplyService:
                     "application_mode": job.application_mode,
                     "discovered_at": job.discovered_at,
                     "application_status": latest_status.get(job.id),
+                    "skip_reason": latest_skip_reason.get(job.id),
                     "eligible": eligible,
                     "exclusion_reason": reason,
                 }
@@ -266,6 +382,7 @@ class ManualApplyService:
         by_id = {job.id: job for job in rows}
         profile, preferences, match_engine = self._load_context(self.session)
         protected = protected_job_ids(self.session, normalized)
+        user_skipped = user_skipped_job_ids(self.session, normalized)
 
         accepted: list[int] = []
         dropped: list[int] = []
@@ -275,7 +392,7 @@ class ManualApplyService:
                 dropped.append(job_id)
                 continue
             eligible, reason = self._eligibility(
-                job, protected, profile, preferences, match_engine
+                job, protected, profile, preferences, match_engine, user_skipped
             )
             if eligible:
                 accepted.append(job_id)
@@ -368,6 +485,14 @@ class ManualApplyService:
                     self._run_progress["processed"] = (
                         self._run_progress.get("processed", 0) + 1
                     )
+                    # E5-R32: remember which jobs the runner actually handled
+                    # so the end-of-run skip drain never overwrites a real
+                    # outcome with a user-skip record.
+                    if payload.get("job_id") is not None:
+                        try:
+                            self._processed_job_ids.add(int(payload["job_id"]))
+                        except (TypeError, ValueError):
+                            pass
                     self._run_progress["remaining"] = max(
                         0,
                         self._run_progress.get("candidates_total", 0)
@@ -481,6 +606,40 @@ class ManualApplyService:
         )
         self._persist_progress()
 
+    def _drain_skip_requests(self, db: Session) -> None:
+        """E5-R32: record user skip requests the runner never reached.
+
+        Jobs the runner processed keep their real outcome (requests for them
+        are dropped); every other queued request becomes a durable
+        USER_SKIPPED row so an operator's skip survives a stopped batch.
+        """
+        from backend.services.applications.protection import USER_SKIP_PREFIX
+        from backend.services.applications.service import ApplicationService
+
+        pending = [
+            job_id
+            for job_id in set(self._skip_requests)
+            if job_id not in self._processed_job_ids
+        ]
+        self._skip_requests.clear()
+        if not pending:
+            return
+        service = ApplicationService(db)
+        for job_id in pending:
+            try:
+                job = db.get(Job, job_id)
+                if job is None:
+                    continue
+                service.record_application_skip(
+                    job, f"{USER_SKIP_PREFIX}: skipped by the user in the apply queue"
+                )
+                logger.info(
+                    "manual_apply_skip_drained",
+                    extra={"job_id": job_id, "run_token": self._run_token},
+                )
+            except Exception:
+                logger.exception("manual_apply_skip_drain_item_failed", extra={"job_id": job_id})
+
     async def run(
         self, job_ids: list[int], run_token: str, dry_run: bool = False
     ) -> dict[str, Any]:
@@ -489,9 +648,14 @@ class ManualApplyService:
         Opens its own database session (background task; the request-scoped
         session is closed by the time this runs).
         """
-        global _last_manual_run
+        global _last_manual_run, _active_manual_service
 
         self._run_token = run_token
+        # E5-R32: publish this instance so the skip endpoint can queue
+        # per-job requests for THIS batch, and reset the per-run sets.
+        _active_manual_service = self
+        self._accepted_job_ids = {int(job_id) for job_id in job_ids}
+        self._processed_job_ids = set()
         started_at = datetime.now(UTC)
         stats: dict[str, Any] = {
             "run_kind": "MANUAL_APPLY",
@@ -554,6 +718,7 @@ class ManualApplyService:
                 run_token=run_token,
                 progress_hook=self._make_progress_hook(),
                 cancel_check=self._cancellation_requested,
+                skip_request_check=self._is_skip_requested,
                 hitl=bool(run_token),
                 close_session_after_run=True,
                 recover_stale_state=True,
@@ -565,6 +730,9 @@ class ManualApplyService:
             # autonomous cycle writes (dropping only jobs that no longer pass
             # the shared deterministic gate, each with a recorded reason).
             ready_ids = self._ensure_fallback_analyses(db, list(job_ids))
+            # E5-R32: prep-dropped jobs are already recorded and handled —
+            # the end-of-run skip drain must not touch them again.
+            self._processed_job_ids.update(set(self._accepted_job_ids) - set(ready_ids))
             prep_dropped = max(0, len(job_ids) - len(ready_ids))
             stats["dropped"] = prep_dropped
             if prep_dropped:
@@ -649,6 +817,17 @@ class ManualApplyService:
             status = "FAILED"
             error = str(exc)
         finally:
+            # E5-R32: stop publishing this instance first so a skip request
+            # racing in now records immediately instead of queueing into a
+            # batch that is already finishing, then drain requests for jobs
+            # the runner never processed (stopped batch). Draining after the
+            # clear keeps both orderings idempotent (identical reasons reuse
+            # the same row).
+            _active_manual_service = None
+            try:
+                self._drain_skip_requests(db)
+            except Exception:
+                logger.exception("manual_apply_skip_drain_failed")
             if runner is not None:
                 try:
                     closed = runner.close_session()
