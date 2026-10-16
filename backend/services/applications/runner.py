@@ -47,6 +47,28 @@ class ApplicationRunner:
     Processes jobs sequentially with safety gate enforcement.
     """
 
+    # E5-R31: session-level browser death (the persistent context or its
+    # pages were closed) — matched on the caught error's message before any
+    # attempt row exists, so a dead session can never be confused with a
+    # job-level failure (and an ambiguous mid-attempt death is never
+    # retried, because the attempt row exists by then).
+    _SESSION_LOST_SIGNATURES = (
+        "target page, context or browser has been closed",
+        "target page, context or browser is closed",
+        "browser has been closed",
+        "browser is closed",
+        "browser is not connected",
+        "the browser is not connected",
+        "target closed",
+        "connection closed",
+        "browser session not started",
+    )
+
+    # E5-R31: at most this many mid-run session restarts per
+    # run_applications() call — a browser that keeps dying must not
+    # restart forever.
+    _SESSION_RESTART_LIMIT = 3
+
     def __init__(
         self,
         session: Session,
@@ -88,6 +110,18 @@ class ApplicationRunner:
         self._open_failure: Optional[str] = None
         self._hitl_poll_interval = 1.5
         self._hitl_timeout_seconds = 3600.0
+        # E5-R31: per-job browser/session lifecycle + stage timing.
+        # ``_browser_used_this_job`` gates the inter-job pacing delay (a
+        # pre-attempt rejection opens no page, so the pause would be dead
+        # time); ``_session_restart_attempts`` caps mid-run restarts per
+        # run; the stage fields accumulate per-job timings that are merged
+        # into ``_stage_totals`` at each job's end.
+        self._browser_used_this_job = False
+        self._session_restart_attempts = 0
+        self._stage_current: Optional[str] = None
+        self._stage_mark: Optional[float] = None
+        self._stage_seconds: dict[str, float] = {}
+        self._stage_totals: dict[str, float] = {}
 
     async def stop_safely(self):
         """Request a graceful stop to the application runner."""
@@ -166,6 +200,13 @@ class ApplicationRunner:
             # non-dry-run APPLICATION_STARTED row written) — the difference
             # between "candidates seen" and "attempts actually begun".
             "attempts_started": 0,
+            # E5-R31: jobs in the batch that were never started (Stop or a
+            # session-level halt between jobs), the sum of every terminal
+            # outcome bucket (reconciliation guard), and accumulated
+            # per-stage durations for latency diagnosis.
+            "cancelled_remaining": 0,
+            "outcome_total": 0,
+            "stage_seconds": {},
         }
 
     async def run_applications(self, job_ids: list[int], dry_run: bool = False) -> dict:
@@ -192,6 +233,9 @@ class ApplicationRunner:
         # E5-R28: fresh per-call attempt counter (the shared runner serves
         # several run_applications() calls in one cycle).
         self._attempts_started = 0
+        # E5-R31: fresh per-call session-restart budget and stage totals.
+        self._session_restart_attempts = 0
+        self._stage_totals = {}
         stats = self._empty_stats(job_ids, dry_run)
 
         try:
@@ -212,7 +256,16 @@ class ApplicationRunner:
 
             # Process jobs sequentially
             for job_id in job_ids:
-                if self._stop_requested:
+                # E5-R31: a Stop is honored at the job boundary — between
+                # jobs, before a session restart, and before an attempt
+                # starts (checked again inside _execute_single_job). Before
+                # this, only HITL waits ever noticed a Stop.
+                if self._stop_requested or self._cancellation_requested_safely():
+                    if not self._stop_requested:
+                        logger.info(
+                            "Cancellation requested; stopping before job %s", job_id
+                        )
+                    self._stop_requested = True
                     logger.info("Application runner stopped by user request")
                     break
 
@@ -226,7 +279,10 @@ class ApplicationRunner:
                         stats["submitted_unconfirmed"] += 1
                     elif result == "SKIPPED":
                         stats["skipped"] += 1
-                    elif result == "NEEDS_ATTENTION":
+                    elif result in ("NEEDS_ATTENTION", "SECURITY_REQUIRED"):
+                        # E5-R31: every path that writes a NEEDS_ATTENTION
+                        # row reports it here too — the captcha path used to
+                        # count FAILED while its row said NEEDS_ATTENTION.
                         stats["needs_attention"] += 1
                     elif result == "EXTERNAL":
                         stats["external"] += 1
@@ -235,18 +291,35 @@ class ApplicationRunner:
                     elif result == "ERROR":
                         stats["errors"] += 1
                     elif result == "AUTH_REQUIRED":
-                        # E5-R16: logged-out session â€” halt immediately; the
+                        # E5-R16: logged-out session — halt immediately; the
                         # caller surfaces LOGIN_REQUIRED to the dashboard.
                         stats["auth_required"] += 1
                         break
                     elif result == "DRY_RUN_COMPLETE":
                         stats["dry_run"] += 1
+                    else:
+                        # Unknown outcome (SESSION_LOST is converted inside
+                        # _process_single_job and must never reach here):
+                        # count it so outcome_total still reconciles, shout.
+                        logger.error(
+                            "Unexpected application outcome %r for job %s",
+                            result,
+                            job_id,
+                        )
+                        stats["errors"] += 1
 
-                    # Small delay between applications
-                    await asyncio.sleep(2)
+                    # E5-R31: pace only after a job that actually used the
+                    # browser. Pre-attempt rejections (gate, duplicate,
+                    # session unavailable) open no page, so the fixed pause
+                    # between them was pure dead time in large batches.
+                    # Navigation/settle pauses inside the adapter are
+                    # untouched — submission reliability depends on them.
+                    if self._browser_used_this_job and not self._stop_requested:
+                        await asyncio.sleep(2)
 
                 except Exception as e:
                     logger.error(f"Error processing job {job_id}: {e}", exc_info=True)
+                    stats["processed"] += 1
                     stats["errors"] += 1
                     if self.state_manager.current_state in (
                         AgentState.SECURITY_REQUIRED,
@@ -254,6 +327,11 @@ class ApplicationRunner:
                         AgentState.CRITICAL_ERROR,
                     ):
                         break
+
+            # E5-R31: jobs in the batch that were never started (Stop or an
+            # AUTH halt between jobs) are reported explicitly so
+            # requested = processed + cancelled_remaining holds.
+            stats["cancelled_remaining"] = len(job_ids) - stats["processed"]
 
             # Return to IDLE, except after a logged-out session (E5-R16):
             # AUTH_REQUIRED stays visible so the operator sees why the workflow
@@ -273,6 +351,43 @@ class ApplicationRunner:
         # E5-R28: publish the attempt count for this call (paths that returned
         # earlier never started an attempt, and _empty_stats already reports 0).
         stats["attempts_started"] = self._attempts_started
+        # E5-R31: stage timings + terminal-outcome reconciliation. Every
+        # processed job lands in exactly one bucket, so outcome_total must
+        # equal processed — a mismatch means a new outcome was added to the
+        # loop without a counter (the exact drift that hid 59 failures).
+        stats["stage_seconds"] = dict(self._stage_totals)
+        stats["outcome_total"] = (
+            stats["applied"]
+            + stats["submitted_unconfirmed"]
+            + stats["skipped"]
+            + stats["external"]
+            + stats["needs_attention"]
+            + stats["failed"]
+            + stats["errors"]
+            + stats["auth_required"]
+            + stats["dry_run"]
+        )
+        if stats["outcome_total"] != stats["processed"]:
+            logger.error(
+                "run_applications outcome totals do not reconcile: "
+                "processed=%d outcome_total=%d",
+                stats["processed"],
+                stats["outcome_total"],
+            )
+        logger.info(
+            "run_applications_totals total=%d processed=%d cancelled_remaining=%d "
+            "outcome_total=%d applied=%d skipped=%d needs_attention=%d failed=%d "
+            "errors=%d",
+            stats["total"],
+            stats["processed"],
+            stats["cancelled_remaining"],
+            stats["outcome_total"],
+            stats["applied"],
+            stats["skipped"],
+            stats["needs_attention"],
+            stats["failed"],
+            stats["errors"],
+        )
         return stats
 
     def _return_to_idle_from_active(self) -> None:
@@ -341,15 +456,160 @@ class ApplicationRunner:
         except Exception as exc:
             logger.warning("progress hook failed: %s", exc)
 
+    def _is_session_lost_error(self, message: str) -> bool:
+        """E5-R31: True when the error means the browser session died
+        (persistent context terminated) rather than the job itself failing."""
+        lowered = (message or "").lower()
+        return any(sig in lowered for sig in self._SESSION_LOST_SIGNATURES)
+
+    def _cancellation_requested_safely(self) -> bool:
+        """E5-R31: poll the owner's cancel_check without ever breaking the
+        run on a faulty check (matching the autonomous cycle's behaviour)."""
+        if not self.cancel_check:
+            return False
+        try:
+            return bool(self.cancel_check())
+        except Exception as exc:
+            logger.warning("Cancellation check failed (continuing run): %s", exc)
+            return False
+
+    def _record_job_outcome(self, job_id: int, reason: str) -> str:
+        """E5-R31: record a truthful skip row for a job the session could not
+        attempt (or could no longer attempt) and report SKIPPED."""
+        job = self.session.get(Job, job_id)
+        if job is None:
+            logger.warning("Job %s missing while recording session outcome", job_id)
+            return "ERROR"
+        self.application_service.record_application_skip(job, reason)
+        return "SKIPPED"
+
+    async def _restart_browser_session(self) -> bool:
+        """E5-R31: restore a dead browser session so the batch can continue.
+
+        Operates directly on the adapter (the state machine is already in
+        APPLYING mid-run, so open_session()'s IDLE-only transition cannot be
+        reused). The profile lock is released by stop_session and re-acquired
+        by start_session; if another process grabs it meanwhile, this fails
+        and the caller records truthful skip rows instead of looping.
+        """
+        try:
+            await self.adapter.stop_session()
+        except Exception as exc:
+            logger.warning("Stale session stop failed during restart: %s", exc)
+        self._session_started = False
+        try:
+            started = await self.adapter.start_session()
+        except Exception as exc:
+            logger.error("Browser session restart raised: %s", exc)
+            started = False
+        if not started:
+            logger.error(
+                "Browser session restart failed: %s",
+                self.adapter.last_startup_error,
+            )
+            return False
+        self._session_started = True
+        return True
+
+    async def _recover_session_and_retry(
+        self,
+        job_id: int,
+        profile: Profile,
+        preferences: JobPreference,
+    ) -> str:
+        """E5-R31: after a pre-attempt session death, restart once and retry
+        this same job; never retry when the session cannot come back, when
+        Stop is pending, or when the fresh session dies again (bounded).
+
+        Only reached when NO attempt row exists for this job — an
+        ambiguous mid-attempt death returns NEEDS_ATTENTION from
+        _execute_single_job and is never retried from here.
+        """
+        if self._stop_requested or self._cancellation_requested_safely():
+            self._stop_requested = True
+            return self._record_job_outcome(
+                job_id, "Run stopped before the job was attempted"
+            )
+        if self._session_restart_attempts >= self._SESSION_RESTART_LIMIT:
+            return self._record_job_outcome(
+                job_id,
+                "Browser session unavailable — job not attempted "
+                "(restart attempts exhausted for this run)",
+            )
+        self._session_restart_attempts += 1
+        if not await self._restart_browser_session():
+            return self._record_job_outcome(
+                job_id, "Browser session unavailable — job not attempted"
+            )
+        logger.warning(
+            "Browser session restarted mid-run job=%s attempt=%d",
+            job_id,
+            self._session_restart_attempts,
+        )
+        outcome = await self._execute_single_job(job_id, profile, preferences)
+        if outcome == "SESSION_LOST":
+            return self._record_job_outcome(
+                job_id, "Browser session unavailable — job not attempted"
+            )
+        return outcome
+
+    def _begin_stage(self, name: str) -> None:
+        """E5-R31: close the pending stage (if any) and start timing ``name``."""
+        now = time.monotonic()
+        prev, mark = self._stage_current, self._stage_mark
+        self._stage_current, self._stage_mark = name, now
+        if prev is not None and mark is not None:
+            self._stage_seconds[prev] = self._stage_seconds.get(prev, 0.0) + (
+                now - mark
+            )
+
+    def _finish_stages(self, job_id: int) -> None:
+        """E5-R31: close the pending stage, log the per-stage breakdown and
+        merge it into the run-level totals."""
+        if self._stage_current is not None and self._stage_mark is not None:
+            self._stage_seconds[self._stage_current] = (
+                self._stage_seconds.get(self._stage_current, 0.0)
+                + (time.monotonic() - self._stage_mark)
+            )
+        self._stage_current = None
+        self._stage_mark = None
+        if self._stage_seconds:
+            breakdown = " ".join(
+                f"{name}={seconds:.2f}"
+                for name, seconds in sorted(self._stage_seconds.items())
+            )
+            logger.info("stage_timing job=%s %s", job_id, breakdown)
+            for name, seconds in self._stage_seconds.items():
+                self._stage_totals[name] = self._stage_totals.get(name, 0.0) + seconds
+        self._stage_seconds = {}
+
     async def _process_single_job(
         self,
         job_id: int,
         profile: Profile,
         preferences: JobPreference
     ) -> str:
-        """E5-R21: emit per-job progress around the actual job execution."""
-        await self._emit({"event": "job_started", "job_id": job_id})
+        """E5-R21: emit per-job progress around the actual job execution.
+
+        E5-R31: when execution ends with the SESSION_LOST sentinel (the
+        browser died before any attempt was made), restart the session and
+        retry this same job so one death cannot silently discard the rest of
+        the batch.
+        """
+        job_title = None
+        try:
+            job = self.session.get(Job, job_id)
+            job_title = job.title if job is not None else None
+        except Exception:
+            pass
+        await self._emit(
+            {"event": "job_started", "job_id": job_id, "job_title": job_title}
+        )
         outcome = await self._execute_single_job(job_id, profile, preferences)
+        if outcome == "SESSION_LOST":
+            outcome = await self._recover_session_and_retry(
+                job_id, profile, preferences
+            )
         await self._emit({"event": "job_finished", "job_id": job_id, "outcome": outcome})
         return outcome
 
@@ -361,8 +621,18 @@ class ApplicationRunner:
     ) -> str:
         """
         Process a single job through the complete application flow.
-        Returns: "APPLIED", "SUBMITTED_UNCONFIRMED", "SKIPPED", "NEEDS_ATTENTION", "EXTERNAL", "FAILED", "ERROR"
+        Returns: "APPLIED", "SUBMITTED_UNCONFIRMED", "SKIPPED", "NEEDS_ATTENTION",
+        "EXTERNAL", "FAILED", "ERROR", "SECURITY_REQUIRED", "AUTH_REQUIRED",
+        "DRY_RUN_COMPLETE", "SESSION_LOST" (session died before any attempt;
+        consumed by _process_single_job — never seen by the batch loop).
         """
+        # E5-R31: per-job reset — stage timing and the browser-use flag that
+        # gates the inter-job pacing delay.
+        self._browser_used_this_job = False
+        self._stage_seconds = {}
+        self._stage_current = None
+        self._stage_mark = None
+
         job = self.session.get(Job, job_id)
         if not job:
             logger.warning(f"Job {job_id} not found")
@@ -463,9 +733,17 @@ class ApplicationRunner:
         page = None
         application = None
         try:
+            self._begin_stage("open_job_page")
             await self._emit({"event": "step", "job_id": job_id, "step": "opening_job_page"})
             result = await self.adapter.open_job_page(job.url)
             page = result.page
+            # E5-R31: the page is open — this job consumed browser time, so
+            # the inter-job pacing delay applies to it.
+            self._browser_used_this_job = True
+            self._begin_stage("page_detection")
+            await self._emit(
+                {"event": "step", "job_id": job_id, "step": "detecting_job_state"}
+            )
 
             # Check if security intervention is required
             if result.security_required:
@@ -621,6 +899,17 @@ class ApplicationRunner:
                     )
                     return "NEEDS_ATTENTION"
 
+            # E5-R31: last safe boundary before an attempt begins — a Stop
+            # must not start a new application. No attempt row exists yet,
+            # so a truthful skip row is written and the batch stops after
+            # this job (the remainder is reported as cancelled_remaining).
+            if self._stop_requested or self._cancellation_requested_safely():
+                self._stop_requested = True
+                self.application_service.record_application_skip(
+                    job, "Run cancelled before the attempt started"
+                )
+                return "SKIPPED"
+
             # Phase 10: Create APPLICATION_STARTED only after classification is confirmed
             application = self.application_service.create_application(
                 ApplicationCreate(
@@ -667,6 +956,10 @@ class ApplicationRunner:
                 return "DRY_RUN_COMPLETE"
 
             # Start Naukri-native application
+            self._begin_stage("start_application")
+            await self._emit(
+                {"event": "step", "job_id": job_id, "step": "starting_application"}
+            )
             start_result = await self.adapter.start_application(page)
             if start_result == ApplicationStartResult.APPLIED:
                 evidence = await self.adapter.detect_applied_state(page)
@@ -696,11 +989,13 @@ class ApplicationRunner:
             # and submits on the final Save. Drive it to completion here; the
             # legacy single-form path below cannot model this flow.
             if await self.adapter.is_conversational_apply(page):
+                self._begin_stage("questions")
                 return await self._complete_conversational_application(
                     page, application, job, profile
                 )
 
             # Detect and answer questions
+            self._begin_stage("questions")
             questions = await self.adapter.detect_application_questions(page)
             # E5-R21: with human-in-the-loop enabled, saved answers and human
             # answers keep the form moving even when AI answering
@@ -814,6 +1109,7 @@ class ApplicationRunner:
                     return "NEEDS_ATTENTION"
 
             # Submit application (production path only)
+            self._begin_stage("submit")
             await self._emit({"event": "step", "job_id": job_id, "step": "submitting"})
             submitted = await self.adapter.submit_application(page)
             if not submitted:
@@ -832,6 +1128,10 @@ class ApplicationRunner:
                 return "FAILED"
 
             # Confirm submission
+            self._begin_stage("confirm")
+            await self._emit(
+                {"event": "step", "job_id": job_id, "step": "confirming_submission"}
+            )
             confirmed = await self.adapter.confirm_submission(page)
             if confirmed:
                 self.application_service.update_application(
@@ -876,7 +1176,10 @@ class ApplicationRunner:
                         "Security verification required during application processing"
                     )
                 )
-                return "FAILED"
+                # E5-R31: the row written above is NEEDS_ATTENTION, so the
+                # outcome must say so — counting FAILED here was one of the
+                # counter/row mismatches.
+                return "SECURITY_REQUIRED"
 
             if "login" in error_msg or "auth" in error_msg:
                 # E5-R16: a session-level failure says nothing about this job.
@@ -906,20 +1209,47 @@ class ApplicationRunner:
                 job, f"Application error: {str(e)}"
             )
             if resolved is None and application is None:
+                # E5-R31: a dead browser session (context terminated) before
+                # any attempt is not a job failure — no row is written and
+                # the caller restarts the session and retries this job once.
+                if self._is_session_lost_error(str(e)):
+                    logger.warning(
+                        "Job %s: browser session lost before any attempt", job_id
+                    )
+                    return "SESSION_LOST"
                 self.application_service.record_application_skip(
                     job, f"Page failed before any attempt started: {str(e)}"
                 )
-                return "FAILED"
+                # E5-R31: the row above is SKIPPED, so the outcome is too.
+                return "SKIPPED"
             if resolved is None:
                 # This invocation had an attempt row; surface it for review.
                 self.application_service.record_application_failure(
                     job, f"Application error: {str(e)}"
                 )
-            return "FAILED"
+            # E5-R31: an attempt row exists (this invocation's or a prior
+            # run's) and it is NEEDS_ATTENTION — report the same thing. A
+            # session death here is ambiguous mid-attempt death: never
+            # retried, never reported as FAILED.
+            return "NEEDS_ATTENTION"
 
         finally:
             if page:
-                await page.close()
+                self._begin_stage("cleanup")
+                # E5-R31: adapter.close_page never terminates the persistent
+                # context (bare page.close() did — see its docstring). Test
+                # doubles may lack it or return non-awaitable sentinels, so
+                # the call is guarded exactly like _emit guards the hook.
+                closer = getattr(self.adapter, "close_page", None)
+                try:
+                    result = closer(page) if callable(closer) else page.close()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as exc:
+                    logger.debug("job page cleanup failed: %s", exc)
+            # E5-R31: close the pending stage and publish the breakdown even
+            # on paths that returned early inside the try.
+            self._finish_stages(job_id)
 
     def _notify_safely(self, callback: Callable[[], object]) -> None:
         try:
@@ -1185,6 +1515,7 @@ class ApplicationRunner:
 
         # Final explicit confirmation, then a bounded submit attempt whose
         # result is reconciled against Naukri's application history.
+        self._begin_stage("confirm")
         applied, evidence = await self.adapter.detect_applied_state(page)
         if applied:
             self.application_service.update_application(
@@ -1202,9 +1533,11 @@ class ApplicationRunner:
         # E5-R20: click only a supported Apply/Submit control (never .sendMsg)
         # and treat every non-confirmed result â€” including a timed-out or
         # intercepted click â€” as unconfirmed pending history reconciliation.
+        self._begin_stage("submit")
         outcome = await self.adapter.submit_conversational_application(page)
         if outcome == "SUBMITTED":
             await asyncio.sleep(2.0)
+            self._begin_stage("confirm")
             applied, evidence = await self.adapter.detect_applied_state(page)
             if applied:
                 self.application_service.update_application(
@@ -1252,6 +1585,7 @@ class ApplicationRunner:
         """
         history_entries = None
         try:
+            self._begin_stage("history_reconcile")
             history_entries = await self.adapter.fetch_application_history()
         except Exception as exc:
             logger.warning(
@@ -1545,6 +1879,9 @@ class ApplicationRunner:
         except Exception as exc:
             logger.warning("Failed to record waiting-stop for job %s: %s", job.id, exc)
         logger.info("Job %s left NEEDS_ATTENTION: run stopped while waiting for user", job.id)
+        # E5-R31: "the run was stopped" must actually stop the batch — the
+        # loop polls this flag at the next job boundary.
+        self._stop_requested = True
         return "NEEDS_ATTENTION"
 
 

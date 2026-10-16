@@ -1539,11 +1539,18 @@ class TestStopSession:
         adapter = NaukriAdapter()
         adapter.browser = AsyncMock()
         adapter.playwright = AsyncMock()
+        browser = adapter.browser
+        playwright = adapter.playwright
 
         await adapter.stop_session()
 
-        adapter.browser.close.assert_called_once()
-        adapter.playwright.stop.assert_called_once()
+        browser.close.assert_called_once()
+        playwright.stop.assert_called_once()
+        # E5-R31: handles are cleared on stop so a dead context can never be
+        # mistaken for a live one (open_job_page raises "Browser session not
+        # started", which the runner treats as a restartable session loss).
+        assert adapter.browser is None
+        assert adapter.playwright is None
 
     @pytest.mark.asyncio
     async def test_stop_session_no_browser(self):
@@ -2641,8 +2648,12 @@ class TestSearchJobsPageLeakPrevention:
         mock_page.close.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_cleanup_abandoned_pages_closes_all_pages(self):
-        """cleanup_abandoned_pages should close all pages in the context."""
+    async def test_cleanup_abandoned_pages_keeps_active_page(self):
+        """E5-R31: close every page except the first (active) one.
+
+        Closing all pages would terminate the persistent context — the exact
+        failure that killed a 61-job manual run after its first job.
+        """
         adapter = NaukriAdapter()
         adapter.browser = AsyncMock()
 
@@ -2655,13 +2666,16 @@ class TestSearchJobsPageLeakPrevention:
 
         await adapter.cleanup_abandoned_pages()
 
-        # Both pages should be closed
-        mock_page1.close.assert_called_once()
+        # The active (first) page survives; the abandoned one is closed.
+        mock_page1.close.assert_not_called()
         mock_page2.close.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_cleanup_abandoned_pages_skips_closed_pages(self):
-        """cleanup_abandoned_pages should skip already closed pages."""
+    async def test_cleanup_abandoned_pages_skips_closed_and_keeps_last_open(
+        self,
+    ):
+        """E5-R31: already-closed pages are skipped and the last remaining
+        open page is never closed (that would kill the context)."""
         adapter = NaukriAdapter()
         adapter.browser = AsyncMock()
 
@@ -2669,14 +2683,17 @@ class TestSearchJobsPageLeakPrevention:
         mock_page1.is_closed = True
         mock_page2 = AsyncMock()
         mock_page2.is_closed = False
+        mock_page3 = AsyncMock()
+        mock_page3.is_closed = False
 
-        adapter.browser.pages = [mock_page1, mock_page2]
+        adapter.browser.pages = [mock_page1, mock_page2, mock_page3]
 
         await adapter.cleanup_abandoned_pages()
 
-        # Only open page should be closed
+        # Closed page untouched; first open page kept; second open closed.
         mock_page1.close.assert_not_called()
-        mock_page2.close.assert_called_once()
+        mock_page2.close.assert_not_called()
+        mock_page3.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_cleanup_abandoned_pages_handles_no_browser(self):
@@ -2688,8 +2705,9 @@ class TestSearchJobsPageLeakPrevention:
         await adapter.cleanup_abandoned_pages()
 
     @pytest.mark.asyncio
-    async def test_search_retry_with_cleanup_prevents_page_leaks(self):
-        """Search retry with cleanup should prevent page leaks."""
+    async def test_search_retry_with_cleanup_never_kills_last_page(self):
+        """E5-R31: with only one page left, cleanup keeps it — closing it
+        would terminate the persistent context mid-session."""
         adapter = NaukriAdapter()
         adapter.browser = AsyncMock()
 
@@ -2711,5 +2729,5 @@ class TestSearchJobsPageLeakPrevention:
             # Cleanup abandoned pages
             await adapter.cleanup_abandoned_pages()
 
-        # Verify page1 was closed by cleanup
-        mock_page1.close.assert_called_once()
+        # The session's only page must survive cleanup.
+        mock_page1.close.assert_not_called()

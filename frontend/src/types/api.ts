@@ -172,6 +172,10 @@ export interface CycleProgress {
   // E5-R29: heartbeat stamped server-side on every progress write so the UI
   // can detect a running-but-stalled cycle (no heartbeat movement).
   progress_updated_at?: string | null;
+  // E5-R31: per-job/step clocks so the manual apply banner can show which
+  // job is running, how long it has been on it, and when progress last moved.
+  current_job_started_at?: string | null;
+  current_step_started_at?: string | null;
 }
 
 export interface PendingQuestion {

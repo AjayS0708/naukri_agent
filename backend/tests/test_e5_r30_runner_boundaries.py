@@ -226,7 +226,10 @@ class TestExternalPreOpenGate:
         outcome = _run(runner, job, confirmed_profile, job_preferences)
 
         runner.adapter.open_job_page.assert_awaited_once()
-        assert outcome == "FAILED"
+        # E5-R31: a failure before any attempt records a SKIPPED row (see
+        # TestFailureBeforeAttempt), so the outcome now matches that row —
+        # counting FAILED here was the counter/row mismatch.
+        assert outcome == "SKIPPED"
 
 
 class TestExpiredListingDetection:
@@ -309,7 +312,9 @@ class TestFailureBeforeAttempt:
 
         outcome = _run(runner, job, confirmed_profile, job_preferences)
 
-        assert outcome == "FAILED"
+        # E5-R31: the recorded row is SKIPPED, so the outcome is too (the
+        # run-level counters must reconcile with the rows they summarize).
+        assert outcome == "SKIPPED"
         row = _latest_row(db_session, job)
         assert row is not None
         assert row.status == ApplicationStatus.SKIPPED.value
@@ -330,7 +335,9 @@ class TestFailureBeforeAttempt:
 
         outcome = _run(runner, job, confirmed_profile, job_preferences)
 
-        assert outcome == "FAILED"
+        # E5-R31: the attempt row is NEEDS_ATTENTION, so the outcome reports
+        # NEEDS_ATTENTION (never FAILED) — counters and rows must agree.
+        assert outcome == "NEEDS_ATTENTION"
         rows = (
             db_session.execute(
                 select(Application).where(Application.job_id == job.id)
@@ -357,9 +364,13 @@ class TestFailureBeforeAttempt:
 
         stats = asyncio.run(runner.run_applications([failing.id, analysis_less.id]))
 
+        # E5-R31: the failing job's row is SKIPPED, so it counts as skipped
+        # (not failed); the analysis-less job is skipped for missing analysis.
         assert stats["processed"] == 2
-        assert stats["failed"] == 1
-        assert stats["skipped"] == 1
+        assert stats["skipped"] == 2
+        assert stats["failed"] == 0
+        assert stats["cancelled_remaining"] == 0
+        assert stats["outcome_total"] == stats["processed"]
         assert stats["errors"] == 0
 
 

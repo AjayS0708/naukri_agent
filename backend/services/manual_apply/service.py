@@ -51,6 +51,10 @@ _STAT_KEYS = (
     "attempts_started",
     "auth_required",
     "errors",
+    # E5-R31: jobs never started (Stop/session halt between jobs), the sum
+    # of every terminal outcome bucket (reconciliation guard).
+    "cancelled_remaining",
+    "outcome_total",
 )
 
 # Runner event -> progress-doc counter (job_finished carries the outcome).
@@ -62,11 +66,19 @@ _OUTCOME_KEYS = {
     "NEEDS_ATTENTION": "needs_attention",
     "FAILED": "failed",
     "ERROR": "failed",
+    # E5-R31: the captcha path writes a NEEDS_ATTENTION row and reports
+    # SECURITY_REQUIRED — count it where its row landed.
+    "SECURITY_REQUIRED": "needs_attention",
 }
 
 # Process-local summary of the most recent completed manual apply run
 # (display only; the durable record is always the applications table).
 _last_manual_run: Optional[dict[str, Any]] = None
+
+
+def _now_iso() -> str:
+    """E5-R31: UTC timestamp for progress-doc clock fields (job/step start)."""
+    return datetime.now(UTC).isoformat()
 
 
 def get_last_manual_run() -> Optional[dict[str, Any]]:
@@ -313,6 +325,7 @@ class ManualApplyService:
                         {
                             "waiting_for_user": True,
                             "current_step": "waiting_for_user",
+                            "current_step_started_at": _now_iso(),
                             "current_question": payload.get("question"),
                             "pending_question_id": payload.get("pending_question_id"),
                         }
@@ -326,6 +339,7 @@ class ManualApplyService:
                         {
                             "waiting_for_user": False,
                             "current_step": "resuming",
+                            "current_step_started_at": _now_iso(),
                             "current_question": None,
                             "pending_question_id": None,
                         }
@@ -333,10 +347,16 @@ class ManualApplyService:
                     if self._run_token:
                         coordinator.clear_waiting(self._run_token)
                 elif event == "job_started":
+                    # E5-R31: surface WHICH job is running and when it (and
+                    # the current step) started so the dashboard can show
+                    # the job title, per-job elapsed time and staleness.
                     self._run_progress.update(
                         {
                             "current_job_id": payload.get("job_id"),
+                            "current_job_title": payload.get("job_title"),
+                            "current_job_started_at": _now_iso(),
                             "current_step": "starting",
+                            "current_step_started_at": _now_iso(),
                             "waiting_for_user": False,
                         }
                     )
@@ -354,8 +374,10 @@ class ManualApplyService:
                         - self._run_progress["processed"],
                     )
                     self._run_progress["current_step"] = "job_done"
+                    self._run_progress["current_step_started_at"] = _now_iso()
                 elif event == "step":
                     self._run_progress["current_step"] = payload.get("step")
+                    self._run_progress["current_step_started_at"] = _now_iso()
                 self._persist_progress()
             except Exception as exc:
                 logger.warning(f"Manual apply progress hook failed: {exc}")
@@ -485,6 +507,14 @@ class ManualApplyService:
             "auth_required": 0,
             "errors": 0,
             "dry_run": bool(dry_run),
+            # E5-R31: preflight drops, jobs never started by the runner, the
+            # terminal-outcome sum and per-stage durations for latency
+            # diagnosis (requested = processed + cancelled_remaining holds;
+            # dropped is the preflight subset already inside processed).
+            "dropped": 0,
+            "cancelled_remaining": 0,
+            "outcome_total": 0,
+            "stage_seconds": {},
         }
         status = "COMPLETED"
         error: Optional[str] = None
@@ -505,7 +535,9 @@ class ManualApplyService:
             "remaining": len(job_ids),
             "current_job_id": None,
             "current_job_title": None,
+            "current_job_started_at": None,
             "current_step": "starting",
+            "current_step_started_at": started_at.isoformat(),
             "waiting_for_user": False,
             "current_question": None,
             "pending_question_id": None,
@@ -534,6 +566,7 @@ class ManualApplyService:
             # the shared deterministic gate, each with a recorded reason).
             ready_ids = self._ensure_fallback_analyses(db, list(job_ids))
             prep_dropped = max(0, len(job_ids) - len(ready_ids))
+            stats["dropped"] = prep_dropped
             if prep_dropped:
                 logger.info(
                     "manual_apply_preflight_drops=%d of %d", prep_dropped, len(job_ids)
@@ -572,6 +605,31 @@ class ManualApplyService:
                     except (TypeError, ValueError):
                         pass
                 stats["skipped"] = int(stats.get("skipped", 0) or 0) + prep_dropped
+                # E5-R31: preflight drops + stage timings (a dict — never
+                # int-cast like the counter keys above).
+                stats["dropped"] = prep_dropped
+                stage_seconds = result.get("stage_seconds")
+                if isinstance(stage_seconds, dict):
+                    stats["stage_seconds"] = dict(stage_seconds)
+                if not error and stats.get("cancelled_remaining") == 0:
+                    # Reconciliation guard: every requested job was either
+                    # processed (including preflight drops) or explicitly
+                    # reported as never started.
+                    if stats["processed"] != stats["requested"]:
+                        logger.warning(
+                            "manual_apply_reconciliation_mismatch requested=%d "
+                            "processed=%d outcome_total=%d",
+                            stats["requested"],
+                            stats["processed"],
+                            stats.get("outcome_total", 0),
+                        )
+                    elif stats.get("outcome_total") not in (None, stats["processed"]):
+                        logger.warning(
+                            "manual_apply_outcome_total_mismatch processed=%d "
+                            "outcome_total=%d",
+                            stats["processed"],
+                            stats.get("outcome_total", 0),
+                        )
             elif result is None:
                 pass
             else:

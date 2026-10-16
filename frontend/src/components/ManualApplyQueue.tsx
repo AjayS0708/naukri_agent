@@ -25,6 +25,20 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" ? value : null;
 }
 
+/** E5-R31: human duration since an ISO timestamp ("42s", "3m 10s", "1h 4m"). */
+function fmtElapsed(from: unknown): string | null {
+  if (typeof from !== "string" || !from) return null;
+  const started = new Date(from).getTime();
+  if (!Number.isFinite(started)) return null;
+  const deltaMs = Date.now() - started;
+  if (deltaMs < 0) return null;
+  const totalSeconds = Math.floor(deltaMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) return `${minutes}m ${totalSeconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 function exclusionLabel(reason: string | null): string {
   if (!reason) return "Not eligible";
   if (reason === "external_application") return "External application — not selectable here";
@@ -369,6 +383,29 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
             )}
             {typeof progress.failed === "number" && progress.failed > 0 && <span>{progress.failed} failed</span>}
             {asNumber(progress.current_job_id) !== null && <span>Job #{asNumber(progress.current_job_id)}</span>}
+            {/* E5-R31: which job, how long it's been on it, and when the
+                progress document last moved (stall detection). */}
+            {typeof progress.current_job_title === "string" && progress.current_job_title && (
+              <span title={String(progress.current_job_title)}>
+                {String(progress.current_job_title).length > 40
+                  ? `${String(progress.current_job_title).slice(0, 40)}…`
+                  : String(progress.current_job_title)}
+              </span>
+            )}
+            {fmtElapsed(progress.current_job_started_at) !== null && (
+              <span>{fmtElapsed(progress.current_job_started_at)} on this job</span>
+            )}
+            {typeof progress.progress_updated_at === "string" && progress.progress_updated_at && (
+              <span>
+                updated{" "}
+                {(() => {
+                  const ts = new Date(String(progress.progress_updated_at));
+                  return Number.isNaN(ts.getTime())
+                    ? String(progress.progress_updated_at)
+                    : ts.toLocaleTimeString();
+                })()}
+              </span>
+            )}
             {typeof progress.current_step === "string" && !waitingForAnswer && (
               <span>{String(progress.current_step).replaceAll("_", " ")}</span>
             )}
@@ -403,11 +440,26 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
             <p>
               {typeof lastManualRun.stats.applied === "number" ? `${lastManualRun.stats.applied} applied` : "No submissions"}
               {typeof lastManualRun.stats.skipped === "number" ? ` · ${lastManualRun.stats.skipped} skipped` : ""}
+              {/* E5-R31: failures were previously invisible here (the failed
+                  counter was never rendered), so a 61-job run that failed 59
+                  jobs displayed only "1 applied · 1 skipped". */}
+              {typeof lastManualRun.stats.failed === "number" && lastManualRun.stats.failed > 0
+                ? ` · ${lastManualRun.stats.failed} failed`
+                : ""}
               {typeof lastManualRun.stats.needs_attention === "number" && lastManualRun.stats.needs_attention > 0
                 ? ` · ${lastManualRun.stats.needs_attention} needs attention`
                 : ""}
               {typeof lastManualRun.stats.external === "number" && lastManualRun.stats.external > 0
                 ? ` · ${lastManualRun.stats.external} external`
+                : ""}
+              {typeof lastManualRun.stats.submitted_unconfirmed === "number" && lastManualRun.stats.submitted_unconfirmed > 0
+                ? ` · ${lastManualRun.stats.submitted_unconfirmed} unconfirmed`
+                : ""}
+              {typeof lastManualRun.stats.dropped === "number" && lastManualRun.stats.dropped > 0
+                ? ` · ${lastManualRun.stats.dropped} dropped in preflight`
+                : ""}
+              {typeof lastManualRun.stats.cancelled_remaining === "number" && lastManualRun.stats.cancelled_remaining > 0
+                ? ` · ${lastManualRun.stats.cancelled_remaining} not started (stopped)`
                 : ""}
               {lastManualRun.error ? ` · ${lastManualRun.error}` : ""}
             </p>

@@ -171,11 +171,23 @@ class NaukriAdapter(JobPlatformAdapter):
 
     async def stop_session(self):
         try:
+            # E5-R31: a dead persistent context (already-closed target) must
+            # not prevent the driver shutdown or the profile-lock release —
+            # otherwise an in-run session restart would leak a driver process
+            # or hold the lock forever.
             if self.browser:
-                await self.browser.close()
+                try:
+                    await self.browser.close()
+                except Exception as exc:
+                    logger.debug("browser close during stop failed: %s", exc)
             if self.playwright:
-                await self.playwright.stop()
+                try:
+                    await self.playwright.stop()
+                except Exception as exc:
+                    logger.debug("playwright stop failed: %s", exc)
         finally:
+            self.browser = None
+            self.playwright = None
             if self._session_lock is not None:
                 self._session_lock.release()
                 self._session_lock = None
@@ -216,6 +228,44 @@ class NaukriAdapter(JobPlatformAdapter):
         if closed:
             logger.info("closed_unused_blank_tabs count=%d", closed)
         return closed
+
+    async def close_page(self, page: Optional[Page]) -> None:
+        """E5-R31: close a page without ever terminating the session.
+
+        Closing the last page of a Playwright persistent context destroys the
+        context itself — which is exactly how a 61-job manual run died after
+        job 1 (R30's starter-tab cleanup left a single page, and the runner's
+        per-job cleanup then closed it). Whenever the page being closed is the
+        only one left, a fresh about:blank anchor page is parked first so the
+        context survives with exactly one tab. Never raises: cleanup must not
+        mask the original error path.
+        """
+        if page is None:
+            return
+        try:
+            # `is True` (not truthiness): test doubles expose is_closed as a
+            # bare Mock attribute, and an already-closed real Page skips the
+            # close without needing an anchor.
+            if getattr(page, "is_closed", False) is True:
+                return
+        except Exception:
+            pass
+        try:
+            context = self.browser
+            if context is not None:
+                try:
+                    pages = list(context.pages)
+                except Exception:
+                    pages = []
+                if len(pages) <= 1:
+                    try:
+                        # Parks a tab so closing cannot empty the context.
+                        await context.new_page()
+                    except Exception as exc:
+                        logger.debug("anchor page before close failed: %s", exc)
+            await page.close()
+        except Exception as exc:
+            logger.debug("page close failed: %s", exc)
 
     async def _check_security(self, page: Page):
         """Detect boundaries where agent needs to stop safely per PRD.
@@ -444,10 +494,7 @@ class NaukriAdapter(JobPlatformAdapter):
             return {"authenticated": None, "evidence": f"probe_failed:{type(exc).__name__}"}
         finally:
             if page is not None:
-                try:
-                    await page.close()
-                except Exception:
-                    pass
+                await self.close_page(page)
 
     async def recheck_security_after_manual_intervention(self, page: Page, wait_seconds: int = 5) -> bool:
         """
@@ -517,7 +564,7 @@ class NaukriAdapter(JobPlatformAdapter):
             return ""
         finally:
             if page:
-                await page.close()
+                await self.close_page(page)
 
     async def fetch_job_details(self, url: str) -> Dict[str, Any]:
         """Fetch description and deterministic IT metadata from a job page."""
@@ -638,7 +685,7 @@ class NaukriAdapter(JobPlatformAdapter):
             return {}
         finally:
             if page:
-                await page.close()
+                await self.close_page(page)
 
     def _build_naukri_search_url(self, search_term: str, locations: List[str]) -> str:
         """
@@ -937,20 +984,22 @@ class NaukriAdapter(JobPlatformAdapter):
             # Only close the page if no security exception was raised
             # This allows manual CAPTCHA resolution on the open page
             if security_exception is None:
-                await page.close()
+                await self.close_page(page)
 
     async def cleanup_abandoned_pages(self):
         """
         Clean up any abandoned pages from security exceptions.
         Call this after manual CAPTCHA resolution to prevent page leaks.
+
+        E5-R31: always keeps one page alive — closing every page would kill
+        the persistent context (documented in close_page).
         """
         if self.browser:
             try:
-                # Close all pages in the context except the active one
-                pages = self.browser.pages
-                for page in pages:
-                    if not page.is_closed:
-                        await page.close()
+                open_pages = [p for p in list(self.browser.pages) if not p.is_closed]
+                # Keep the first page (the active one), close the rest.
+                for page in reversed(open_pages[1:]):
+                    await self.close_page(page)
             except Exception as e:
                 logger.warning(f"Error cleaning up abandoned pages: {e}")
 
@@ -1127,7 +1176,7 @@ class NaukriAdapter(JobPlatformAdapter):
             # Success: page returned for caller to close
             # Non-security exceptions: page closed for cleanup
             if non_security_exception is not None:
-                await page.close()
+                await self.close_page(page)
 
     async def detect_expired_listing(self, page: Page) -> Optional[str]:
         """E5-R30: positive visible-text evidence that a listing is expired.
@@ -2351,7 +2400,7 @@ class NaukriAdapter(JobPlatformAdapter):
             return entries
         finally:
             try:
-                await page.close()
+                await self.close_page(page)
             except Exception:
                 pass
 
