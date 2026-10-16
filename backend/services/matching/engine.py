@@ -99,8 +99,18 @@ CURATED_ROLE_FAMILIES = {
 # E5-R22: added BPO / voice-call / customer-support / telemarketing /
 # apprenticeship exclusions from the first controlled live run — those roles
 # entered the candidate list because the title filter did not reject them.
+# E5-R30: ".net" and "c#" were removed from this title-level list — they made
+# the same role verdict depend on its SPELLING ("Dot Net Developer" passed
+# via the software "developer" family while ".NET Developer" / "ASP.NET
+# Developer" / "C# Developer" were title-banned, and job #278 "asp.net
+# Developer" had actually been APPLIED historically). .NET / C# postings are
+# now decided by the shared responsibility and scope gates like every other
+# software-development role: genuine C#/.NET/ASP.NET JDs pass, while
+# mechanical/production/sales/recruitment/BPO responsibilities (or excluded
+# role_category/department scope) still reject them. The responsibility
+# phrase lists below remain the authoritative "unrelated work" guard.
 UNWANTED_SPECIALIZATIONS = [
-    "java", "php", ".net", "c#", "c++", "power platform",
+    "java", "php", "c++", "power platform",
     "platform engineer", "salesforce", "sap", "servicenow",
     "embedded", "firmware", "hardware", "electrical", "mechanical",
     "civil", "sales", "marketing", "hr", "operations",
@@ -231,7 +241,15 @@ STRONG_EXCLUDED_RESPONSIBILITY_PHRASES = (
     "semi-voice process", "voice support", "customer care",
     "ansys", "caesar ii", "piping analysis",
     "data entry", "back office", "invoice processing",
-    "payroll processing", "gst filing", "resume screening",
+    "payroll processing", "gst filing",
+    # E5-R30: "resume screening" was removed from this single-hit list — it
+    # appears verbatim in genuine IT JDs' "Selection Process" sections (e.g.
+    # job #422 "Dot Net Developer" @ Nxtwave: "Resume Screening Aptitude
+    # Test Technical Round…"), where it describes how the EMPLOYER evaluates
+    # candidates, not the employee's work. It stays in the two-hit
+    # EXCLUDED_RESPONSIBILITY_PHRASES list below, so a real recruitment JD
+    # (which combines "sourcing candidates" / "campus recruitment" /
+    # "resume screening") is still rejected.
 )
 
 # Technical work signals used only to rescue a job whose structural scope

@@ -213,11 +213,20 @@ def test_role_targeting_reject_php_specialization():
     assert allowed is False
     assert "php" in reason.lower()
 
-def test_role_targeting_reject_dotnet_specialization():
-    """.NET roles should be rejected."""
-    allowed, reason = title_matches_allowed_role(".NET Developer")
+def test_role_targeting_allows_dotnet_csharp_specialization():
+    """.NET / C# / ASP.NET titles now pass the title gate via the software
+    "developer" family (E5-R30) — the same verdict for every spelling.
+    Unrelated responsibilities are still rejected by the shared relevance
+    gate (see test_e5_r30_dotnet_relevance.py)."""
+    for title in (".NET Developer", "ASP.NET Developer", "C# Developer", "Dot Net Developer"):
+        allowed, reason = title_matches_allowed_role(title)
+        assert allowed is True, f"{title!r}: {reason}"
+
+def test_role_targeting_still_rejects_cplusplus():
+    """C++ roles remain title-banned (unrelated stack)."""
+    allowed, reason = title_matches_allowed_role("C++ Developer")
     assert allowed is False
-    assert ".net" in reason.lower()
+    assert "c++" in reason.lower()
 
 def test_role_targeting_reject_power_platform():
     """Power Platform roles should be rejected."""
