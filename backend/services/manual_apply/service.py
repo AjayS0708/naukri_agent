@@ -119,6 +119,10 @@ class ManualApplyService:
         mode = (getattr(job, "application_mode", None) or "").strip().upper()
         if mode == "EXTERNAL":
             return False, "external_application"
+        if (getattr(job, "status", None) or "").strip().upper() == "EXPIRED":
+            # E5-R30: the runner confirmed from visible evidence that this
+            # listing expired; every candidate stage now excludes it.
+            return False, "listing_expired"
         if job.id in protected_ids:
             return False, "application_history"
         if job.title:
@@ -147,8 +151,18 @@ class ManualApplyService:
         limit: int = 200,
         offset: int = 0,
         only_eligible: bool = False,
+        q: str = "",
     ) -> dict[str, Any]:
-        """Previously discovered jobs with a per-job eligibility verdict."""
+        """Previously discovered jobs with a per-job eligibility verdict.
+
+        E5-R30: server-side pagination and search. ``total`` and
+        ``eligible_count`` are computed over the whole search-matched set
+        (not the page), so page boundaries never change the counts;
+        ``eligible_job_ids`` carries every eligible id of the matched set so
+        the "Apply to all eligible" action is not silently limited to the
+        first page. Ordering includes ``id`` as a tiebreaker so offset pages
+        are stable (no duplicates, no gaps).
+        """
         jobs = (
             self.session.execute(
                 select(Job).order_by(Job.discovered_at.desc(), Job.id.desc())
@@ -156,6 +170,14 @@ class ManualApplyService:
             .scalars()
             .all()
         )
+        needle = (q or "").strip().lower()
+        if needle:
+            jobs = [
+                job
+                for job in jobs
+                if needle in (job.title or "").lower()
+                or needle in (job.company or "").lower()
+            ]
         profile, preferences, match_engine = self._load_context(self.session)
         protected = protected_job_ids(self.session, [job.id for job in jobs])
 
@@ -171,12 +193,14 @@ class ManualApplyService:
 
         items: list[dict[str, Any]] = []
         eligible_count = 0
+        eligible_job_ids: list[int] = []
         for job in jobs:
             eligible, reason = self._eligibility(
                 job, protected, profile, preferences, match_engine
             )
             if eligible:
                 eligible_count += 1
+                eligible_job_ids.append(job.id)
             if only_eligible and not eligible:
                 continue
             items.append(
@@ -201,6 +225,7 @@ class ManualApplyService:
             "items": items[start:end],
             "total": total,
             "eligible_count": eligible_count,
+            "eligible_job_ids": eligible_job_ids,
             "profile_confirmed": profile is not None,
             "preferences_present": preferences is not None,
         }
@@ -337,6 +362,103 @@ class ManualApplyService:
 
         return hook
 
+    def _ensure_fallback_analyses(self, db: Session, job_ids: list[int]) -> list[int]:
+        """E5-R30: bring every accepted job to runner-readiness.
+
+        The autonomous cycle persists a conservative deterministic-fallback
+        ``JobAnalysisModel`` row for candidates that pass the shared
+        deterministic gates but have no AI analysis (E5-R12); the runner then
+        finds that row and processes the job. The manual path previously
+        called the runner directly, so every no-analysis job was skipped with
+        "No AI analysis available" before any page opened (17 of the 26
+        outcomes in the first real manual run).
+
+        This mirrors the cycle exactly: re-check the shared deterministic
+        gate, persist the same fallback row when it passes, and drop (with a
+        recorded skip reason) the rare job that no longer passes. No AI
+        content, no fabricated analysis — only the same conservative
+        fallback the autonomous cycle already writes.
+        """
+        from backend.models.ai import JobAnalysisModel
+
+        if not job_ids:
+            return []
+
+        profile, preferences, match_engine = self._load_context(db)
+
+        existing = {
+            row.job_id
+            for row in db.execute(
+                select(JobAnalysisModel.job_id).where(JobAnalysisModel.job_id.in_(job_ids))
+            ).all()
+        }
+
+        ready: list[int] = []
+        for job_id in job_ids:
+            if job_id in existing:
+                ready.append(job_id)
+                continue
+            job = db.get(Job, job_id)
+            if job is None:
+                self._count_prep_drop(job_id, f"Job {job_id} not found")
+                continue
+            if profile is None or preferences is None or match_engine is None:
+                self._count_prep_drop(job_id, "Profile or preferences unavailable at run time")
+                continue
+            decision = match_engine.evaluate_job_deterministic(job, profile, preferences)
+            if decision.decision.value != "APPLY":
+                self._count_prep_drop(job_id, f"Deterministic gate not passed: {decision.reason}")
+                continue
+            db.add(
+                JobAnalysisModel(
+                    job_id=job.id,
+                    match_score=50,  # same conservative default as the cycle
+                    role_match=True,
+                    skill_match=True,
+                    experience_match=True,
+                    location_match=True,
+                    salary_match=True,
+                    job_quality="GOOD",
+                    duplicate_probability=0.0,
+                    suspicious=False,
+                    recommendation="APPLY",
+                    short_reason="Deterministic filter pass (no AI analysis)",
+                    model="deterministic_fallback",
+                    prompt_version="n/a",
+                )
+            )
+            db.commit()
+            logger.info(
+                "manual_apply_deterministic_fallback_analysis_created",
+                extra={"job_id": job.id},
+            )
+            ready.append(job_id)
+        return ready
+
+    def _count_prep_drop(self, job_id: int, reason: str) -> None:
+        """Record a pre-run drop in progress + a durable skip row."""
+        logger.info("manual_apply_job_dropped_pre_run", extra={"job_id": job_id, "reason": reason})
+        try:
+            db = database_module.SessionLocal()
+            job = db.get(Job, job_id)
+            if job is not None:
+                from backend.services.applications.service import ApplicationService
+
+                ApplicationService(db).record_application_skip(job, reason)
+        except Exception:
+            logger.exception("manual_apply_prep_drop_record_failed", extra={"job_id": job_id})
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+        self._run_progress["processed"] = self._run_progress.get("processed", 0) + 1
+        self._run_progress["skipped"] = self._run_progress.get("skipped", 0) + 1
+        self._run_progress["remaining"] = max(
+            0, self._run_progress.get("candidates_total", 0) - self._run_progress["processed"]
+        )
+        self._persist_progress()
+
     async def run(
         self, job_ids: list[int], run_token: str, dry_run: bool = False
     ) -> dict[str, Any]:
@@ -405,6 +527,18 @@ class ManualApplyService:
                 recover_stale_state=True,
             )
 
+            # E5-R30: pre-run readiness. The runner skips jobs that have no
+            # persisted JobAnalysis row, so the manual path first writes the
+            # same conservative deterministic-fallback analysis the
+            # autonomous cycle writes (dropping only jobs that no longer pass
+            # the shared deterministic gate, each with a recorded reason).
+            ready_ids = self._ensure_fallback_analyses(db, list(job_ids))
+            prep_dropped = max(0, len(job_ids) - len(ready_ids))
+            if prep_dropped:
+                logger.info(
+                    "manual_apply_preflight_drops=%d of %d", prep_dropped, len(job_ids)
+                )
+
             # Reconcile-first (same as the autonomous cycle): verify unresolved
             # rows against Naukri's read-only history before any new attempt so
             # duplicate protection sees the authoritative state. The browser
@@ -418,17 +552,28 @@ class ManualApplyService:
                     f"Pre-run application-history reconciliation skipped: {exc}"
                 )
 
-            result = await runner.run_applications(list(job_ids), dry_run=dry_run)
+            if not ready_ids:
+                # Everything was dropped in preflight (defensive path —
+                # start-time validation normally guarantees at least one).
+                # Never open a browser for an empty plan.
+                stats["processed"] = prep_dropped
+                stats["skipped"] = prep_dropped
+                result = None
+            else:
+                result = await runner.run_applications(list(ready_ids), dry_run=dry_run)
             if isinstance(result, dict):
                 if result.get("error"):
                     status = "FAILED"
                     error = str(result["error"])
-                stats["processed"] = int(result.get("processed", 0) or 0)
+                stats["processed"] = int(result.get("processed", 0) or 0) + prep_dropped
                 for key in _STAT_KEYS:
                     try:
                         stats[key] = int(result.get(key, 0) or 0)
                     except (TypeError, ValueError):
                         pass
+                stats["skipped"] = int(stats.get("skipped", 0) or 0) + prep_dropped
+            elif result is None:
+                pass
             else:
                 status = "FAILED"
                 error = "Application runner returned no result"

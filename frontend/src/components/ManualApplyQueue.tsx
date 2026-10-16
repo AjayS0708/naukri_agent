@@ -8,6 +8,9 @@ interface ManualApplyQueueProps {
 }
 
 const POLL_MS = 4000;
+/** E5-R30: rows fetched per page; "Load more" pages through the server. */
+const PAGE_SIZE = 100;
+const SEARCH_DEBOUNCE_MS = 300;
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -26,6 +29,7 @@ function exclusionLabel(reason: string | null): string {
   if (!reason) return "Not eligible";
   if (reason === "external_application") return "External application — not selectable here";
   if (reason === "application_history") return "Already applied — protected by application history";
+  if (reason === "listing_expired") return "Listing expired — removed from the queue";
   if (reason === "profile_not_confirmed") return "Profile not confirmed";
   if (reason === "preferences_missing") return "Job preferences missing";
   if (reason.startsWith("not_relevant:")) return `Not relevant — ${reason.slice("not_relevant:".length).trim()}`;
@@ -35,12 +39,22 @@ function exclusionLabel(reason: string | null): string {
 
 export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
   const [items, setItems] = useState<ManualApplyEligibleItem[]>([]);
-  const [meta, setMeta] = useState<{ total: number; eligible_count: number; profile_confirmed: boolean; preferences_present: boolean } | null>(null);
+  const [meta, setMeta] = useState<{
+    total: number;
+    eligible_count: number;
+    eligible_job_ids: number[];
+    profile_confirmed: boolean;
+    preferences_present: boolean;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [status, setStatus] = useState<ManualApplyStatusResponse | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [query, setQuery] = useState("");
+  // Debounced copy of `query` actually sent to the server (E5-R30: search is
+  // server-side so counts and pagination always describe the matched set).
+  const [search, setSearch] = useState("");
   const [eligibleOnly, setEligibleOnly] = useState(false);
   const [dryRun, setDryRun] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -49,25 +63,56 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const statusRef = useRef<ManualApplyStatusResponse | null>(null);
+  const itemsRef = useRef<ManualApplyEligibleItem[]>([]);
+  // Only the latest request may apply its response (stale out-of-order
+  // responses from rapid searches/pagination are dropped).
+  const requestSeqRef = useRef(0);
 
-  const loadEligible = useCallback(async (showLoading: boolean) => {
-    if (showLoading) setLoading(true);
-    try {
-      const data = await getManualEligible(200, 0, false);
-      setItems(data.items);
-      setMeta({
-        total: data.total,
-        eligible_count: data.eligible_count,
-        profile_confirmed: data.profile_confirmed,
-        preferences_present: data.preferences_present,
-      });
-      setLoadError(null);
-    } catch (err: any) {
-      setLoadError(err?.message ?? "Unable to load the apply queue.");
-    } finally {
-      if (showLoading) setLoading(false);
-    }
-  }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(query.trim()), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  const loadEligible = useCallback(
+    async (reset: boolean) => {
+      const seq = ++requestSeqRef.current;
+      const isFirstLoad = itemsRef.current.length === 0 && reset;
+      if (isFirstLoad) setLoading(true);
+      else if (!reset) setLoadingMore(true);
+      try {
+        const offset = reset ? 0 : itemsRef.current.length;
+        const data = await getManualEligible(PAGE_SIZE, offset, eligibleOnly, search);
+        if (seq !== requestSeqRef.current) return; // a newer request superseded this one
+        const next = reset
+          ? data.items
+          : [
+              ...itemsRef.current,
+              ...data.items.filter(
+                (item) => !itemsRef.current.some((loaded) => loaded.job_id === item.job_id),
+              ),
+            ];
+        itemsRef.current = next;
+        setItems(next);
+        setMeta({
+          total: data.total,
+          eligible_count: data.eligible_count,
+          eligible_job_ids: data.eligible_job_ids,
+          profile_confirmed: data.profile_confirmed,
+          preferences_present: data.preferences_present,
+        });
+        setLoadError(null);
+      } catch (err: any) {
+        if (seq !== requestSeqRef.current) return;
+        setLoadError(err?.message ?? "Unable to load the apply queue.");
+      } finally {
+        if (seq === requestSeqRef.current) {
+          if (isFirstLoad) setLoading(false);
+          else setLoadingMore(false);
+        }
+      }
+    },
+    [eligibleOnly, search],
+  );
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -82,8 +127,11 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
 
   useEffect(() => {
     void loadEligible(true);
+  }, [loadEligible]);
+
+  useEffect(() => {
     void refreshStatus();
-  }, [loadEligible, refreshStatus]);
+  }, [refreshStatus]);
 
   // Poll status while the queue is open (E5-R29 pattern): a single failed
   // fetch must never kill the loop, and a throttled background tab re-syncs
@@ -102,7 +150,7 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
           statusRef.current = data;
           if (wasActive && data.active_state === "IDLE") {
             // The run finished — refresh statuses so outcomes show up.
-            void loadEligible(false);
+            void loadEligible(true);
           }
         })
         .catch(() => {
@@ -136,14 +184,13 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
   const lastManualRun = status?.last_manual_run ?? null;
   const lockBusy = Boolean(status?.lock_held);
 
-  const filtered = items.filter((item) => {
-    if (eligibleOnly && !item.eligible) return false;
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    return item.title.toLowerCase().includes(q) || item.company.toLowerCase().includes(q);
-  });
+  // E5-R30: search, eligibility filtering, and counts are computed
+  // server-side; the loaded pages are already the matched set.
+  const filtered = items;
   const eligibleItems = filtered.filter((item) => item.eligible);
   const selectedEligibleIds = items.filter((item) => item.eligible && selected.has(item.job_id)).map((item) => item.job_id);
+  const allEligibleIds = meta?.eligible_job_ids ?? eligibleItems.map((item) => item.job_id);
+  const remainingCount = meta ? Math.max(0, meta.total - items.length) : 0;
 
   const toggleSelect = (jobId: number) => {
     setSelected((prev) => {
@@ -181,7 +228,7 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
         setActionError(
           `${result.message}.${result.dropped_job_ids.length > 0 ? ` ${result.dropped_job_ids.length} job(s) were dropped as ineligible.` : ""}`,
         );
-        await loadEligible(false);
+        await loadEligible(true);
       } else {
         setNotice(result.message);
       }
@@ -220,7 +267,9 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
 
   const startButtonsDisabled = starting || runActive || lockBusy;
   const statusLine = meta
-    ? `Showing ${filtered.length} of ${meta.total} discovered job(s) · ${meta.eligible_count} eligible`
+    ? `Showing ${filtered.length} of ${meta.total} discovered job(s) · ${meta.eligible_count} eligible` +
+      (remainingCount > 0 ? ` · ${remainingCount} remaining` : "") +
+      (search ? ` · matching “${search}”` : "")
     : "Loading queue…";
 
   return (
@@ -377,11 +426,11 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
         </button>
         <button
           className="btn btn-secondary"
-          onClick={() => handleStart(eligibleItems.map((i) => i.job_id))}
-          disabled={startButtonsDisabled || eligibleItems.length === 0}
+          onClick={() => handleStart(allEligibleIds)}
+          disabled={startButtonsDisabled || allEligibleIds.length === 0}
         >
           <ListChecks size={16} />
-          Apply to All Eligible ({eligibleItems.length})
+          Apply to All Eligible ({allEligibleIds.length})
         </button>
         <button className="btn btn-secondary" onClick={selectAllVisible} disabled={eligibleItems.length === 0}>
           Select all visible
@@ -394,12 +443,18 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
       {loading ? (
         <p className="text-[var(--color-text-secondary)]">Loading apply queue…</p>
       ) : loadError ? (
-        <p className="error-text">{loadError}</p>
+        <div className="manual-queue-load-error">
+          <p className="error-text">{loadError}</p>
+          <button className="btn btn-secondary" onClick={() => void loadEligible(true)} aria-label="Retry loading apply queue">
+            Retry
+          </button>
+        </div>
       ) : filtered.length === 0 ? (
-        <p>No jobs match the current filter.</p>
+        <p>{search ? `No jobs match “${search}”.` : "No jobs match the current filter."}</p>
       ) : (
-        <ul className="manual-queue-list">
-          {filtered.map((item) => {
+        <>
+          <ul className="manual-queue-list">
+            {filtered.map((item) => {
             const isSelected = selected.has(item.job_id);
             return (
               <li key={item.job_id} className={`manual-queue-item ${item.eligible ? "" : "ineligible"}`}>
@@ -448,7 +503,21 @@ export function ManualApplyQueue({ onBack }: ManualApplyQueueProps) {
               </li>
             );
           })}
-        </ul>
+          </ul>
+          {remainingCount > 0 && (
+            <div className="manual-queue-load-more">
+              <button
+                className="btn btn-secondary"
+                onClick={() => void loadEligible(false)}
+                disabled={loadingMore}
+              >
+                {loadingMore
+                  ? "Loading…"
+                  : `Load more (${remainingCount} of ${meta?.total ?? remainingCount} remaining)`}
+              </button>
+            </div>
+          )}
+        </>
       )}
     </section>
   );

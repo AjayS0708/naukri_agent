@@ -36,6 +36,9 @@ class ManualApplyEligibleResponse(BaseModel):
     items: list[ManualApplyEligibleItem]
     total: int
     eligible_count: int
+    # E5-R30: every eligible id of the (search-matched) set, not just the
+    # current page, so "Apply to all eligible" is not limited to a page.
+    eligible_job_ids: list[int] = []
     profile_confirmed: bool
     preferences_present: bool
 

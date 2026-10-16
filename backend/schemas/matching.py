@@ -37,8 +37,11 @@ class JobPreferenceBase(BaseModel):
     job_titles: list[str] = Field(default_factory=list)
     employment_types: list[str] = Field(default_factory=list)
     max_required_experience_years: int = Field(default=0, ge=0)
-    it_industry_allowlist: list[str] = Field(default_factory=list)
-    it_keyword_list: list[str] = Field(default_factory=list)
+    # E5-R30: rows created before these columns existed (or by a direct SQL
+    # edit) store NULL; the API must serialize them instead of failing the
+    # whole preferences response with a validation error.
+    it_industry_allowlist: Optional[list[str]] = None
+    it_keyword_list: Optional[list[str]] = None
     min_salary_lpa: float | None = None
     aggressiveness: Aggressiveness = Field(default=Aggressiveness.BALANCED)
 

@@ -3,7 +3,16 @@ import type { AnswerQuestionRequest, AnswerQuestionResponse, ApplicationsListRes
 const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 15_000;
 
-export class ApiRequestError extends Error {}
+export class ApiRequestError extends Error {
+  status?: number;
+  code?: string;
+  constructor(message: string, status?: number, code?: string) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.code = code;
+  }
+}
 
 export function resolveApiBaseUrl(value: string | undefined, isDevelopment: boolean): string | null {
   const configuredValue = value?.trim() || (isDevelopment ? LOCAL_API_BASE_URL : undefined);
@@ -34,8 +43,39 @@ function getApiUrl(path: string): string {
 function messageForResponse(status: number): string {
   if (status >= 500) return "The service is temporarily unavailable. Please try again.";
   if (status === 401 || status === 403) return "You are not authorized to perform this action.";
+  if (status === 404) return "This endpoint was not found. Restart the backend and reload the page.";
+  if (status === 422) return "The request failed validation. Please check your input and try again.";
   if (status >= 400) return "The request could not be completed. Please check your input and try again.";
   return "The request could not be completed.";
+}
+
+/**
+ * E5-R30: map an HTTP error to an operator-facing message without ever
+ * surfacing stack traces, internals, or secrets.
+ *
+ * FastAPI `detail` can be a plain string, an object such as
+ * `{ code, message, ... }` (our structured errors), or — for 422 — an array
+ * of Pydantic issue objects. Anything unexpected falls back to a stable
+ * status-based message. Pure and side-effect free (no fetch/window) so it can
+ * be reasoned about independently of the transport.
+ */
+export function parseApiError(status: number, detail: unknown): { message: string; code?: string } {
+  let message: string | undefined;
+  let code: string | undefined;
+  if (typeof detail === "string" && detail.trim()) {
+    message = detail.trim();
+  } else if (Array.isArray(detail)) {
+    const first = detail.find(
+      (entry) => entry && typeof entry === "object" && typeof (entry as { msg?: unknown }).msg === "string",
+    );
+    if (first) message = `Validation error: ${(first as { msg: string }).msg}`;
+  } else if (detail && typeof detail === "object") {
+    const d = detail as Record<string, unknown>;
+    if (typeof d.message === "string" && d.message.trim()) message = d.message.trim();
+    if (typeof d.code === "string" && d.code) code = d.code;
+  }
+  if (!message) message = messageForResponse(status);
+  return { message, code };
 }
 
 export async function getHealth(): Promise<HealthResponse> {
@@ -49,9 +89,15 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   try {
     const response = await fetch(getApiUrl(path), { ...init, signal: controller.signal });
     if (!response.ok) {
-      const error = new ApiRequestError(messageForResponse(response.status));
-      (error as any).status = response.status;
-      throw error;
+      let detail: unknown;
+      try {
+        const body = (await response.json()) as { detail?: unknown } | null;
+        detail = body?.detail;
+      } catch {
+        // Non-JSON error body (e.g. proxy page) — fall back to status mapping.
+      }
+      const parsed = parseApiError(response.status, detail);
+      throw new ApiRequestError(parsed.message, response.status, parsed.code);
     }
     try {
       return await response.json() as T;
@@ -63,7 +109,9 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new ApiRequestError("The request timed out. Please try again.");
     }
-    throw new ApiRequestError("Unable to reach the service. Please try again.");
+    throw new ApiRequestError(
+      "Unable to reach the backend. Check that it is running, then try again.",
+    );
   } finally {
     window.clearTimeout(timeout);
   }
@@ -145,11 +193,12 @@ export const getJobsList = (limit = 50, offset = 0) => {
 };
 
 // ── Manual Apply Queue endpoints (Checkpoint E5-R29) ─────────────────────────
-export const getManualEligible = (limit = 200, offset = 0, onlyEligible = false) => {
+export const getManualEligible = (limit = 200, offset = 0, onlyEligible = false, q = "") => {
   const params = new URLSearchParams();
   params.append("limit", limit.toString());
   params.append("offset", offset.toString());
   params.append("only_eligible", onlyEligible ? "true" : "false");
+  if (q.trim()) params.append("q", q.trim());
   return apiRequest<ManualApplyEligibleResponse>(`/manual-apply/eligible?${params.toString()}`);
 };
 

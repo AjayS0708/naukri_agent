@@ -285,6 +285,8 @@ export interface ManualApplyEligibleResponse {
   items: ManualApplyEligibleItem[];
   total: number;
   eligible_count: number;
+  /** Every eligible id of the search-matched set (not just the current page). */
+  eligible_job_ids: number[];
   profile_confirmed: boolean;
   preferences_present: boolean;
 }

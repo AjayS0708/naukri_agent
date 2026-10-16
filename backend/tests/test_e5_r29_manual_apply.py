@@ -307,6 +307,7 @@ class TestManualApplyApi:
             "items",
             "total",
             "eligible_count",
+            "eligible_job_ids",
             "profile_confirmed",
             "preferences_present",
         }

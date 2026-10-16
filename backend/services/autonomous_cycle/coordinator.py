@@ -370,25 +370,41 @@ class CycleCoordinator:
             }
         active = None
         if row.status in ("RUNNING", "CANCELLING"):
-            waiting = bool(row.waiting_for_question_id)
-            active = {
-                "run_id": row.discovery_run_id,
-                "run_token": row.run_token,
-                "status": row.status,
-                # E5-R21: display status surfaced to the dashboard while the
-                # underlying lock guard stays RUNNING/CANCELLING (the claim
-                # itself never changes; only the operator-facing view does).
-                "display_status": "WAITING_FOR_USER" if waiting else row.status,
-                "max_applications": row.max_applications,
-                "started_at": row.started_at,
-                "completed_at": None,
-                "stats": {},
-                "error": None,
-                "cancel_requested": row.status == "CANCELLING",
-                "progress": row.progress or {},
-                "waiting_for_user": waiting,
-                "waiting_for_question_id": row.waiting_for_question_id,
-            }
+            # E5-R30: a control row is only "running" while its owning process
+            # is alive. Without this check a crashed/restarted backend leaves
+            # the dashboard claiming an indefinitely RUNNING run forever
+            # (``try_acquire`` adopts the same orphan on the next start).
+            # View-only: no row is written here; an interrupted run is
+            # reported as IDLE so the UI never lies about liveness.
+            if not _pid_alive(row.pid):
+                logger.warning(
+                    "autonomous_cycle_stale_running_row_reported_idle",
+                    extra={
+                        "previous_pid": row.pid,
+                        "previous_status": row.status,
+                        "run_token": row.run_token,
+                    },
+                )
+            else:
+                waiting = bool(row.waiting_for_question_id)
+                active = {
+                    "run_id": row.discovery_run_id,
+                    "run_token": row.run_token,
+                    "status": row.status,
+                    # E5-R21: display status surfaced to the dashboard while the
+                    # underlying lock guard stays RUNNING/CANCELLING (the claim
+                    # itself never changes; only the operator-facing view does).
+                    "display_status": "WAITING_FOR_USER" if waiting else row.status,
+                    "max_applications": row.max_applications,
+                    "started_at": row.started_at,
+                    "completed_at": None,
+                    "stats": {},
+                    "error": None,
+                    "cancel_requested": row.status == "CANCELLING",
+                    "progress": row.progress or {},
+                    "waiting_for_user": waiting,
+                    "waiting_for_question_id": row.waiting_for_question_id,
+                }
         last_run = None
         if row.last_result:
             stored = dict(row.last_result)

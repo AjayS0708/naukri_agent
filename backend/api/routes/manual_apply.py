@@ -57,14 +57,20 @@ async def list_manual_apply_eligible(
     limit: int = 200,
     offset: int = 0,
     only_eligible: bool = False,
+    q: str = "",
     db: Session = Depends(get_db),
 ) -> ManualApplyEligibleResponse:
     """Previously discovered jobs with a per-job eligibility verdict.
 
     Read-only. Never starts a run and never touches discovery.
+    Pagination (limit/offset) and the optional case-insensitive title/company
+    search (q) are applied server-side over a stable ordering; counts always
+    describe the whole search-matched set.
     """
     service = ManualApplyService(db)
-    payload = service.list_eligible(limit=limit, offset=offset, only_eligible=only_eligible)
+    payload = service.list_eligible(
+        limit=limit, offset=offset, only_eligible=only_eligible, q=q
+    )
     return ManualApplyEligibleResponse(**payload)
 
 
@@ -140,7 +146,13 @@ async def start_manual_apply(
 
     logger.info(
         "manual_apply_started",
-        extra={"accepted": len(accepted), "dropped": len(dropped), "dry_run": request.dry_run},
+        extra={
+            "accepted": len(accepted),
+            "accepted_ids": list(accepted),
+            "dropped": len(dropped),
+            "dropped_ids": list(dropped),
+            "dry_run": request.dry_run,
+        },
     )
     return ManualApplyStartResponse(
         status="RUNNING",
@@ -179,6 +191,32 @@ async def get_manual_apply_status(db: Session = Depends(get_db)) -> ManualApplyS
             waiting_for_question_id=None,
             cancel_requested=False,
         )
+    else:
+        # E5-R30: the in-process summary is lost on restart. Fall back to the
+        # durable cycle_run_control.last_result when it was a manual apply
+        # run, so the dashboard does not pretend the last run never happened.
+        try:
+            from backend.models.cycle_run import CycleRunControl
+            from backend.services.autonomous_cycle.coordinator import CONTROL_ROW_ID
+
+            row = db.get(CycleRunControl, CONTROL_ROW_ID)
+            stored = dict(row.last_result) if row is not None and row.last_result else {}
+            stored_stats = stored.get("stats") or {}
+            if stored and stored_stats.get("run_kind") == "MANUAL_APPLY":
+                last_manual_run = ManualApplyRunSummary(
+                    run_token=row.run_token,
+                    status=stored.get("status") or "COMPLETED",
+                    started_at=stored.get("started_at"),
+                    completed_at=stored.get("completed_at"),
+                    stats=stored_stats,
+                    error=stored.get("error"),
+                    progress=None,
+                    waiting_for_user=False,
+                    waiting_for_question_id=None,
+                    cancel_requested=False,
+                )
+        except Exception:
+            logger.debug("persisted last manual run lookup failed", exc_info=True)
 
     return ManualApplyStatusResponse(
         active_state=snapshot["active_state"],

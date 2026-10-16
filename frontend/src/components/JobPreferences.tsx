@@ -16,7 +16,7 @@ export function JobPreferences() {
         locations: "",
         job_titles: "",
         employment_types: "",
-        min_salary_lpa: "4",
+        min_salary_lpa: "3",
         aggressiveness: "BALANCED",
     });
     const [message, setMessage] = useState<string | null>(null);

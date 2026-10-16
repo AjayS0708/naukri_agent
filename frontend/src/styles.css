@@ -546,3 +546,5 @@ h2 { margin-bottom: 8px; font-size: 18px; font-weight: 600; color: var(--color-t
 .manual-queue-run { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--color-border); border-left: 4px solid var(--color-primary-blue); border-radius: 8px; background: var(--color-white); margin-bottom: 16px; }
 .manual-queue-run p { margin: 4px 0 0; font-size: 14px; color: var(--color-text-secondary); }
 .manual-queue-progress { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--color-text-secondary); }
+.manual-queue-load-more { display: flex; justify-content: center; margin-top: 12px; }
+.manual-queue-load-error { display: flex; align-items: center; gap: 12px; }

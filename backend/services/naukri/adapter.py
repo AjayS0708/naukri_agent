@@ -71,6 +71,20 @@ class NaukriAdapter(JobPlatformAdapter):
         "you will be redirected",
         "apply externally",
     ]
+    # E5-R30: explicit listing-unavailable evidence only. Multi-word phrases
+    # chosen to avoid transient-error false positives ("expired" alone never
+    # matches); an expired listing must be positively stated in visible text.
+    expired_listing_indicators = [
+        "this job has expired",
+        "job has expired",
+        "the job you are looking for has expired",
+        "job is no longer available",
+        "job no longer exists",
+        "no longer accepting applications",
+        "this job is no longer active",
+        "this position has been closed",
+        "job has been closed",
+    ]
     # E5-R4.2: read-only validation evidence. Terminal-state PNGs are written
     # under the existing data/ artifacts directory (covered by data/*.png).
     evidence_dir = "data"
@@ -137,6 +151,12 @@ class NaukriAdapter(JobPlatformAdapter):
                     user_data_dir=USER_DATA_DIR,
                     headless=False,
                 )
+            # E5-R30: the persistent context opens with a blank starter tab
+            # (about:blank). It is never used by the agent and is the source
+            # of the "blank tab" accumulation operators observed. Close only
+            # tabs that are still exactly about:blank — restored or agent
+            # tabs with real content are left untouched.
+            await self._close_blank_starter_tabs()
             return True
         except Exception as e:
             self.last_startup_error = f"{type(e).__name__}: {e}"
@@ -159,6 +179,43 @@ class NaukriAdapter(JobPlatformAdapter):
             if self._session_lock is not None:
                 self._session_lock.release()
                 self._session_lock = None
+
+    async def _close_blank_starter_tabs(self, keep: Optional[Page] = None) -> int:
+        """E5-R30: close leftover about:blank tabs, never the last page.
+
+        Playwright's persistent context starts with a blank starter tab and
+        observed popups can also land on about:blank; both accumulate as the
+        unused blank tabs operators saw. Safety rules: never close ``keep``
+        (the page the caller is about to use), and never close a page when it
+        is the only one left (closing the final page terminates a persistent
+        context). Tabs with real content are never touched.
+        """
+        context = self.browser
+        if context is None:
+            return 0
+        closed = 0
+        try:
+            pages = list(context.pages)
+        except Exception:
+            return 0
+        remaining = pages
+        for page in pages:
+            if page is keep or len(remaining) <= 1:
+                continue
+            try:
+                url = (page.url or "").strip()
+            except Exception:
+                continue
+            if url in ("about:blank", "about:blank/"):
+                try:
+                    await page.close()
+                    closed += 1
+                    remaining = [p for p in remaining if p is not page]
+                except Exception as exc:
+                    logger.debug("blank starter tab close failed: %s", exc)
+        if closed:
+            logger.info("closed_unused_blank_tabs count=%d", closed)
+        return closed
 
     async def _check_security(self, page: Page):
         """Detect boundaries where agent needs to stop safely per PRD.
@@ -1040,6 +1097,10 @@ class NaukriAdapter(JobPlatformAdapter):
             raise Exception("Browser session not started")
 
         page = await self.browser.new_page()
+        # E5-R30: with a real page open, drop any accumulated about:blank
+        # tabs from prior popups/starter windows (never this page, never the
+        # last remaining page).
+        await self._close_blank_starter_tabs(keep=page)
         security_required = False
         security_reason = None
         non_security_exception = None
@@ -1067,6 +1128,24 @@ class NaukriAdapter(JobPlatformAdapter):
             # Non-security exceptions: page closed for cleanup
             if non_security_exception is not None:
                 await page.close()
+
+    async def detect_expired_listing(self, page: Page) -> Optional[str]:
+        """E5-R30: positive visible-text evidence that a listing is expired.
+
+        Returns the matched phrase (callers record it as the exclusion
+        reason) or None. Read-only: no click, no navigation, no reload —
+        a transient browser error or a page that merely failed to render
+        is NOT evidence of expiry and returns None.
+        """
+        try:
+            visible_text = (await page.inner_text("body")).lower()
+        except Exception as exc:
+            logger.debug("expired-listing scan unavailable: %s", exc)
+            return None
+        for indicator in self.expired_listing_indicators:
+            if indicator in visible_text:
+                return indicator
+        return None
 
     async def detect_application_type(self, page: Page) -> str:
         """
@@ -1343,9 +1422,13 @@ class NaukriAdapter(JobPlatformAdapter):
     async def _record_new_tab(self, page: Page, task: "asyncio.Task") -> None:
         """Record whether the Apply click opened a new tab or popup.
 
-        Read-only observation: the observed page is never clicked, filled,
-        navigated, or closed here, and no security check is skipped.
+        Read-only observation: the observed page is never clicked, filled, or
+        navigated, and no security check is skipped. E5-R30: after recording,
+        the unused popup is closed so blank tabs do not accumulate — the main
+        ``page`` and any content tab are never touched, and the popup is left
+        open if it is somehow the only page remaining.
         """
+        observed: Optional[Page] = None
         try:
             if not task.done():
                 task.cancel()
@@ -1361,6 +1444,7 @@ class NaukriAdapter(JobPlatformAdapter):
                     "new_tab_detected=no (page event: %s)", type(exc).__name__
                 )
                 return
+            observed = new_page
             pages = getattr(page.context, "pages", None)
             page_count = len(pages) if isinstance(pages, (list, tuple)) else None
             logger.info(
@@ -1370,6 +1454,18 @@ class NaukriAdapter(JobPlatformAdapter):
             )
         except Exception as exc:
             logger.warning("New-tab observation failed: %s", exc)
+        finally:
+            if observed is not None:
+                try:
+                    context_pages = getattr(page.context, "pages", None) or []
+                    if len(context_pages) > 1:
+                        await observed.close()
+                        logger.info(
+                            "observed_popup_closed url=%s",
+                            getattr(observed, "url", "unknown"),
+                        )
+                except Exception as exc:
+                    logger.debug("observed popup close failed: %s", exc)
 
     async def detect_application_questions(self, page: Page) -> List[Dict[str, Any]]:
         """

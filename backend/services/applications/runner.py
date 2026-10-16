@@ -443,8 +443,25 @@ class ApplicationRunner:
             logger.info(f"Job {job_id} has blocking application history; manual reset required")
             return "SKIPPED"
 
+        # E5-R30: external boundary — a job already classified EXTERNAL is
+        # excluded here, before any application page is opened. The stored
+        # mode is never changed (that requires live destination evidence),
+        # the page is never opened, and no external site is ever visited —
+        # the exclusion reason is recorded instead.
+        if (job.application_mode or "").strip().upper() == "EXTERNAL":
+            logger.info(
+                "Job %s excluded before page open: application mode EXTERNAL", job_id
+            )
+            self.application_service.record_application_skip(
+                job,
+                "External application - excluded before opening the job page "
+                "(native Naukri applications only)",
+            )
+            return "EXTERNAL"
+
         # Open job page
         page = None
+        application = None
         try:
             await self._emit({"event": "step", "job_id": job_id, "step": "opening_job_page"})
             result = await self.adapter.open_job_page(job.url)
@@ -477,6 +494,23 @@ class ApplicationRunner:
                 )
                 self.state_manager.transition_to(AgentState.AUTH_REQUIRED)
                 return "AUTH_REQUIRED"
+
+            # E5-R30: revalidate listing availability from positive visible
+            # evidence before any attempt. An expired listing is marked on
+            # the job row (removing it from every candidate stage) and
+            # excluded with the matched phrase as the reason. A transient
+            # browser error never reaches this check (open_job_page raised).
+            expired_evidence = await self.adapter.detect_expired_listing(page)
+            if expired_evidence:
+                logger.info(
+                    "Job %s listing expired (evidence: %s)", job_id, expired_evidence
+                )
+                job.status = "EXPIRED"
+                self.session.commit()
+                self.application_service.record_application_skip(
+                    job, f"Listing expired - {expired_evidence}"
+                )
+                return "SKIPPED"
 
             app_type = await self.adapter.detect_application_type(page)
 
@@ -860,9 +894,27 @@ class ApplicationRunner:
                 return "AUTH_REQUIRED"
 
             logger.error(f"Error processing job {job_id}: {e}", exc_info=True)
-            self.application_service.record_application_failure(
+            # E5-R30: distinguish "the page never got far enough for an
+            # attempt" from an ambiguous mid-attempt failure. Without an
+            # application row (and without an open row from a previous run)
+            # nothing was attempted, so the failure is recorded as a
+            # retryable skip with the navigation/page error as its reason —
+            # it must not create a blocking NEEDS_ATTENTION row. An open
+            # prior attempt stays NEEDS_ATTENTION (its true state is
+            # unknown and must never be blindly retried).
+            resolved = self.application_service.resolve_open_attempt(
                 job, f"Application error: {str(e)}"
             )
+            if resolved is None and application is None:
+                self.application_service.record_application_skip(
+                    job, f"Page failed before any attempt started: {str(e)}"
+                )
+                return "FAILED"
+            if resolved is None:
+                # This invocation had an attempt row; surface it for review.
+                self.application_service.record_application_failure(
+                    job, f"Application error: {str(e)}"
+                )
             return "FAILED"
 
         finally:
