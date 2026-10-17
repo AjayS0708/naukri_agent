@@ -142,35 +142,6 @@ export function ProfileWorkspace({ onProfileChange }: { onProfileChange: (profil
         </div>
         <span className="profile-status">{formattedStatus}</span>
       </div>
-      
-      {/* Profile completion indicator */}
-      <div className="profile-completion">
-        <div className="completion-header">
-          <span className="completion-label">Profile completeness</span>
-          <span className="completion-percentage">80%</span>
-        </div>
-        <div className="completion-bar">
-          <div className="completion-fill" style={{ width: "80%" }}></div>
-        </div>
-        <div className="completion-items">
-          <div className="completion-item complete">
-            <Check size={14} />
-            <span>Resume</span>
-          </div>
-          <div className="completion-item complete">
-            <Check size={14} />
-            <span>Personal information</span>
-          </div>
-          <div className="completion-item complete">
-            <Check size={14} />
-            <span>Skills</span>
-          </div>
-          <div className="completion-item incomplete">
-            <div className="incomplete-dot" />
-            <span>Experience</span>
-          </div>
-        </div>
-      </div>
 
       <label className="upload-zone">
         <FileUp size={24} />

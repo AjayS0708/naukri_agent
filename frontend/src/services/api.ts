@@ -1,4 +1,4 @@
-import type { AnswerQuestionRequest, AnswerQuestionResponse, ApplicationsListResponse, AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, AutonomousCycleStopRequest, AutonomousCycleStopResponse, DashboardSummary, HealthResponse, JobsListResponse, ManualApplyEligibleResponse, ManualApplySkipRequest, ManualApplySkipResponse, ManualApplyStartRequest, ManualApplyStartResponse, ManualApplyStatusResponse, ManualApplyStopRequest, ManualApplyStopResponse, NeedsAttentionResponse, NotificationHistoryResponse, PendingQuestion, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse, ScreeningAnswer } from "../types/api";
+import type { AIProviderStatusResponse, AIQueueCounts, AIQueueItem, AIQueueStatus, AnalyticsSummary, AnswerQuestionRequest, AnswerQuestionResponse, ApplicationsListResponse, AutonomousCycleStartRequest, AutonomousCycleStartResponse, AutonomousCycleStatusResponse, AutonomousCycleStopRequest, AutonomousCycleStopResponse, DashboardSummary, DayCount, DecisionBreakdown, HealthResponse, JobsListResponse, ManualApplyEligibleResponse, ManualApplySkipRequest, ManualApplySkipResponse, ManualApplyStartRequest, ManualApplyStartResponse, ManualApplyStatusResponse, ManualApplyStopRequest, ManualApplyStopResponse, NeedsAttentionResponse, NotificationHistoryResponse, PendingQuestion, ProfileData, ProfileResponse, RecentApplicationsResponse, ResumeUploadResponse, ScreeningAnswer, SkipReasonItem } from "../types/api";
 
 const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -121,7 +121,8 @@ export const getProfile = () => apiRequest<ProfileResponse>("/profile");
 export const uploadResume = (file: File) => { const form = new FormData(); form.append("resume", file); return apiRequest<ResumeUploadResponse>("/profile/resume", { method: "POST", body: form }); };
 export const updateProfile = (data: ProfileData) => apiRequest<ProfileResponse>("/profile", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data }) });
 export const confirmProfile = () => apiRequest<ProfileResponse>("/profile/confirm", { method: "POST" });
-export const getNotifications = () => apiRequest<NotificationHistoryResponse>("/notifications?limit=20");
+export const getNotifications = (limit = 50) =>
+  apiRequest<NotificationHistoryResponse>(`/notifications?limit=${limit}`);
 
 // ── Dashboard endpoints (Checkpoint E1) ──────────────────────────────────────
 export const getDashboardSummary = () => apiRequest<DashboardSummary>("/dashboard/summary");
@@ -227,3 +228,38 @@ export const skipManualJob = (request: ManualApplySkipRequest) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
   });
+
+// ── AI Queue endpoints (E5-R33) ──────────────────────────────────────────────
+export const getAIQueueStatus = () => apiRequest<AIQueueCounts>("/ai-queue/status");
+
+export const getAIQueueItems = (status: AIQueueStatus | null = null, limit = 50, offset = 0) => {
+  const params = new URLSearchParams();
+  if (status) params.append("status", status);
+  params.append("limit", limit.toString());
+  params.append("offset", offset.toString());
+  return apiRequest<AIQueueItem[]>(`/ai-queue/items?${params.toString()}`);
+};
+
+/** Backend-supported retry: schedules a RETRY_PENDING attempt with backoff. */
+export const retryAIQueueItem = (itemId: number, failureReason: string, lastError: string) => {
+  const params = new URLSearchParams({ failure_reason: failureReason, last_error: lastError });
+  return apiRequest<AIQueueItem>(`/ai-queue/${itemId}/mark-retry-pending?${params.toString()}`, {
+    method: "POST",
+  });
+};
+
+/** Returns items stuck in PROCESSING longer than the backend threshold. */
+export const recoverStaleAIQueueItems = () =>
+  apiRequest<{ recovered_count: number }>("/ai-queue/recover-stale", { method: "POST" });
+
+export const getAIProviderStatus = () => apiRequest<AIProviderStatusResponse>("/ai/status");
+
+// ── Analytics endpoints (E5-R33) ─────────────────────────────────────────────
+export const getAnalyticsSummary = (days = 30) =>
+  apiRequest<AnalyticsSummary>(`/analytics/summary?days=${days}`);
+export const getAnalyticsDecisionBreakdown = (days = 30) =>
+  apiRequest<DecisionBreakdown>(`/analytics/decision-breakdown?days=${days}`);
+export const getAnalyticsSkipReasons = (days = 30, limit = 10) =>
+  apiRequest<SkipReasonItem[]>(`/analytics/skip-reasons?days=${days}&limit=${limit}`);
+export const getAnalyticsApplicationsByDay = (days = 30) =>
+  apiRequest<DayCount[]>(`/analytics/applications-by-day?days=${days}`);

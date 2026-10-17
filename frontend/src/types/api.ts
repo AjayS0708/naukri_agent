@@ -64,6 +64,8 @@ export interface RecentApplicationItem {
   needs_attention: boolean;
   is_dry_run: boolean;
   created_at: string;
+  /** Backend: true when this job has a confirmed APPLIED row somewhere. */
+  job_confirmed?: boolean;
 }
 
 export interface RecentApplicationsResponse {
@@ -350,4 +352,97 @@ export interface ManualApplyStatusResponse {
   active_run: ManualApplyRunSummary | null;
   last_manual_run: ManualApplyRunSummary | null;
   pending_question_available: boolean;
+}
+
+// ── AI Queue types (E5-R33) ──────────────────────────────────────────────────
+
+export type AIQueueStatus =
+  | "QUEUED"
+  | "PROCESSING"
+  | "COMPLETED"
+  | "RETRY_PENDING"
+  | "QUOTA_BLOCKED"
+  | "NEEDS_ATTENTION"
+  | "FAILED";
+
+export interface AIQueueItem {
+  id: number;
+  job_id: number;
+  status: AIQueueStatus;
+  priority: number;
+  priority_reason: string | null;
+  attempt_count: number;
+  max_attempts: number;
+  last_attempt_at: string | null;
+  next_retry_at: string | null;
+  failure_reason: string | null;
+  last_error: string | null;
+  analysis_id: number | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  queue_source: string | null;
+  processing_started_at: string | null;
+}
+
+export interface AIQueueCounts {
+  total_queued: number;
+  total_processing: number;
+  total_completed: number;
+  total_retry_pending: number;
+  total_quota_blocked: number;
+  total_needs_attention: number;
+  total_failed: number;
+  total_items: number;
+  next_item_id: number | null;
+}
+
+export type AIProviderStatus =
+  | "AVAILABLE"
+  | "NOT_CONFIGURED"
+  | "AUTH_ERROR"
+  | "QUOTA_EXHAUSTED"
+  | "UNAVAILABLE"
+  | "ERROR";
+
+export interface AIProviderStatusResponse {
+  provider: string;
+  status: AIProviderStatus;
+  model: string | null;
+  requests: number;
+  cached: number;
+  errors: number;
+  updated_at: string;
+}
+
+// ── Analytics types (E5-R33) ─────────────────────────────────────────────────
+
+export interface AnalyticsSummary {
+  period_days: number;
+  discovered_jobs: number;
+  total_applications: number;
+  successful_applications: number;
+  skipped_applications: number;
+  needs_attention: number;
+  external_applications: number;
+  success_rate: number;
+  ai_requests: number;
+  ai_analyses: number;
+  discovery_runs: number;
+}
+
+export interface DecisionBreakdown {
+  breakdown: Record<string, number>;
+  total: number;
+  percentages: Record<string, number>;
+}
+
+export interface SkipReasonItem {
+  reason: string;
+  count: number;
+}
+
+export interface DayCount {
+  date: string;
+  count: number;
 }

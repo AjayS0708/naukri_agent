@@ -1,50 +1,115 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, Bot, BriefcaseBusiness, ChartNoAxesColumn, CircleAlert, Settings, Sparkles, BarChart3, LayoutDashboard, User, Bell, Menu, X, MoreHorizontal, RefreshCw, Play, AlertTriangle, Square, ListChecks } from "lucide-react";
-import { getDashboardSummary, getHealth, getNeedsAttention, getNotifications, getRecentApplications, startAutonomousCycle, getAutonomousCycleStatus, stopAutonomousCycle, getPendingQuestion, answerPendingQuestion } from "../services/api";
-import type { AnswerQuestionRequest, DashboardSummary, HealthResponse, NeedsAttentionItem, Notification, PendingQuestion, ProfileResponse, RecentApplicationItem, AutonomousCycleStatusResponse } from "../types/api";
-import { ProfileWorkspace } from "../components/ProfileWorkspace";
-import { AIStatus } from "../components/AIStatus";
-import { JobPreferences } from "../components/JobPreferences";
-import { AgentControl } from "../components/AgentControl";
-import { AnalyticsDashboard } from "../components/AnalyticsDashboard";
-import { BackendState } from "../components/BackendState";
-import { ApplicationsList } from "../components/ApplicationsList";
-import { JobsList } from "../components/JobsList";
-import { ManualApplyQueue } from "../components/ManualApplyQueue";
+import {
+  Activity,
+  BarChart3,
+  Bell,
+  BriefcaseBusiness,
+  ChartNoAxesColumn,
+  LayoutDashboard,
+  ListChecks,
+  Menu,
+  RefreshCw,
+  Settings,
+  ShieldAlert,
+  Sparkles,
+  User,
+  X,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import {
+  getAutonomousCycleStatus,
+  getDashboardSummary,
+  getHealth,
+  getNeedsAttention,
+  getNotifications,
+  getRecentApplications,
+  startAutonomousCycle,
+  stopAutonomousCycle,
+} from "../services/api";
+import type {
+  AutonomousCycleStatusResponse,
+  DashboardSummary,
+  HealthResponse,
+  NeedsAttentionItem,
+  Notification,
+  ProfileResponse,
+  RecentApplicationItem,
+} from "../types/api";
+import { ShellContext, type NavigateOptions, type PageId } from "./shell";
+import { OverviewPage } from "../pages/OverviewPage";
+import { JobsPage } from "../pages/JobsPage";
+import { ApplyQueuePage } from "../pages/ApplyQueuePage";
+import { ApplicationsPage } from "../pages/ApplicationsPage";
+import { NeedsAttentionPage } from "../pages/NeedsAttentionPage";
+import { AIQueuePage } from "../pages/AIQueuePage";
+import { NotificationsPage } from "../pages/NotificationsPage";
+import { AnalyticsPage } from "../pages/AnalyticsPage";
+import { ActivityPage } from "../pages/ActivityPage";
+import { ProfilePage } from "../pages/ProfilePage";
+import { PreferencesPage } from "../pages/PreferencesPage";
+import { agentStateTone } from "../ui/status";
 
-const STATUS_LABEL: Record<string, string> = {
-  APPLIED: "Applied",
-  SUBMITTED: "Submitted",
-  NEEDS_ATTENTION: "Needs attention",
-  SKIPPED: "Skipped",
-  EXTERNAL_APPLICATION: "External",
-  FAILED: "Failed",
-  APPLICATION_STARTED: "Started",
-  PRE_APPLY: "Pre-apply",
-  DISCOVERED: "Discovered",
-  FILTERED: "Filtered",
-  AI_ANALYZED: "AI Analyzed",
-  APPROVED_BY_RULES: "Approved",
+interface NavItem {
+  id: PageId;
+  label: string;
+  icon: LucideIcon;
+}
+
+interface NavGroup {
+  label: string;
+  items: NavItem[];
+}
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    label: "Work",
+    items: [
+      { id: "overview", label: "Overview", icon: LayoutDashboard },
+      { id: "jobs", label: "Jobs", icon: BriefcaseBusiness },
+      { id: "apply", label: "Apply Queue", icon: ListChecks },
+      { id: "applications", label: "Applications", icon: ChartNoAxesColumn },
+      { id: "attention", label: "Needs Attention", icon: ShieldAlert },
+      { id: "ai-queue", label: "AI Queue", icon: Sparkles },
+    ],
+  },
+  {
+    label: "Insights",
+    items: [
+      { id: "analytics", label: "Analytics", icon: BarChart3 },
+      { id: "activity", label: "Activity", icon: Activity },
+      { id: "notifications", label: "Notifications", icon: Bell },
+    ],
+  },
+  {
+    label: "Settings",
+    items: [
+      { id: "profile", label: "Profile", icon: User },
+      { id: "preferences", label: "Preferences", icon: Settings },
+    ],
+  },
+];
+
+const PAGE_META: Record<PageId, { label: string; group: string }> = {
+  overview: { label: "Overview", group: "Work" },
+  jobs: { label: "Jobs", group: "Work" },
+  apply: { label: "Apply Queue", group: "Work" },
+  applications: { label: "Applications", group: "Work" },
+  attention: { label: "Needs Attention", group: "Work" },
+  "ai-queue": { label: "AI Queue", group: "Work" },
+  analytics: { label: "Analytics", group: "Insights" },
+  activity: { label: "Activity", group: "Insights" },
+  notifications: { label: "Notifications", group: "Insights" },
+  profile: { label: "Profile", group: "Settings" },
+  preferences: { label: "Preferences", group: "Settings" },
 };
-
-function fmtStatus(s: string): string {
-  return STATUS_LABEL[s] ?? s.replace(/_/g, " ");
-}
-
-function fmtDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-  } catch {
-    return iso;
-  }
-}
 
 export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [failed, setFailed] = useState(false);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
-  const [currentPage, setCurrentPage] = useState<"overview" | "profile" | "preferences" | "analytics" | "activity" | "applications" | "jobs" | "apply">("overview");
+  const [currentPage, setCurrentPage] = useState<PageId>("overview");
+  const [navSeq, setNavSeq] = useState(0);
+  const [navQuery, setNavQuery] = useState<string | null>(null);
   const [applicationsFilter, setApplicationsFilter] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -59,99 +124,55 @@ export function App() {
   const [needsAttentionError, setNeedsAttentionError] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Autonomous cycle state (E3)
   const [cycleStatus, setCycleStatus] = useState<AutonomousCycleStatusResponse | null>(null);
-  const [cycleLoading, setCycleLoading] = useState(false);
   const [showRunConfirmation, setShowRunConfirmation] = useState(false);
   const [startCycleLoading, setStartCycleLoading] = useState(false);
   const [stopCycleLoading, setStopCycleLoading] = useState(false);
   const [cycleConflict, setCycleConflict] = useState(false);
   const cycleRequestInFlight = startCycleLoading || stopCycleLoading;
-  // E5-R22: synchronous double-submit guard — React state (startCycleLoading)
-  // can lag behind rapid clicks, so a ref blocks re-entry before re-render.
   const startCycleInFlightRef = useRef(false);
-
-  // E5-R21: human-in-the-loop screening answer state
-  const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
-  const [answerText, setAnswerText] = useState("");
-  const [rememberAnswer, setRememberAnswer] = useState(true);
-  const [rememberAllJobs, setRememberAllJobs] = useState(false);
-  const [answerSubmitting, setAnswerSubmitting] = useState(false);
-  const [answerError, setAnswerError] = useState<string | null>(null);
-  // E5-R32: transient "Answer received / resuming" confirmation after a
-  // successful submit or question-skip (the panel itself disappears).
   const [answerNotice, setAnswerNotice] = useState<string | null>(null);
 
-  const syncPendingQuestion = (status: AutonomousCycleStatusResponse) => {
-    if (status.active_run?.waiting_for_user) {
-      // E5-R32: a new wait supersedes any stale "answer received" notice.
-      setAnswerNotice(null);
-      getPendingQuestion()
-        .then(setPendingQuestion)
-        .catch(() => setPendingQuestion(null));
-    } else {
-      setPendingQuestion(null);
-    }
+  const fetchDashboardData = async () => {
+    setDashboardLoading(true);
+    setRecentAppsLoading(true);
+    setNeedsAttentionLoading(true);
+    await Promise.all([
+      getDashboardSummary()
+        .then((data) => { setDashboard(data); setDashboardError(false); })
+        .catch(() => setDashboardError(true)),
+      getRecentApplications(10)
+        .then((data) => { setRecentApps(data.applications); setRecentAppsError(false); })
+        .catch(() => setRecentAppsError(true)),
+      getNeedsAttention(10)
+        .then((data) => { setNeedsAttention(data.applications); setNeedsAttentionError(false); })
+        .catch(() => setNeedsAttentionError(true)),
+    ]).finally(() => {
+      setDashboardLoading(false);
+      setRecentAppsLoading(false);
+      setNeedsAttentionLoading(false);
+    });
   };
 
   useEffect(() => {
     getHealth().then(setHealth).catch(() => setFailed(true));
-    getNotifications().then((response) => setNotifications(response.notifications)).catch(() => setNotifications([]));
-
-    // Dashboard summary (discovery + applications + profile status)
-    setDashboardLoading(true);
-    getDashboardSummary()
-      .then((data) => { setDashboard(data); setDashboardError(false); })
-      .catch(() => setDashboardError(true))
-      .finally(() => setDashboardLoading(false));
-
-    // Recent applications with job title/company
-    setRecentAppsLoading(true);
-    getRecentApplications(10)
-      .then((data) => { setRecentApps(data.applications); setRecentAppsError(false); })
-      .catch(() => setRecentAppsError(true))
-      .finally(() => setRecentAppsLoading(false));
-
-    // Needs attention items
-    setNeedsAttentionLoading(true);
-    getNeedsAttention(10)
-      .then((data) => { setNeedsAttention(data.applications); setNeedsAttentionError(false); })
-      .catch(() => setNeedsAttentionError(true))
-      .finally(() => setNeedsAttentionLoading(false));
-
-    // Autonomous cycle status (E3)
-    setCycleLoading(true);
+    getNotifications(50).then((response) => setNotifications(response.notifications)).catch(() => setNotifications([]));
+    void fetchDashboardData();
     getAutonomousCycleStatus()
-      .then((data) => { setCycleStatus(data); setCycleConflict(false); syncPendingQuestion(data); })
-      .catch(() => setCycleStatus(null))
-      .finally(() => setCycleLoading(false));
+      .then((data) => { setCycleStatus(data); setCycleConflict(false); })
+      .catch(() => setCycleStatus(null));
   }, []);
 
-  // Poll autonomous cycle status continuously (E3 / E5-R29 / E5-R32).
-  // E5-R32: the loop no longer *depends* on a (possibly stale) RUNNING status
-  // to exist — the previous gate could never start when a manual apply run
-  // began after the last fetch, so a waiting screening question was never
-  // surfaced (the run-09:06 stall: zero pending-question requests while the
-  // backend waited 5+ minutes). The loop always runs: 4s while a run is
-  // active, 10s while idle, and a failed fetch never kills it.
   const cycleActiveRef = useRef(false);
   useEffect(() => {
     let stopped = false;
     let timer: number | undefined;
 
     const refreshDashboardAfterRun = () => {
-      setDashboardLoading(true);
-      setRecentAppsLoading(true);
-      setNeedsAttentionLoading(true);
-      Promise.all([
-        getDashboardSummary().then((d) => { setDashboard(d); setDashboardError(false); }).catch(() => setDashboardError(true)),
-        getRecentApplications(10).then((d) => { setRecentApps(d.applications); setRecentAppsError(false); }).catch(() => setRecentAppsError(true)),
-        getNeedsAttention(10).then((d) => { setNeedsAttention(d.applications); setNeedsAttentionError(false); }).catch(() => setNeedsAttentionError(true)),
-      ]).finally(() => {
-        setDashboardLoading(false);
-        setRecentAppsLoading(false);
-        setNeedsAttentionLoading(false);
-      });
+      void fetchDashboardData();
+      getNotifications(50)
+        .then((response) => setNotifications(response.notifications))
+        .catch(() => undefined);
     };
 
     const pollOnce = async () => {
@@ -163,11 +184,9 @@ export function App() {
         cycleActiveRef.current = isActive;
         setCycleStatus(data);
         setCycleConflict(false);
-        syncPendingQuestion(data);
-        // Refresh dashboard data when a run completes.
         if (wasActive && !isActive) refreshDashboardAfterRun();
       } catch {
-        // E5-R29: a single failed fetch must not kill polling.
+        // A single failed fetch must not kill polling.
       } finally {
         if (!stopped) {
           timer = window.setTimeout(pollOnce, cycleActiveRef.current ? 4000 : 10000);
@@ -177,12 +196,17 @@ export function App() {
 
     void pollOnce();
 
-    // Re-sync immediately when the tab becomes visible again so a throttled
-    // or aborted background poll loop self-heals on return.
+    const healthTimer = window.setInterval(() => {
+      if (!stopped) {
+        getHealth().then(setHealth).catch(() => setFailed(true));
+      }
+    }, 15000);
+
     const onVisible = () => {
       if (!stopped && document.visibilityState === "visible") {
         if (timer !== undefined) window.clearTimeout(timer);
         void pollOnce();
+        getHealth().then(setHealth).catch(() => undefined);
       }
     };
     document.addEventListener("visibilitychange", onVisible);
@@ -191,58 +215,50 @@ export function App() {
     return () => {
       stopped = true;
       if (timer !== undefined) window.clearTimeout(timer);
+      window.clearInterval(healthTimer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };
   }, []);
 
   const connection = failed ? "local_offline" : health ? "connected" : "checking";
-  // Use dashboard profile data when available; fall back to local profile state
-  const profileStatus = dashboard?.profile.status ?? profile?.status ?? null;
-  const profileConfirmed = dashboard?.profile.confirmed ?? profile?.confirmed ?? false;
-  const profileFilename = dashboard?.profile.original_filename ?? profile?.original_filename ?? null;
-  const profileSummary = profileStatus ? profileStatus.replaceAll("_", " ") : "Not configured";
-  const agentState = health?.agent_state.replaceAll("_", " ") ?? "NOT RUNNING";
+  const activeCycle = cycleStatus?.active_run ?? null;
+  // E5-R33: the needs-attention list endpoint caps its page size, so the
+  // authoritative unresolved total comes from the dashboard summary.
+  const unresolvedAttention = dashboard?.applications.needs_attention ?? needsAttention.length;
+  const isCycleRunning = cycleStatus?.active_state === "RUNNING";
+  const isCancelling = activeCycle?.status === "CANCELLING";
+  const isWaitingForAnswer = Boolean(isCycleRunning && activeCycle?.waiting_for_user);
+
+  const agentChip = !health
+    ? failed
+      ? { label: "BACKEND OFFLINE", tone: "red" as const }
+      : { label: "CHECKING…", tone: "gray" as const }
+    : isCycleRunning
+      ? isCancelling
+        ? { label: "STOPPING", tone: "amber" as const }
+        : isWaitingForAnswer
+          ? { label: "WAITING FOR ANSWER", tone: "amber" as const }
+          : { label: "RUNNING", tone: "green" as const }
+      : { label: health.agent_state, tone: agentStateTone(health.agent_state) };
 
   const handleRetry = () => {
     setFailed(false);
     setDashboardError(false);
     setRecentAppsError(false);
     setNeedsAttentionError(false);
-
     getHealth().then(setHealth).catch(() => setFailed(true));
-
-    setDashboardLoading(true);
-    getDashboardSummary()
-      .then((data) => { setDashboard(data); setDashboardError(false); })
-      .catch(() => setDashboardError(true))
-      .finally(() => setDashboardLoading(false));
-
-    setRecentAppsLoading(true);
-    getRecentApplications(10)
-      .then((data) => { setRecentApps(data.applications); setRecentAppsError(false); })
-      .catch(() => setRecentAppsError(true))
-      .finally(() => setRecentAppsLoading(false));
-
-    setNeedsAttentionLoading(true);
-    getNeedsAttention(10)
-      .then((data) => { setNeedsAttention(data.applications); setNeedsAttentionError(false); })
-      .catch(() => setNeedsAttentionError(true))
-      .finally(() => setNeedsAttentionLoading(false));
+    void fetchDashboardData();
   };
 
   const handleRefresh = () => {
     if (isRefreshing) return;
     setIsRefreshing(true);
-
-    Promise.all([
-      getDashboardSummary().then((data) => { setDashboard(data); setDashboardError(false); }).catch(() => setDashboardError(true)),
-      getRecentApplications(10).then((data) => { setRecentApps(data.applications); setRecentAppsError(false); }).catch(() => setRecentAppsError(true)),
-      getNeedsAttention(10).then((data) => { setNeedsAttention(data.applications); setNeedsAttentionError(false); }).catch(() => setNeedsAttentionError(true)),
-    ]).finally(() => setIsRefreshing(false));
+    void fetchDashboardData()
+      .then(() => getNotifications(50).then((r) => setNotifications(r.notifications)).catch(() => undefined))
+      .finally(() => setIsRefreshing(false));
   };
 
-  // Autonomous cycle handlers (E3 / E5-R15)
   const refreshCycleStatus = async () => {
     try {
       const data = await getAutonomousCycleStatus();
@@ -258,7 +274,6 @@ export function App() {
     startCycleInFlightRef.current = true;
     setStartCycleLoading(true);
     setCycleConflict(false);
-
     try {
       const result = await startAutonomousCycle({});
       setCycleStatus({
@@ -278,10 +293,10 @@ export function App() {
         last_run: cycleStatus?.last_run ?? null,
       });
       setShowRunConfirmation(false);
-    } catch (error: any) {
-      if (error?.status === 409) {
+    } catch (error: unknown) {
+      const e = error as { status?: number } | null;
+      if (e?.status === 409) {
         setCycleConflict(true);
-        // Refresh status to get current run info
         await refreshCycleStatus();
       }
     } finally {
@@ -298,659 +313,297 @@ export function App() {
       await stopAutonomousCycle({ run_token: runToken ?? null });
       await refreshCycleStatus();
     } catch {
-      // Best-effort: still refresh so the UI reflects backend state.
       await refreshCycleStatus();
     } finally {
       setStopCycleLoading(false);
     }
   };
 
-  const handleConfirmRunCycle = () => {
-    if (cycleRequestInFlight || isCycleRunning) return;
-    setShowRunConfirmation(true);
+  const handleAnswered = async (notice: string) => {
+    setAnswerNotice(notice);
+    window.setTimeout(() => {
+      setAnswerNotice((current) => (current === notice ? null : current));
+    }, 8000);
+    await refreshCycleStatus();
   };
 
-  // E5-R21: answer or skip the run's pending screening question
-  const handleAnswerQuestion = async (skip: boolean) => {
-    if (!pendingQuestion?.pending_question_id || answerSubmitting) return;
-    if (!skip && !answerText.trim()) {
-      setAnswerError("Enter an answer, or skip this job.");
-      return;
-    }
-    setAnswerSubmitting(true);
-    setAnswerError(null);
-    try {
-      const request: AnswerQuestionRequest = skip
-        ? { pending_question_id: pendingQuestion.pending_question_id, skip: true }
-        : {
-            pending_question_id: pendingQuestion.pending_question_id,
-            answer: answerText.trim(),
-            remember: rememberAnswer,
-            scope: rememberAllJobs ? "GLOBAL" : "JOB",
-            allow_global_reuse: rememberAnswer && rememberAllJobs,
-          };
-      await answerPendingQuestion(request);
-      setPendingQuestion(null);
-      setAnswerText("");
-      setRememberAllJobs(false);
-      // E5-R32: confirm the submit visibly — the question panel disappears
-      // the moment the wait clears, and without this the answer looked like
-      // it had vanished with no effect.
-      const notice = skip
-        ? "Job skipped — the run is resuming with the next job."
-        : "Answer received — the run is resuming.";
-      setAnswerNotice(notice);
-      window.setTimeout(() => {
-        setAnswerNotice((current) => (current === notice ? null : current));
-      }, 8000);
-      await refreshCycleStatus();
-    } catch (error: any) {
-      setAnswerError(error?.message ?? "The answer could not be submitted. Please try again.");
-    } finally {
-      setAnswerSubmitting(false);
-    }
-  };
-
-  const handleCancelRunCycle = () => {
-    setShowRunConfirmation(false);
-  };
-
-  const handleNavClick = (page: typeof currentPage) => {
+  const navigate = (page: PageId, options?: NavigateOptions) => {
     const openedOverview = page === "overview" && page !== currentPage;
     setCurrentPage(page);
-    setApplicationsFilter(null);
+    setNavSeq((seq) => seq + 1);
+    setNavQuery(options?.query ?? null);
+    if (options && "statusFilter" in options) {
+      setApplicationsFilter(options.statusFilter ?? null);
+    } else if (page === "applications") {
+      setApplicationsFilter(null);
+    }
     setSidebarOpen(false);
-    // E5-R32: arriving at Overview re-syncs the run state immediately, so a
-    // screening question that started while the status was stale (or while
-    // the user was on another page) is fetched and rendered without waiting
-    // for the next poll tick.
     if (openedOverview) {
       void getAutonomousCycleStatus()
         .then((data) => {
           setCycleStatus(data);
           setCycleConflict(false);
-          syncPendingQuestion(data);
         })
-        .catch(() => {
-          // The always-on polling loop retries; a miss here is not fatal.
-        });
+        .catch(() => undefined);
     }
   };
 
-  const handleViewApplications = (filter: string | null = null) => {
-    setApplicationsFilter(filter);
-    setCurrentPage("applications");
-  };
+  const shellValue = { navigate, waitingForAnswer: isWaitingForAnswer };
+  const pageMeta = PAGE_META[currentPage];
 
-  const handleViewJobs = () => {
-    setCurrentPage("jobs");
-  };
+  return (
+    <ShellContext.Provider value={shellValue}>
+      <main className="app-shell">
+        <a href="#main-content" className="skip-to-content">Skip to main content</a>
 
-  const closeSidebar = () => setSidebarOpen(false);
-  const activeCycle = cycleStatus?.active_run ?? null;
-  const lastCycle = cycleStatus?.last_run ?? null;
-  const isCycleRunning = cycleStatus?.active_state === "RUNNING";
-  // E5-R16: the run halted because the Naukri session is not authenticated.
-  const cycleLoginRequired = lastCycle?.status === "LOGIN_REQUIRED";
-  // E5-R21: the run is blocked on a screening question awaiting an answer.
-  const isWaitingForAnswer = Boolean(isCycleRunning && activeCycle?.waiting_for_user);
-  const cycleProgress = activeCycle?.progress ?? null;
-  // E5-R29: heartbeat-based stall detection. The backend stamps
-  // progress_updated_at on every progress write; if it stops moving while the
-  // run is still marked RUNNING, surface an honest "possibly stalled" hint
-  // instead of a flat "Running".
-  const STALL_THRESHOLD_MS = 5 * 60 * 1000;
-  const cycleProgressUpdatedAt = cycleProgress?.progress_updated_at ?? null;
-  const cyclePossiblyStalled =
-    isCycleRunning &&
-    !isWaitingForAnswer &&
-    Boolean(cycleProgressUpdatedAt) &&
-    (() => {
-      const t = new Date(cycleProgressUpdatedAt as string).getTime();
-      return !Number.isNaN(t) && Date.now() - t > STALL_THRESHOLD_MS;
-    })();
-
-  return <main className="app-shell">
-    <a href="#main-content" className="skip-to-content">Skip to main content</a>
-
-    {/* Mobile Header */}
-    <header className="mobile-header">
-      <button
-        className="mobile-menu-button"
-        onClick={() => setSidebarOpen(!sidebarOpen)}
-        aria-label={sidebarOpen ? "Close navigation menu" : "Open navigation menu"}
-      >
-        {sidebarOpen ? <X size={24} /> : <Menu size={24} />}
-      </button>
-      <div className="mobile-header-brand">
-        <Bot size={20} />
-        <span>Naukri Agent</span>
-      </div>
-      <button className="icon-button" aria-label="Notifications"><Bell size={20} /></button>
-    </header>
-
-    {/* Sidebar Backdrop for Mobile */}
-    {sidebarOpen && <div className="sidebar-backdrop" onClick={closeSidebar} role="presentation" />}
-
-    <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
-      <div className="brand"><Bot size={24} /><span>Naukri Agent</span></div>
-      <nav aria-label="Primary navigation">
-        <a className={`nav-item ${currentPage === "overview" ? "active" : ""}`} href="#overview" onClick={(e) => { e.preventDefault(); handleNavClick("overview"); }}><LayoutDashboard size={18} />Overview</a>
-        <a className={`nav-item ${currentPage === "activity" ? "active" : ""}`} href="#activity" onClick={(e) => { e.preventDefault(); handleNavClick("activity"); }}><Activity size={18} />Activity</a>
-        <a className={`nav-item ${currentPage === "jobs" ? "active" : ""}`} href="#jobs" onClick={(e) => { e.preventDefault(); handleNavClick("jobs"); }}><BriefcaseBusiness size={18} />Jobs</a>
-        <a className={`nav-item ${currentPage === "apply" ? "active" : ""}`} href="#apply" onClick={(e) => { e.preventDefault(); handleNavClick("apply"); }}><ListChecks size={18} />Apply Queue</a>
-        <a className={`nav-item ${currentPage === "applications" ? "active" : ""}`} href="#applications" onClick={(e) => { e.preventDefault(); handleNavClick("applications"); }}><ChartNoAxesColumn size={18} />Applications</a>
-        <a className={`nav-item ${currentPage === "analytics" ? "active" : ""}`} href="#analytics" onClick={(e) => { e.preventDefault(); handleNavClick("analytics"); }}><BarChart3 size={18} />Analytics</a>
-        <a className={`nav-item ${currentPage === "profile" ? "active" : ""}`} href="#profile" onClick={(e) => { e.preventDefault(); handleNavClick("profile"); }}><User size={18} />Profile</a>
-        <a className={`nav-item ${currentPage === "preferences" ? "active" : ""}`} href="#preferences" onClick={(e) => { e.preventDefault(); handleNavClick("preferences"); }}><Settings size={18} />Preferences</a>
-      </nav>
-      <div className="sidebar-footer">
-        <div className="agent-status-indicator">
-          <span className={`status-dot ${agentState === "RUNNING" ? "running" : agentState === "PAUSED" ? "paused" : "stopped"}`} />
-          <span className="status-text">{agentState}</span>
-        </div>
-      </div>
-    </aside>
-
-    <section className="main-content">
-      <header className="topbar">
-        <div className="page-header">
-          <p className="eyebrow">DASHBOARD</p>
-          <h1>{currentPage === "overview" ? "Agent Overview" : currentPage === "profile" ? "Profile" : currentPage === "preferences" ? "Preferences" : currentPage === "analytics" ? "Analytics" : currentPage === "applications" ? "Applications" : currentPage === "jobs" ? "Jobs" : currentPage === "apply" ? "Apply Queue" : "Activity"}</h1>
-          <p className="page-description">{currentPage === "overview" ? "Monitor and control your job search automation" : currentPage === "profile" ? "Manage your resume and professional profile" : currentPage === "preferences" ? "Configure job search preferences and automation settings" : currentPage === "analytics" ? "View performance metrics and decision analytics" : currentPage === "applications" ? "View and filter application history" : currentPage === "jobs" ? "View discovered jobs" : currentPage === "apply" ? "Apply to previously discovered jobs on demand" : "Track agent activity and events"}</p>
-        </div>
-        <div className="topbar-actions">
+        <header className="mobile-header">
+          <button
+            className="mobile-menu-button"
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            aria-label={sidebarOpen ? "Close navigation menu" : "Open navigation menu"}
+          >
+            {sidebarOpen ? <X size={22} /> : <Menu size={22} />}
+          </button>
+          <div className="mobile-header-brand">
+            <span className="brand-mark">N</span>
+            <span>Naukri Agent</span>
+          </div>
           <button
             className="icon-button"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            aria-label="Refresh dashboard"
-            title="Refresh dashboard data"
+            aria-label="Notifications"
+            onClick={() => navigate("notifications")}
           >
-            <RefreshCw size={20} className={isRefreshing ? "animate-spin" : ""} />
+            <Bell size={18} />
           </button>
-          <BackendState status={connection as any} onRetry={handleRetry} />
-          <button className="icon-button" aria-label="Notifications"><Bell size={20} /></button>
-        </div>
-      </header>
+        </header>
 
-      <div className="content-area" id="main-content" tabIndex={-1}>
-        {currentPage === "overview" && (
-          <>
-            <section className="status-panel">
-              <div>
-                <p className="eyebrow">AGENT STATUS</p>
-                <strong className={`agent-state ${health?.agent_state.toLowerCase() || "idle"}`}>{agentState}</strong>
-                <p>Configure your profile and preferences to enable automation.</p>
-              </div>
-              <div className="status-meta">
-                <span>Backend</span>
-                <b>{health ? `${health.service} v${health.version}` : "Not available"}</b>
-              </div>
-            </section>
+        {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} role="presentation" />}
 
-            <section id="agent-control"><AgentControl /></section>
-
-            {/* Autonomous Cycle Control (E3 / E5-R15 / E5-R16) */}
-            <section className="status-panel">
-              <div>
-                <p className="eyebrow">AUTONOMOUS CYCLE</p>
-                <strong className={`agent-state ${(isCycleRunning ? (cycleStatus?.active_run?.status === "CANCELLING" ? "PAUSED" : isWaitingForAnswer ? "PAUSED" : "RUNNING") : cycleLoginRequired ? "AUTH_REQUIRED" : "IDLE").toLowerCase()}`}>
-                  {isCycleRunning ? (cycleStatus?.active_run?.status === "CANCELLING" ? "Stopping…" : isWaitingForAnswer ? "Waiting for your answer" : "Running") : cycleLoginRequired ? "Login required" : "Idle"}
-                </strong>
-                {isCycleRunning && !isWaitingForAnswer && cycleStatus?.active_run?.status !== "CANCELLING" && <p>Discovery and application in progress...</p>}
-                {isCycleRunning && isWaitingForAnswer && (
-                  <p>The run is paused on a screening question. Answer below to resume, skip this job, or stop the run entirely.</p>
-                )}
-                {isCycleRunning && cycleStatus?.active_run?.status === "CANCELLING" && <p>Cancellation requested. Finishing the current safe step...</p>}
-                {!isCycleRunning && cycleLoginRequired && (
-                  <p className="warning-text">
-                    Naukri session is signed out. Applications were not started. Sign in manually in the agent
-                    browser, then run the cycle again.
-                  </p>
-                )}
-                {!isCycleRunning && lastCycle?.status === "COMPLETED" && <p>Last cycle completed successfully.</p>}
-                {!isCycleRunning && lastCycle?.status === "CANCELLED" && <p>Last cycle was cancelled.</p>}
-                {!isCycleRunning && lastCycle?.status === "FAILED" && <p className="error-text">Last cycle failed. Check logs for details.</p>}
-                {cycleConflict && <p className="error-text">An autonomous cycle is already running.</p>}
-              </div>
-              <div className="control-buttons">
-                {!isCycleRunning && !cycleConflict && (
+        <aside className={`sidebar${sidebarOpen ? " open" : ""}`}>
+          <div className="brand">
+            <span className="brand-mark">N</span>
+            <span className="brand-name">Naukri Agent</span>
+          </div>
+          <nav aria-label="Primary navigation">
+            {NAV_GROUPS.map((group) => (
+              <div key={group.label} className="nav-group">
+                <p className="nav-group-label">{group.label}</p>
+                {group.items.map((item) => (
                   <button
-                    onClick={handleConfirmRunCycle}
-                    disabled={cycleRequestInFlight || isCycleRunning}
-                    className="btn btn-primary"
+                    key={item.id}
+                    type="button"
+                    className={`nav-item${currentPage === item.id ? " active" : ""}`}
+                    onClick={() => navigate(item.id)}
+                    aria-current={currentPage === item.id ? "page" : undefined}
+                    title={item.label}
                   >
-                    <Play size={16} />
-                    {startCycleLoading ? "Starting..." : "Run Autonomous Cycle"}
+                    <item.icon size={17} strokeWidth={2} />
+                    <span>{item.label}</span>
+                    {item.id === "attention" && unresolvedAttention > 0 && (
+                      <span className="nav-count">{unresolvedAttention}</span>
+                    )}
                   </button>
-                )}
-                {isCycleRunning && (
-                  <button
-                    onClick={handleStopCycle}
-                    disabled={cycleRequestInFlight || cycleStatus?.active_run?.status === "CANCELLING"}
-                    className="btn btn-danger"
-                    aria-label="Stop autonomous cycle"
-                  >
-                    <Square size={16} />
-                    {stopCycleLoading || cycleStatus?.active_run?.status === "CANCELLING" ? "Stopping..." : "Stop"}
-                  </button>
-                )}
-                {cycleConflict && (
-                  <button
-                    onClick={() => refreshCycleStatus()}
-                    className="btn btn-secondary"
-                  >
-                    Refresh Status
-                  </button>
-                )}
-              </div>
-              {(activeCycle?.run_id ?? lastCycle?.run_id) && (
-                <div className="status-meta">
-                  <span>Run ID</span>
-                  <b>#{activeCycle?.run_id ?? lastCycle?.run_id}</b>
-                </div>
-              )}
-              {/* Completion stats */}
-              {!isCycleRunning && lastCycle?.status === "COMPLETED" && Object.keys(lastCycle.stats).length > 0 && (
-                <div className="status-meta">
-                  <span>Stats</span>
-                  <b>
-                    {lastCycle.stats.applied !== undefined ? `${lastCycle.stats.applied} applied` : "Not available"}
-                    {lastCycle.stats.needs_attention !== undefined && `, ${lastCycle.stats.needs_attention} needs attention`}
-                    {lastCycle.stats.external !== undefined && `, ${lastCycle.stats.external} external`}
-                  </b>
-                </div>
-              )}
-              {/* E5-R21: live multi-job progress while the run is active */}
-              {isCycleRunning && cycleProgress && (
-                <div className="status-meta">
-                  <span>Progress</span>
-                  <b>
-                    {typeof cycleProgress.search_total === "number" && cycleProgress.search_total > 0
-                      ? `Discovery ${cycleProgress.search_index ?? 0} / ${cycleProgress.search_total} searches`
-                      : `${cycleProgress.processed ?? 0} / ${cycleProgress.candidates_total ?? "?"} processed`}
-                    {typeof cycleProgress.applied === "number" ? ` · ${cycleProgress.applied} applied` : ""}
-                    {typeof cycleProgress.skipped === "number" && cycleProgress.skipped > 0 ? ` · ${cycleProgress.skipped} skipped` : ""}
-                    {typeof cycleProgress.needs_attention === "number" && cycleProgress.needs_attention > 0 ? ` · ${cycleProgress.needs_attention} needs attention` : ""}
-                    {typeof cycleProgress.remaining === "number" ? ` · ${cycleProgress.remaining} remaining` : ""}
-                    {typeof cycleProgress.jobs_new === "number" ? ` · ${cycleProgress.jobs_new} new` : ""}
-                    {typeof cycleProgress.jobs_duplicate === "number" ? ` · ${cycleProgress.jobs_duplicate} duplicates` : ""}
-                    {cycleProgress.current_search ? ` · ${cycleProgress.current_search}` : ""}
-                    {cycleProgress.current_job_title ? ` · current: ${cycleProgress.current_job_title}` : ""}
-                    {cycleProgress.current_step && !isWaitingForAnswer ? ` (${cycleProgress.current_step.replaceAll("_", " ")})` : ""}
-                  </b>
-                </div>
-              )}
-              {/* E5-R29: honest stall hint when the heartbeat stops moving */}
-              {isCycleRunning && cyclePossiblyStalled && (
-                <div className="status-meta">
-                  <span>Connection</span>
-                  <b style={{ color: "var(--color-warning)" }}>
-                    No recent progress updates — the run may be stalled. Check the backend logs or retry.
-                  </b>
-                </div>
-              )}
-              {/* E5-R21: pending screening question — answer, skip, or stop */}
-              {isWaitingForAnswer && pendingQuestion?.found && pendingQuestion.question_text && (
-                <div
-                  role="alert"
-                  aria-live="assertive"
-                  style={{ marginTop: "0.75rem", padding: "0.75rem", border: "1px solid var(--color-warning)", borderRadius: "8px", display: "grid", gap: "0.5rem" }}
-                >
-                  <p className="eyebrow" style={{ margin: 0 }}>
-                    ANSWER NEEDED{pendingQuestion.job_title ? ` — ${pendingQuestion.job_title}` : ""}
-                    {pendingQuestion.employer ? ` · ${pendingQuestion.employer}` : ""}
-                  </p>
-                  <p style={{ margin: 0 }}><strong>{pendingQuestion.question_text}</strong></p>
-                  {pendingQuestion.options && pendingQuestion.options.length > 0 ? (
-                    <select
-                      value={answerText}
-                      onChange={(e) => setAnswerText(e.target.value)}
-                      aria-label="Choose an answer"
-                    >
-                      <option value="">Select an answer…</option>
-                      {pendingQuestion.options.map((option) => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type="text"
-                      value={answerText}
-                      onChange={(e) => setAnswerText(e.target.value)}
-                      placeholder="Type your answer"
-                      aria-label="Your answer"
-                    />
-                  )}
-                  <label style={{ display: "flex", gap: "0.4rem", alignItems: "center", fontSize: "0.85rem" }}>
-                    <input
-                      type="checkbox"
-                      checked={rememberAnswer}
-                      onChange={(e) => setRememberAnswer(e.target.checked)}
-                    />
-                    Save this answer for future applications
-                  </label>
-                  <label style={{ display: "flex", gap: "0.4rem", alignItems: "center", fontSize: "0.85rem" }}>
-                    <input
-                      type="checkbox"
-                      checked={rememberAllJobs}
-                      disabled={!rememberAnswer}
-                      onChange={(e) => setRememberAllJobs(e.target.checked)}
-                    />
-                    Reuse it for all jobs (salary, notice, relocation, …)
-                  </label>
-                  {answerError && <p className="error-text" style={{ margin: 0 }}>{answerError}</p>}
-                  <div className="control-buttons" style={{ marginTop: "0.25rem" }}>
-                    <button
-                      className="btn btn-primary"
-                      onClick={() => handleAnswerQuestion(false)}
-                      disabled={answerSubmitting || !answerText.trim()}
-                    >
-                      {answerSubmitting ? "Submitting…" : "Answer & resume"}
-                    </button>
-                    <button
-                      className="btn btn-secondary"
-                      onClick={() => handleAnswerQuestion(true)}
-                      disabled={answerSubmitting}
-                    >
-                      Skip this job
-                    </button>
-                  </div>
-                </div>
-              )}
-              {/* E5-R32: confirmation that the answer landed and the run is
-                  resuming (the question panel disappears on submit). */}
-              {answerNotice && !isWaitingForAnswer && (
-                <p className="manual-queue-banner info" role="status" aria-live="polite">
-                  {answerNotice}
-                </p>
-              )}
-            </section>
-
-            {/* Run Confirmation Modal (E3) */}
-            {showRunConfirmation && (
-              <div className="modal-overlay" onClick={handleCancelRunCycle}>
-                <div className="modal" onClick={(e) => e.stopPropagation()}>
-                  <div className="modal-header">
-                    <h2>Run Autonomous Cycle</h2>
-                    <button onClick={handleCancelRunCycle} className="icon-button"><X size={20} /></button>
-                  </div>
-                  <div className="modal-body">
-                    <p>This will run the autonomous job application cycle, which may:</p>
-                    <ul>
-                      <li>Discover jobs from Naukri</li>
-                      <li>Apply deterministic hard filters</li>
-                      <li>Evaluate candidates with Gemini AI</li>
-                      <li><strong>Submit real Naukri applications</strong> to every eligible matching job</li>
-                    </ul>
-                    <p>All existing safety rules will be enforced:</p>
-                    <ul>
-                      <li>Duplicate protection</li>
-                      <li>External application boundary</li>
-                      <li>Post-click evidence verification</li>
-                      <li>CAPTCHA/security challenge handling</li>
-                      <li>Truthful APPLIED confirmation only</li>
-                    </ul>
-                    <p className="warning-text" style={{ marginTop: "0" }}>
-                      The run continues until every eligible matching job is processed or a genuine blocker stops it. There is no hourly or daily application-count cap.
-                    </p>
-                    <p className="warning-text">Only one autonomous cycle can run at a time.</p>
-                  </div>
-                  <div className="modal-footer">
-                    <button onClick={handleCancelRunCycle} className="btn btn-secondary">Cancel</button>
-                    <button
-                      onClick={handleStartCycle}
-                      disabled={startCycleLoading}
-                      className="btn btn-primary"
-                    >
-                      {startCycleLoading ? "Starting..." : "Run Cycle"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Metrics — real data from /api/dashboard/summary */}
-            <section className="metrics">
-              <article className="metric clickable" onClick={() => handleViewApplications("APPLIED")} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleViewApplications("APPLIED"); }}>
-                <BriefcaseBusiness size={20} />
-                <p>Applications total</p>
-                <strong aria-live="polite">
-                  {dashboardLoading ? "…" : dashboardError ? "—" : dashboard!.applications.applied}
-                </strong>
-              </article>
-              <article className="metric clickable" onClick={handleViewJobs} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleViewJobs(); }}>
-                <ChartNoAxesColumn size={20} />
-                <p>Jobs discovered</p>
-                <strong aria-live="polite">
-                  {dashboardLoading ? "…" : dashboardError ? "Unavailable" : dashboard!.discovery.jobs_discovered}
-                </strong>
-              </article>
-              <article className="metric">
-                <Sparkles size={20} />
-                <p>Discovery runs</p>
-                <strong aria-live="polite">
-                  {dashboardLoading ? "…" : dashboardError ? "Unavailable" : dashboard!.discovery.total_runs}
-                </strong>
-              </article>
-              <article className="metric clickable" onClick={() => handleViewApplications("NEEDS_ATTENTION")} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleViewApplications("NEEDS_ATTENTION"); }}>
-                <CircleAlert size={20} />
-                <p>Needs attention</p>
-                <strong aria-live="polite">
-                  {dashboardLoading ? "…" : dashboardError ? "—" : dashboard!.applications.needs_attention}
-                </strong>
-              </article>
-            </section>
-
-            {/* Profile panel — real data from dashboard summary */}
-            <section className="status-panel">
-              <div>
-                <p className="eyebrow">PROFILE</p>
-                <strong>{profileSummary}</strong>
-                <p>{profileConfirmed ? "Profile confirmed for automation." : "Resume/profile review is required before automation."}</p>
-              </div>
-              <div className="status-meta">
-                <span>Resume</span>
-                <b>{profileFilename ?? "Not uploaded"}</b>
-              </div>
-            </section>
-
-            {/* Latest autonomous run — real data from dashboard summary */}
-            <section className="status-panel">
-              <div>
-                <p className="eyebrow">LATEST RUN</p>
-                <strong>{dashboardLoading ? "…" : dashboardError ? "Unavailable" : dashboard!.discovery.status ?? "No runs yet"}</strong>
-                <p>
-                  {dashboardLoading ? "Loading…" : dashboardError ? "Run data unavailable" : dashboard!.discovery.run_id
-                    ? `Run #${dashboard!.discovery.run_id} — ${dashboard!.discovery.jobs_discovered} jobs discovered, ${dashboard!.discovery.new_jobs} new jobs`
-                    : "No discovery runs recorded yet."}
-                </p>
-              </div>
-              {dashboard && dashboard.discovery.completed_at && (
-                <div className="status-meta">
-                  <span>Completed</span>
-                  <b>{fmtDate(dashboard.discovery.completed_at)}</b>
-                </div>
-              )}
-            </section>
-
-            {/* Needs attention section */}
-            <section className="activity" aria-labelledby="needs-attention-heading">
-              <div>
-                <p className="eyebrow">NEEDS ATTENTION</p>
-                <h2 id="needs-attention-heading">Items requiring review</h2>
-              </div>
-              {needsAttentionLoading ? (
-                <p className="text-[var(--color-text-secondary)]">Loading needs-attention items…</p>
-              ) : needsAttentionError ? (
-                <p className="error-text">Needs-attention data unavailable. Please retry.</p>
-              ) : needsAttention.length === 0 ? (
-                <p>No items need attention at this time.</p>
-              ) : (
-                <ul>
-                  {needsAttention.map((item) => (
-                    <li key={item.application_id}>
-                      <strong>{item.job_title}</strong> at {item.company}
-                      {" — "}
-                      <span style={{ color: "var(--color-warning)" }}>{fmtStatus(item.status)}</span>
-                      {item.skip_reason && <span className="text-[var(--color-text-secondary)]"> · {item.skip_reason}</span>}
-                      {item.failure_reason && <span className="text-[var(--color-text-secondary)]"> · {item.failure_reason}</span>}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section id="ai-status"><AIStatus /></section>
-
-            <section className="activity" aria-labelledby="notifications-heading">
-              <div>
-                <p className="eyebrow">NOTIFICATIONS</p>
-                <h2 id="notifications-heading">Recent notifications</h2>
-              </div>
-              {notifications.length === 0 ? <p>No notifications recorded.</p> : (
-                <ul>
-                  {notifications.slice(0, 5).map((notification) => (
-                    <li key={notification.id}>
-                      <strong>{notification.title}</strong> — {notification.message}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section className="activity">
-              <div>
-                <p className="eyebrow">RECENT ACTIVITY</p>
-                <h2>Latest applications</h2>
-              </div>
-              {recentAppsLoading ? (
-                <p className="text-[var(--color-text-secondary)]">Loading activity…</p>
-              ) : recentAppsError ? (
-                <p className="error-text">Activity data unavailable. Please retry.</p>
-              ) : recentApps.length === 0 ? (
-                <p>No applications recorded yet. Run the agent to begin.</p>
-              ) : (
-                <ul>
-                  {recentApps.map((app) => (
-                    <li key={app.application_id}>
-                      <strong>{app.job_title}</strong> at {app.company}
-                      {" — "}
-                      <span>{fmtStatus(app.status)}</span>
-                      {app.applied_at && <span className="text-[var(--color-text-secondary)]"> · {fmtDate(app.applied_at)}</span>}
-                      {app.is_dry_run && <span className="text-[var(--color-text-secondary)]"> (dry run)</span>}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section id="analytics-dashboard"><AnalyticsDashboard onOutcomeClick={handleViewApplications} /></section>
-          </>
-        )}
-
-        {currentPage === "profile" && (
-          <section id="profile"><ProfileWorkspace onProfileChange={setProfile} /></section>
-        )}
-
-        {currentPage === "preferences" && (
-          <section id="preferences"><JobPreferences /></section>
-        )}
-
-        {currentPage === "analytics" && (
-          <section id="analytics-dashboard"><AnalyticsDashboard /></section>
-        )}
-
-        {currentPage === "activity" && (
-          <section className="activity">
-            <div>
-              <p className="eyebrow">ACTIVITY</p>
-              <h2>Application History</h2>
-            </div>
-            {recentAppsLoading ? (
-              <p className="text-[var(--color-text-secondary)]">Loading activity…</p>
-            ) : recentAppsError ? (
-              <p className="error-text">Activity data unavailable. Backend may be offline.</p>
-            ) : recentApps.length === 0 ? (
-              <p>No applications recorded yet. Start the agent to begin tracking events.</p>
-            ) : (
-              <ul>
-                {recentApps.map((app) => (
-                  <li key={app.application_id}>
-                    <strong>{app.job_title}</strong> at {app.company}
-                    {" — "}
-                    <span>{fmtStatus(app.status)}</span>
-                    {app.applied_at
-                      ? <span className="text-[var(--color-text-secondary)]"> · Applied {fmtDate(app.applied_at)}</span>
-                      : <span className="text-[var(--color-text-secondary)]"> · {fmtDate(app.created_at)}</span>}
-                    {app.application_method && <span className="text-[var(--color-text-secondary)]"> · {app.application_method.replace("_", " ")}</span>}
-                    {app.is_dry_run && <span className="text-[var(--color-text-secondary)]"> (dry run)</span>}
-                    {app.needs_attention && <span style={{ color: "var(--color-warning)" }}> ⚠ Needs attention</span>}
-                    {app.skip_reason && <span className="text-[var(--color-text-secondary)]"> · {app.skip_reason}</span>}
-                  </li>
                 ))}
-              </ul>
+              </div>
+            ))}
+          </nav>
+          <div className="sidebar-footer">
+            <span className={`agent-chip tone-${agentChip.tone}`}>
+              <span className={`pulse-dot tone-${agentChip.tone}`} aria-hidden />
+              {agentChip.label}
+            </span>
+            {health && <span className="sidebar-version">{health.service} v{health.version}</span>}
+          </div>
+        </aside>
+
+        <div className="main-column">
+          <header className="topbar">
+            <div className="topbar-context">
+              <span className="topbar-group">{pageMeta.group}</span>
+              <span className="topbar-sep">/</span>
+              <span className="topbar-page">{pageMeta.label}</span>
+            </div>
+            <div className="topbar-actions">
+              <span className={`agent-chip tone-${agentChip.tone}`} title="Authoritative backend agent/run state">
+                <span className={`pulse-dot tone-${agentChip.tone}`} aria-hidden />
+                {agentChip.label}
+              </span>
+              <span
+                className={`conn-chip ${connection}`}
+                title={
+                  connection === "connected"
+                    ? "Backend reachable"
+                    : connection === "checking"
+                      ? "Checking backend…"
+                      : "Backend not reachable"
+                }
+              >
+                <span className="conn-dot" aria-hidden />
+                {connection === "connected" ? "Connected" : connection === "checking" ? "Checking" : "Offline"}
+              </span>
+              {connection !== "connected" && (
+                <button type="button" className="btn btn-secondary btn-sm" onClick={handleRetry}>
+                  Retry
+                </button>
+              )}
+              <button
+                type="button"
+                className="icon-button"
+                onClick={handleRefresh}
+                disabled={isRefreshing}
+                aria-label="Refresh data"
+                title="Refresh dashboard data"
+              >
+                <RefreshCw size={16} className={isRefreshing ? "spin" : ""} />
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Notifications"
+                onClick={() => navigate("notifications")}
+              >
+                <Bell size={16} />
+              </button>
+            </div>
+          </header>
+
+          <div className="content-area" id="main-content" tabIndex={-1}>
+            {currentPage === "overview" && (
+              <OverviewPage
+                key={`overview-${navSeq}`}
+                health={health}
+                dashboard={dashboard}
+                dashboardLoading={dashboardLoading}
+                dashboardError={dashboardError}
+                recentApps={recentApps}
+                recentAppsLoading={recentAppsLoading}
+                recentAppsError={recentAppsError}
+                needsAttention={needsAttention}
+                needsAttentionLoading={needsAttentionLoading}
+                needsAttentionError={needsAttentionError}
+                notifications={notifications}
+                cycleStatus={cycleStatus}
+                cycleConflict={cycleConflict}
+                startCycleLoading={startCycleLoading}
+                stopCycleLoading={stopCycleLoading}
+                cycleRequestInFlight={cycleRequestInFlight}
+                answerNotice={answerNotice}
+                isRefreshing={isRefreshing}
+                onConfirmRunCycle={() => {
+                  if (cycleRequestInFlight || isCycleRunning) return;
+                  setShowRunConfirmation(true);
+                }}
+                onStopCycle={() => void handleStopCycle()}
+                onRefreshCycle={() => void refreshCycleStatus()}
+                onAnswered={(notice) => void handleAnswered(notice)}
+                onRefresh={handleRefresh}
+                onRetry={handleRetry}
+              />
             )}
-          </section>
-        )}
+            {currentPage === "jobs" && <JobsPage key={`jobs-${navSeq}`} initialQuery={navQuery ?? undefined} />}
+            {currentPage === "apply" && <ApplyQueuePage key={`apply-${navSeq}`} initialQuery={navQuery ?? undefined} />}
+            {currentPage === "applications" && (
+              <ApplicationsPage
+                key={`applications-${navSeq}`}
+                statusFilter={applicationsFilter}
+                onStatusFilterChange={setApplicationsFilter}
+              />
+            )}
+            {currentPage === "attention" && (
+              <NeedsAttentionPage
+                key={`attention-${navSeq}`}
+                unresolvedTotal={dashboard?.applications.needs_attention ?? null}
+              />
+            )}
+            {currentPage === "ai-queue" && <AIQueuePage key={`ai-${navSeq}`} />}
+            {currentPage === "notifications" && <NotificationsPage key={`notifications-${navSeq}`} />}
+            {currentPage === "analytics" && <AnalyticsPage key={`analytics-${navSeq}`} />}
+            {currentPage === "activity" && <ActivityPage key={`activity-${navSeq}`} />}
+            {currentPage === "profile" && (
+              <ProfilePage key={`profile-${navSeq}`} onProfileChange={setProfile} />
+            )}
+            {currentPage === "preferences" && <PreferencesPage key={`preferences-${navSeq}`} />}
+          </div>
+        </div>
 
-        {currentPage === "applications" && (
-          <ApplicationsList statusFilter={applicationsFilter} onBack={() => handleNavClick("overview")} />
-        )}
+        <nav className="bottom-navigation" aria-label="Mobile navigation">
+          {(
+            [
+              { id: "overview" as PageId, label: "Home", icon: LayoutDashboard },
+              { id: "jobs" as PageId, label: "Jobs", icon: BriefcaseBusiness },
+              { id: "apply" as PageId, label: "Apply", icon: ListChecks },
+              { id: "applications" as PageId, label: "Apps", icon: ChartNoAxesColumn },
+            ]
+          ).map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`bottom-nav-item${currentPage === item.id ? " active" : ""}`}
+              onClick={() => navigate(item.id)}
+              aria-label={item.label}
+            >
+              <item.icon size={19} />
+              <span>{item.label}</span>
+            </button>
+          ))}
+          <button
+            type="button"
+            className={`bottom-nav-item${["analytics", "activity", "notifications", "profile", "preferences", "attention", "ai-queue"].includes(currentPage) ? " active" : ""}`}
+            onClick={() => setSidebarOpen(true)}
+            aria-label="More sections"
+          >
+            <Menu size={19} />
+            <span>More</span>
+          </button>
+        </nav>
 
-        {currentPage === "jobs" && (
-          <JobsList onBack={() => handleNavClick("overview")} />
+        {showRunConfirmation && (
+          <div className="modal-overlay" onClick={() => setShowRunConfirmation(false)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Run autonomous cycle">
+              <div className="modal-header">
+                <h2>Run autonomous cycle</h2>
+                <button type="button" onClick={() => setShowRunConfirmation(false)} className="icon-button" aria-label="Close">
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="modal-body">
+                <p>This will run the autonomous job application cycle, which may:</p>
+                <ul>
+                  <li>Discover jobs from Naukri</li>
+                  <li>Apply deterministic hard filters</li>
+                  <li>Evaluate candidates with the configured AI provider</li>
+                  <li><strong>Submit real Naukri applications</strong> to every eligible matching job</li>
+                </ul>
+                <p>All existing safety rules will be enforced:</p>
+                <ul>
+                  <li>Duplicate protection</li>
+                  <li>External application boundary</li>
+                  <li>Post-click evidence verification</li>
+                  <li>CAPTCHA/security challenge handling</li>
+                  <li>Truthful APPLIED confirmation only</li>
+                </ul>
+                <p className="warning-text">
+                  The run continues until every eligible matching job is processed or a genuine blocker stops it. There is no hourly or daily application-count cap.
+                </p>
+                <p className="warning-text">Only one autonomous cycle can run at a time.</p>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowRunConfirmation(false)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleStartCycle()}
+                  disabled={startCycleLoading}
+                  className="btn btn-primary"
+                >
+                  {startCycleLoading ? "Starting…" : "Run cycle"}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
-
-        {currentPage === "apply" && (
-          <ManualApplyQueue onBack={() => handleNavClick("overview")} />
-        )}
-      </div>
-    </section>
-
-    {/* Mobile Bottom Navigation */}
-    <nav className="bottom-navigation">
-      <button
-        className={`bottom-nav-item ${currentPage === "overview" ? "active" : ""}`}
-        onClick={() => handleNavClick("overview")}
-        aria-label="Overview"
-      >
-        <LayoutDashboard size={20} />
-        <span>Home</span>
-      </button>
-      <button
-        className={`bottom-nav-item ${currentPage === "activity" ? "active" : ""}`}
-        onClick={() => handleNavClick("activity")}
-        aria-label="Activity"
-      >
-        <Activity size={20} />
-        <span>Activity</span>
-      </button>
-      <button
-        className={`bottom-nav-item ${currentPage === "jobs" ? "active" : ""}`}
-        onClick={() => handleNavClick("jobs")}
-        aria-label="Jobs"
-      >
-        <BriefcaseBusiness size={20} />
-        <span>Jobs</span>
-      </button>
-      <button
-        className={`bottom-nav-item ${currentPage === "applications" ? "active" : ""}`}
-        onClick={() => handleNavClick("applications")}
-        aria-label="Applications"
-      >
-        <ChartNoAxesColumn size={20} />
-        <span>Apps</span>
-      </button>
-      <button
-        className={`bottom-nav-item ${["analytics", "profile", "preferences"].includes(currentPage) ? "active" : ""}`}
-        onClick={() => setCurrentPage("analytics")}
-        aria-label="More options"
-      >
-        <MoreHorizontal size={20} />
-        <span>More</span>
-      </button>
-    </nav>
-  </main>;
+      </main>
+    </ShellContext.Provider>
+  );
 }
