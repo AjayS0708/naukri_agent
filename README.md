@@ -1,6 +1,6 @@
 # Naukri AI Job Application Agent
 
-## CHECKPOINT E5-R21: Multi-Job Autonomous Applications & Human-in-the-Loop Answer Memory.
+## CHECKPOINT E5-R21: Multi-Job Autonomous Applications & Human-in-the-Loop Answer Memory
 
 **Status: E5-R21 IMPLEMENTED, TESTED (1132 passed, 40 new), OFFLINE ONLY — no live application run in this checkpoint. Not committed (working tree; awaiting explicit authorization).**
 
