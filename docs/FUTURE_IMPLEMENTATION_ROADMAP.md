@@ -1,329 +1,302 @@
-# Naukri Agent — Future Implementation Roadmap
+# Future Implementation Roadmap
 
-> Planning document only. Nothing in this roadmap changes current runtime behavior,
-> authorizes automation, or represents future work as implemented.
+- **Current implementation:** E5-R33 (`37b35ed`)
+- **Last updated:** 2026-11-01
 
-**Updated:** 2026-10-13 (documentation pass after E5-R23; HEAD = `9dbc2e3`, E5-R23 uncommitted).
-This file is the stand-in for the requested `docs/FUTURE_IMPLEMENTATION.md`,
-which does not exist in this repository.
+This is a planning document. Nothing here is implemented unless explicitly marked. Historical roadmap material through E5-R23 is preserved in [`docs/archive/FUTURE_ROADMAP_THROUGH_E5_R23.md`](archive/FUTURE_ROADMAP_THROUGH_E5_R23.md).
 
-## 1. Roadmap principles
+---
 
-1. Implement one checkpoint at a time and validate it before beginning the next.
-2. Never combine unrelated future features in one checkpoint.
-3. Live automation must always have explicit, testable safety boundaries.
-4. Deterministic Python rules remain authoritative; Gemini provides bounded reasoning
-   and evaluation support, never final authority.
-5. Candidate facts must come from the structured candidate profile or an explicit,
-   approved user answer. The agent must never fabricate candidate information.
-6. Unknown or consequential questions require user involvement.
-7. Future work remains Naukri-only unless the PRD explicitly changes that scope.
-8. CAPTCHA and security controls must never be bypassed, and external applications
-   must never be submitted.
-9. No uncontrolled background execution is permitted.
-10. Runs are bounded by eligibility, not by counters: E5-R10 removed hourly/daily
-    application quotas and `max_applications` is display-only, so a run processes all
-    eligible matching jobs until the eligible queue is exhausted (this replaces the
-    earlier formulation "`max_applications` means successful native applications").
-11. Jobs discovered, jobs filtered, AI evaluations, applications, and attention
-    items remain separate metrics.
+## 1. Planning principles
 
-## 2. Current baseline (verified 2026-10-13)
+1. Keep deterministic safety rules authoritative.
+2. Verify one change at a time.
+3. Never combine unrelated features in one checkpoint.
+4. Keep live automation explicit and operator-controlled.
+5. Prefer truthful `NEEDS_ATTENTION` over optimistic retries.
+6. Never bypass CAPTCHA or security controls.
+7. Never submit external applications.
+8. Preserve application history and user skips.
+9. Keep AI advisory.
+10. Do not claim live success without a live verification run.
 
-The project provides a local-first architecture with a FastAPI backend,
-React/TypeScript/Tailwind dashboard, and SQLite/SQLAlchemy persistence. Implemented
-capabilities include Naukri discovery (multi-location, live-verified pagination,
-freshness-first, targeted search groups — E5-R8/R19), deterministic hard filtering
-with a shared irrelevant-role gate (E5-R17), interest-tier prioritization with hard
-role exclusions (E5-R10/R10B), native-first application-mode ranking (E5-R9), bounded
-Gemini evaluation (advisory only), legacy and conversational native application with
-bounded steps (E5-R7/R14/R20), pointer-honest clicks and ambiguous-submission
-reconciliation (E5-R20), duplicate protection, protected-job invariants
-(81/87/114/120), a DB-backed single-run lock with dashboard Stop (E5-R15), a
-login-aware application gate with `LOGIN_REQUIRED` (E5-R16), read-only Naukri history
-reconciliation (E5-R16/R20), and dashboard drill-downs.
+---
 
-**E4 (first dashboard-controlled live cycle) is complete.** Run #52 (2026-10-09)
-exercised Dashboard → AutonomousCycle → Naukri end-to-end with `max_applications = 1`,
-returning to `IDLE` with `lock_held = false`. The E4-R2 Windows requirement stands as
-recorded: live runs must use non-reload Uvicorn (Playwright subprocess compatibility).
-The application-submission objective that Run #52 left unresolved was subsequently
-met by later checkpoints (D5/D7 single and multi native applications; E5-R7 surgical
-live validation of job 114).
+## 2. Current baseline
 
-**E5 status: substantial but not finished.** Checkpoints E5-R1 through E5-R23 are
-implemented and documented in `docs/DEVELOPMENT_STATUS.md`. Offline suite:
-**1206 passed / 0 failed**
-including the new E5-R23 explicit-start/dedup suite (45 tests; verified
-2026-10-13; E5-R23 changes uncommitted in the working tree).
-Live-verified since E5-R7: single-job surgical apply (job 114, row 82) and
-history-confirmed application (job 462, row 148 via reconciliation after
-attempt #147). E5-R21 delivered the shared-runner multi-job orchestration,
-waiting-for-user lifecycle and scoped screening-answer memory offline. The
-first controlled live run (run #80, 2026-10-13) completed end-to-end with
-1 applied / 82 candidates / 81 late-skipped / 0 failed — proving the
-orchestrator, safety gates and reconciliation — but exposed three defects
-(double-run appearance, irrelevant BPO/voice/apprentice candidates, and the
-single-application symptom caused by the over-broad candidate query) that
-E5-R22 fixes offline; the multi-job acceptance criteria (≥2 native
-applications in one live run) remain NOT MET until a post-E5-R22 live run.
-E5-R23 (2026-10-13) closed the E5-R22 investigation checkpoint: the perceived
-automatic restart was proven to be a phase transition inside a single run (not
-a second run), discovery now reports per-search progress so the transition is
-legible, repeated job fetching is bounded and deduplicated by canonical URL,
-and excluded specializations (FEA/piping/mechanical etc.) that appear only in
-a description now reject the job before any lookup.
+Implemented through E5-R33:
 
-**Known limitations / open items:**
+- Discovery with multi-location search, pagination, freshness, deduplication, and mode classification.
+- Shared relevance and deterministic hard filters.
+- Persistent AI queue with quota, retry, and attention states.
+- Native application runner with evidence-based outcomes.
+- Conversational and legacy form handling.
+- Shared multi-job browser session with bounded restart recovery.
+- Human-in-the-loop screening with scoped answer memory.
+- Application-history and user-skip protection.
+- DB-backed singleton apply lock.
+- Manual apply queue with per-job skip.
+- Dashboard with overview, jobs, apply, applications, attention, AI queue, analytics, activity, notifications, profile, and preferences.
+- 1,438 passing backend tests and a passing frontend production build.
 
-- **Multi-application live verification is still pending.** Run #80 completed
-  one native application in a single cycle (the orchestrator, shared runner
-  and safety gates all held), but the candidate query selected 82 mostly
-  irrelevant jobs that late-skipped, yielding only 1 applied. E5-R22
-  (2026-10-13) pre-filters candidates through the shared relevance gate so
-  the next live run sees only relevant candidates; the top roadmap priority
-  is now a post-E5-R22 dashboard-initiated run completing ≥2 native
-  applications. E5-R23 added identity-based dedup and relevance pre-checks on
-  top, so the discovery sweep should present a smaller, cleaner candidate set.
-- 13 `NEEDS_ATTENTION` application rows remain for human review (incl. #146 job 105
-  and #147 job 462 — remote status uncertain; #148 is the history-confirmed
-  companion row of 462). No bulk resolution mechanism exists by design.
-- Data anomaly: discovery run 74 (2026-10-11) still shows `status=RUNNING` with
-  `completed_at=NULL` while later runs completed — a stale control row, not an
-  active run. E5-R23 proved this is unrelated to any restart symptom (the
-  coordinator never re-entered a run from a stale discovery row).
-- E5-R18 exists only as an operational record (discovery run 78, no code, no
-  commit); E5-R11 has no recorded evidence anywhere (assumed unused sequence number).
+The current revision is offline-verified. A fresh live multi-job acceptance run is not claimed.
 
-## 3. E5 remainder — Multi-Application Dashboard Cycle (priority order)
+---
 
-E5's original purpose (Section 4 below) is partially delivered: the dashboard can
-initiate, monitor and stop cycles, and the safety gates hold — but end-to-end
-multi-job execution has not been demonstrated since the E5-R7 code changes. Remaining
-work, in priority order:
+## 3. Priority 1: live acceptance and reliability
 
-1. **Multi-application live verification.** Infrastructure delivered by E5-R21
-   (shared-runner orchestration, progress, HITL, answer memory), hardened by
-   E5-R22 (idempotent start guard, shared relevance candidate pre-filter), and
-   clarified by E5-R23 (explicit-start proof, per-search discovery progress,
-   canonical-URL dedup, extended irrelevant-role exclusions — all offline
-   test-verified, 1206 passed). Run #80 (2026-10-13) completed one live
-   cycle end-to-end but applied to only 1 of 82 candidates because the old
-   candidate query selected mostly irrelevant jobs. Remaining: one
-   dashboard-initiated live run (post-E5-R22/R23) that discovers → hard-filters →
-   evaluates → attempts → truthfully verifies **at least two** native
-   applications in a single cycle. Acceptance criteria are recorded in
-   `docs/MASTER_PRD.md` ("Multi-job acceptance criteria"). Status:
-   infrastructure MET, live multi-application verification NOT MET.
-2. **Historical application reconciliation.** Implemented (E5-R16 endpoint, E5-R20
-   attempt-level reconciliation; live read-only run reconciled 117 → 145 rows
-   additively). Remaining: make it a routine, documented workflow (when to trigger,
-   how results surface in the dashboard) — no new mechanism required.
-3. **Dashboard stop/cancel.** Delivered (E5-R15: DB-backed lock, idempotent Stop,
-   `CANCELLED` reporting, `CANCELLING` UI state). Remaining: live multi-job run to
-   observe Stop under sustained load.
-4. **Needs-attention causes and resolution.** Partially delivered: E5-R20 reconciles
-   ambiguous submissions against Naukri history before `NEEDS_ATTENTION`, and
-   confirmed jobs are excluded from the attention queue. Remaining: triage the 13
-   open rows (per-row cause: occluded click, screening question, uncertain remote
-   status) and document a human resolution path — one row at a time, never bulk
-   status wipes.
-5. **Login and native-only discovery state.** Partially delivered: `LOGIN_REQUIRED`
-   terminates a cycle cleanly (E5-R16, test-verified) and `application_mode`
-   prioritizes native-only candidates (E5-R9). Remaining: a full live cycle started
-   deliberately in a logged-out state, and login-recovery guidance in the dashboard.
+### 3.1 Fresh multi-job live acceptance
 
-Guardrails for any E5-remainder work: no new quota system, no relaxation of
-duplicate/protected-job/evidence rules, no external submissions, no CAPTCHA
-interaction, and no claim of multi-job success without a verified run.
+**Goal:** one dashboard-initiated run completes at least two native applications in a single cycle with no manual intervention.
 
-## 4. E5 (original brief, retained for record)
+**Why:** the broader product acceptance criterion is not re-verified in the current revision.
 
-### Purpose
+**Scope:**
 
-Validate that a dashboard-initiated run can continue through multiple eligible jobs
-instead of stopping after its first successful application.
+- Use an isolated, controlled run.
+- Capture discovery, filter, AI, and application stats.
+- Verify every outcome has evidence or an honest attention state.
+- Confirm protected jobs are untouched.
+- Confirm no external submission occurs.
 
-### Desired behavior
+**Exit criteria:**
 
-The user can configure `max_applications` as 1, 2, 3, 5, 10, and other values within
-a safe server-side maximum. A run should discover jobs, hard filter them, evaluate
-candidates, apply only to eligible native jobs, verify each result, continue to the
-next eligible job, and stop when the successful native-application count reaches the
-configured limit.
+- At least two native applications in one run.
+- Zero false-positive `APPLIED` records.
+- Zero external submissions.
+- All remaining outcomes explainable.
+- Dashboard reflects the same terminal state as the database.
 
-`max_applications` is the maximum number of successful native applications. It is
-not a limit on discovered jobs, inspected jobs, Gemini evaluations, or candidates.
+### 3.2 Selector resilience
 
-> **Superseded by E5-R10 (2026-10-11):** application quotas and the `max_applications`
-> budget slice were removed; runs now process all eligible matching jobs until the
-> eligible queue is exhausted, and `max_applications` is display-only. The original
-> text is retained above for history (see also PRD §29 status note).
+**Goal:** reduce breakage from Naukri DOM changes.
 
-The existing D6/D7 work demonstrated multi-application behavior. E5 should expose
-and validate that existing capability through the Dashboard while preserving all
-application, duplicate, and evidence safety gates.
+**Scope:**
 
-## 5. E6 — Candidate Profile & Question Answer Engine
+- Expand offline DOM regression fixtures.
+- Add selector-health diagnostics without live mutation.
+- Prefer semantic and text-scoped selectors over hashed classes.
+- Surface selector failures as explicit attention reasons.
 
-### Purpose
+**Exit criteria:**
 
-Replace the current questionnaire boundary with a safe candidate-answer system.
+- Adapter tests cover each critical selector family.
+- A selector miss never produces a false success.
 
-```text
-Resume / Profile JSON
-        |
-Structured Candidate Profile
-        |
-Question Answer Engine
-        |
-  1. Known profile fact
-  2. Previously approved answer
-  3. Deterministic answer derived from profile
-  4. Unknown -> ask user
-```
+### 3.3 Session and recovery hardening
 
-Candidate Profile JSON becomes the authoritative source for factual application
-answers. Examples include graduation year, degree, specialization, college,
-education, experience, skills, certifications, languages, projects, configured
-availability, configured location, and other explicitly stored candidate facts.
+**Goal:** make long batches more predictable.
 
-Gemini must not repeatedly infer facts that are already structured profile data.
+**Scope:**
 
-## 6. Question categories
+- Improve session-loss classification.
+- Add clearer restart telemetry.
+- Verify stop and skip behavior across restart boundaries.
+- Keep the three-restart cap.
 
-### Category A — Automatically answerable profile facts
+**Exit criteria:**
 
-These answers are directly supported by Candidate Profile and should be retrieved
-deterministically, without Gemini.
+- No unbounded restart loop.
+- Session loss during an attempt remains non-retryable.
+- Remaining jobs are accounted for after any stop.
 
-| Question | Authoritative source |
-| --- | --- |
-| What is your graduation year? | `profile.education.graduation_year` |
-| What is your branch? | `profile.education.specialization` |
-| What is your highest qualification? | `profile.education.degree` |
+### 3.4 Screening memory quality
 
-### Category B — Previously approved candidate answers
+**Goal:** reduce unnecessary human interruptions without weakening safety.
 
-These are answers the user explicitly gave and approved for reuse. For example, an
-approved answer to "Are you willing to relocate?" may be reused for a truly
-equivalent question such as "Would you be willing to move to another city?" The
-first answer must always be user-approved.
+**Scope:**
 
-### Category C — Unknown, subjective, or consequential questions
+- Improve employer/job scope matching.
+- Improve stale-answer detection.
+- Expand tests for context-sensitive answers.
+- Keep sensitive questions blocked.
 
-Examples include motivation statements, salary expectations, bonds, legal/work
-authorization declarations, night-shift acceptance, facts absent from the profile,
-and other subjective or consequential questions. They must never be fabricated by
-Gemini. They create `NEEDS_ATTENTION` and request user input. A user-approved answer
-may later be stored for safe reuse.
+**Exit criteria:**
 
-## 7. E7 — Persistent Candidate Answer Memory
+- No sensitive answer is stored.
+- No scope widens without explicit authorization.
+- Stale answers are never reused.
 
-### Purpose
+---
 
-Persist approved user answers to recurring application questions. The conceptual name
-is **Candidate Answer Memory**, not "AI Memory."
+## 4. Priority 2: security and operations
 
-**Status note (E5-R21, 2026-10-13):** partially started. The scoped `ScreeningAnswer`
-store (`backend/models/screening.py`, `backend/services/applications/answer_memory.py`)
-delivers GLOBAL/EMPLOYER/JOB reuse scopes, USER/PROFILE sources, sensitive-question
-hard blocking, context-sensitive GLOBAL authorisation, profile-hash and option-list
-staleness, and the HITL pending-question flow with dashboard APIs. E7's remaining
-aspects — approval workflow, supersession/versioning (Section 8), semantic-equivalent
-question matching (Section 9) and the `application_question_answers` schema — are
-still future work; the E5-R21 schema is a separate validated design, not this
-proposal's table.
+### 4.1 Authentication and access control
 
-### Proposed future table
+**Goal:** make public or shared deployment safe.
 
-`application_question_answers` may include:
+**Scope:**
 
-- `id`
-- `original_question`
-- `normalized_question`
-- `answer`
-- `answer_type`
-- `source`
-- `approval_status`
-- `created_at`
-- `updated_at`
-- `superseded_at`
-- `version`
+- Add authentication at the API boundary.
+- Add role or operator identity where needed.
+- Protect all mutating routes.
+- Keep CORS explicit.
+- Add audit logging for operator actions.
 
-Possible answer types: `profile_fact`, `user_preference`, `user_approved`,
-`deterministic_generated`, and `unknown`.
+**Exit criteria:**
 
-Possible sources: `candidate_profile`, `user_approved`, and `system_generated`.
+- Unauthenticated requests are rejected.
+- Browser automation cannot be started by an unauthorized caller.
+- No secret is exposed to the frontend.
 
-This is a proposal only; E7 must introduce and validate the schema separately.
+### 4.2 Deployment hardening
 
-## 8. Answer versioning
+**Goal:** make hosted API operation reproducible.
 
-Candidate Answer Memory must support changes without ambiguity. If a candidate's
-answer to relocation willingness changes from "Yes" to "No," the prior answer becomes
-superseded and the new answer is the sole active/current answer. Historical versions
-remain available for audit but must not compete as active answers.
+**Scope:**
 
-## 9. Question normalization and semantic matching
+- Document PostgreSQL migration and backup procedures.
+- Add readiness and liveness checks for deployment platforms.
+- Define safe log retention.
+- Document the split between hosted API and local browser worker.
+- Add a supported worker-to-API communication model if remote execution is pursued.
 
-Future work must distinguish exact matching from semantic-equivalent matching. A
-potential normalized representation for relocation questions is
-`relocation_willingness`, but equivalence must never be assumed blindly. Questions
-with materially different implications remain separate. Gemini may assist with
-semantic interpretation only inside a safety boundary for consequential questions.
+**Exit criteria:**
 
-## 10. Source-of-truth hierarchy
+- A production deployment can be configured without editing source.
+- Readiness reports actionable errors.
+- Secrets are supplied only through environment configuration.
 
-```text
-Candidate Profile JSON
-        |
-Deterministic candidate facts
-        |
-Approved Candidate Answer Memory
-        |
-User-provided answer
-        |
-Gemini interpretation where appropriate
-        |
-Never fabricate
-```
+### 4.3 Observability
 
-Gemini must not override authoritative candidate data.
+**Goal:** make failures diagnosable without database spelunking.
 
-## 11. Question answer flow
+**Scope:**
 
-```text
-Naukri question
-      |
-Extract question
-      |
-Normalize / classify
-      |
-Profile fact? ---------------- yes --> deterministic answer
-      |
-      no
-      |
-Approved answer memory? ------ yes --> reuse approved answer
-      |
-      no
-      |
-Safely derivable from profile? - yes --> deterministic answer
-      |
-      no
-      |
-Unknown / consequential
-      |
-NEEDS_ATTENTION -> ask user -> optional explicit approval to remember
-      |
-Store Candidate Answer Memory -> reuse only for future equivalent questions
-```
+- Structured run diagnostics.
+- Stable reason codes for skips and attention.
+- Correlation IDs across API, cycle, queue, and runner logs.
+- Operator-facing export of a run summary.
 
-## Sequencing guardrail
+**Exit criteria:**
 
-E4 is complete (Run #52, 2026-10-09). E5 is in progress — see Section 3 for the
-priority-ordered remainder, led by verified multi-job application execution. E6 and
-E7 are future implementation checkpoints; neither is authorized by this roadmap.
-Each requires its own design review, implementation, automated tests, and explicit
-safety validation. Live automation steps (any run that applies to jobs) always
-require explicit human approval regardless of roadmap position.
+- Every terminal outcome has a reason and a correlation path.
+- A failed run can be diagnosed from logs and the dashboard.
+
+---
+
+## 5. Priority 3: product expansion
+
+### 5.1 Answer engine
+
+**Goal:** expand structured, profile-grounded answer coverage.
+
+**Scope:**
+
+- More question families.
+- Better profile evidence selection.
+- Confidence and verification metadata.
+- Human review for low-confidence or consequential answers.
+
+**Exit criteria:**
+
+- Answers are traceable to profile facts or explicit user input.
+- Sensitive and consequential questions still require review.
+
+### 5.2 Notifications and summaries
+
+**Goal:** make asynchronous operation useful.
+
+**Scope:**
+
+- Verify SMTP delivery end to end.
+- Add run-completion and attention summaries.
+- Add deduplication and timezone handling tests.
+
+**Exit criteria:**
+
+- A completed run produces a truthful summary.
+- Delivery failure does not affect application state.
+
+### 5.3 Cloud browser worker
+
+**Goal:** decouple the API from the Windows browser host.
+
+**Scope:**
+
+- Define a worker protocol.
+- Keep the singleton apply lock authoritative.
+- Keep the persistent profile on the worker.
+- Add remote health and ownership checks.
+
+**Exit criteria:**
+
+- Only one worker can own the browser.
+- The API never assumes a remote application succeeded without evidence.
+
+This is a larger architectural change and should not be started until live local acceptance is stable.
+
+### 5.4 Additional job platforms
+
+**Goal:** support platforms beyond Naukri.
+
+**Scope:**
+
+- Introduce a platform adapter boundary.
+- Keep platform-specific classification and submission logic isolated.
+- Reuse the shared candidate, protection, and outcome model.
+
+**Exit criteria:**
+
+- A new platform cannot bypass shared safety rules.
+- External application behavior remains platform-specific and non-submitting unless explicitly supported.
+
+This is explicitly outside V1.
+
+---
+
+## 6. Explicitly deferred
+
+- Automatic resolution of `NEEDS_ATTENTION`.
+- CAPTCHA solving or bypass.
+- Unbounded application volume.
+- Multi-tenant SaaS.
+- Recruiter automation.
+- Automatic external application submission.
+- Silent scope widening for answer memory.
+- AI-only approval of applications.
+
+---
+
+## 7. Suggested checkpoint sequence
+
+| Order | Checkpoint | Outcome |
+|---|---|---|
+| 1 | Live multi-job acceptance | Re-verify the core product claim. |
+| 2 | Selector resilience | Reduce live DOM risk. |
+| 3 | Session/recovery telemetry | Make long batches diagnosable. |
+| 4 | Screening memory quality | Reduce interruptions safely. |
+| 5 | Authentication | Enable safe shared deployment. |
+| 6 | Deployment hardening | Reproducible hosted operation. |
+| 7 | Observability | Faster diagnosis and audit. |
+| 8 | Answer engine | Broader grounded coverage. |
+| 9 | Notifications | Useful asynchronous operation. |
+| 10 | Cloud browser worker | Decouple API from browser host. |
+| 11 | Additional platforms | Expand beyond Naukri. |
+
+Each checkpoint should have its own tests, documentation update, and explicit acceptance criteria.
+
+---
+
+## 8. Roadmap status rule
+
+A roadmap item is complete only when:
+
+- The implementation is merged or present in the working tree.
+- Tests cover the behavior.
+- Documentation describes the current behavior.
+- Any required live verification has actually been performed.
+
+Until then, the item remains planned.
+
+---
+
+## 9. Related documents
+
+- [README](../README.md)
+- [Architecture](ARCHITECTURE.md)
+- [API reference](API.md)
+- [Architecture decisions](DECISIONS.md)
+- [Development status](DEVELOPMENT_STATUS.md)
+- [Product requirements](MASTER_PRD.md)
+- [Historical roadmap through E5-R23](archive/FUTURE_ROADMAP_THROUGH_E5_R23.md)

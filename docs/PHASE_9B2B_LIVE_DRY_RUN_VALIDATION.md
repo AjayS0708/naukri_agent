@@ -1,5 +1,7 @@
 # Phase 9B-2B — Live Dry-Run Validation: Defect Fix Checkpoint
 
+> **Historical record.** This document describes the Phase 9B-2B live dry-run state and is retained as evidence. It is not current operating guidance. See [DEVELOPMENT_STATUS.md](DEVELOPMENT_STATUS.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for current behavior.
+
 ## 1. Baseline
 
 - **Phase:** 9B-2B Defect Fix
