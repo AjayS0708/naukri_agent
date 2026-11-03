@@ -1,5 +1,7 @@
 # Phase 9B-2B — Dry Run Validation
 
+> **Historical record.** This document describes the Phase 9B-2B dry-run state and is retained as evidence. It is not current operating guidance. See [DEVELOPMENT_STATUS.md](DEVELOPMENT_STATUS.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for current behavior.
+
 ## 1. Baseline
 
 - **Phase:** 9B-2B

@@ -1,5 +1,7 @@
 # Phase 9B-1 — Live Naukri Discovery & Session Validation
 
+> **Historical record.** This document describes the Phase 9B-1 state and is retained as evidence. It is not current operating guidance. See [DEVELOPMENT_STATUS.md](DEVELOPMENT_STATUS.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for current behavior.
+
 ## Overview
 
 Phase 9B-1 is the **first real live validation checkpoint** of the Naukri browser integration. This phase validates that the existing NaukriAdapter and discovery implementation work against the real Naukri website.

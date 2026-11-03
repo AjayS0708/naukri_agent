@@ -1,5 +1,7 @@
 # Phase 9 — End-to-End Local Product Audit
 
+> **Historical record.** This document describes the Phase 9 state and is retained as evidence. It is not current operating guidance. See [DEVELOPMENT_STATUS.md](DEVELOPMENT_STATUS.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for current behavior.
+
 **Date:** 2026-09-26  
 **Baseline Commit:** 292b258  
 **Status:** Complete Read-Only Audit  

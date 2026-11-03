@@ -1,2610 +1,654 @@
 # Architecture
 
-## E5-R23 — Automatic-Restart Root Cause, Explicit-Start Enforcement & Identity-Based Dedup
+- **Current implementation:** E5-R33 (`37b35ed`)
+- **Verified:** 2026-11-01
+- **Scope:** local-first Naukri automation with a React operations console and a FastAPI backend.
 
-**Status:** IMPLEMENTED, TESTED (1206 passed, 0 failed, 45 new) — offline only; no live application run in this checkpoint. Not committed (working tree).
-
-**Root-cause model — one run, three phases (not a restart):**
-
-```text
-POST /api/autonomous-cycle/run          # the ONLY start trigger
-  └─ coordinator.try_acquire            # atomic UPDATE WHERE status='IDLE'
-  └─ one run_token → cycle.run() once
-       └─ [phase 1] discovery sweep     # 54 searches × terms × locations
-       │    └─ each search restarts at page 1; 0 persisted progress (pre-R23)
-       └─ [phase 2] login probe
-       └─ [phase 3] application session
-  └─ complete() / fail() → IDLE         # no re-entry path
-
-Perceived "restart" = phase 1 → 2 transition inside the same run
-```
-
-**Per-search discovery progress (makes the transition legible):**
-
-```text
-DiscoveryService.run_discovery
-  └─ progress_hook(search_index, search_total, current_search,
-        jobs_new, jobs_duplicate)      # hook exceptions swallowed
-       └─ AutonomousCycle._discovery_progress_hook
-            └─ _run_progress + current_step=discovery_search_X_of_Y
-                 └─ _persist_progress   # resumable/observable
-                      └─ frontend: "Discovery X / Y searches"
-                                   + jobs_new / jobs_duplicate / current_search
-```
-
-**Identity-based dedup + relevance pre-check (incident run #82: 688 cards, 684 dups, 4 new):**
-
-```text
-for each search card:
-  └─ irrelevant_role_reason(title, description)      # BEFORE any lookup
-       ├─ excluded → jobs_discovered--, skip          # no _find_existing_job,
-       │             no refresh, no backfill,         # no current_run_job_ids
-       └─ passed   → _find_existing_job
-            ├─ exact URL (indexed)
-            └─ canonical-URL fallback: _url_match_variants()
-                 (https/http × www/no-www × trailing-slash)  → Job.url.in_(variants)
-                      └─ match → duplicate; else → new Job row
-
-Mode backfills bounded: MAX_MODE_BACKFILLS_PER_RUN = 25 (counter reset per run)
-```
-
-**Irrelevant-role exclusion extension (engine.py) — incident job #535:**
-
-```text
-job #535 "Walk-in || Graduate Trainee FEA and Piping Analysis"
-  excluded specializations (piping / ansys / mechanical) appear ONLY in the
-  description; CURATED_ROLE_FAMILIES["graduate_trainee"] allowed the title.
-
-UNWANTED_SPECIALIZATIONS        += voice, non/semi-voice, customer care/success/
-                                   executive/officer/relation(s)/handling, piping,
-                                   ansys, harness, data entry, back office,
-                                   operation(s) executive, accounts/accounting/
-                                   finance/payroll/taxation, recruiter/recruitment,
-                                   graphic designer, ui/ux, ux designer, field
-                                   executive/sales/marketing, jewels, retail store,
-                                   procurement, purchase executive, front office,
-                                   receptionist, technical support, tech support,
-                                   helpdesk
-EXCLUDED_ROLE_SCOPE_PHRASES     += customer care/relations, mechanical, civil,
-                                   electrical          (role_category/department only;
-                                                        "research & development" kept)
-EXCLUDED_RESPONSIBILITY_PHRASES += mechanical/civil/electrical engineering,
-                                   piping analysis, ansys, caesar ii, fea and piping,
-                                   harness design, cad design, autocad, solidworks,
-                                   accounts payable/receivable, journal entry,
-                                   gst filing, income tax, payroll processing,
-                                   sourcing candidates, resume screening,
-                                   campus recruitment, data entry, back office,
-                                   merchandising, stock replenishment, billing
-                                   process, invoice processing   (two-hit)
-STRONG_..._RESPONSIBILITY_PHRASES += non-voice / semi-voice process, voice support,
-                                   customer care, ansys, caesar ii, piping analysis,
-                                   data entry, back office, invoice processing,
-                                   payroll processing, gst filing, resume screening
-                                   (single-hit)
-
-NOT added as bare substrings: "fea" (matches "feature"), "tax" (matches "syntax")
-Walk-in NOT blanket-rejected: walk-in strong phrases removed; a walk-in posting for
-  an allowed position stays eligible and is rejected only for its excluded
-  specializations.
-```
-
-**Safety floor (Phase 5) — unchanged:** limits `max_hourly_applications=4` /
-`max_daily_applications=20`; ambiguous-submission no-retry; records #146–#150
-preserved; E5-R21 screening-answer memory + HITL; shared DB run lock + cooperative
-cancellation. No one-job-only workaround. `normalize_naukri_url_for_comparison`
-relocated to `matching/normalizer.py` (re-exported from `applications`) so discovery
-does not import the playwright adapter chain.
-
-## E5-R22 — Idempotent Start Guard & Shared Relevance Candidate Filtering
-
-**Status:** IMPLEMENTED, TESTED (1161 passed, 29 new) — offline only; no live application run in this checkpoint. Not committed (working tree).
-
-**Double-start guard (defect 1):**
-
-```text
-POST /api/autonomous-cycle/run
-  └─ coordinator.try_acquire           # atomic UPDATE WHERE status='IDLE'
-       ├─ acquired=True  → one run_token, one runner task
-       └─ acquired=False → 409 + active run_token identity (duplicate POST)
-
-Frontend handleStartCycle
-  └─ startCycleInFlightRef (useRef)    # synchronous re-entry block (before React re-render)
-  └─ cycleRequestInFlight (state)      # disabled buttons
-```
-
-**Shared relevance candidate filtering (defects 2 + 3):**
-
-```text
-_run_applications
-  └─ SQL: NAUKRI_NATIVE jobs with no application (or SKIPPED)
-  └─ pre-filter: job_relevance_check(title, configured_titles,
-        role_category, department, description)      # E5-R22 shared gate
-       ├─ rejected → stats["relevance_rejected"]     # never a candidate
-       └─ passed   → candidates → progress doc → apply loop
-```
-
-`job_relevance_check` (engine.py): unwanted-specialization title check first
-(now includes BPO / voice / customer-support / telecalling / telemarketing /
-apprentice / apprenticeship — the "apprentice" allowed family was removed);
-then strong single-hit responsibility phrases (`STRONG_EXCLUDED_RESPONSIBILITY_PHRASES`
-— voice process / bpo / call centre / customer support … reject on one hit);
-then the two-hit threshold for loose phrases; then structural scope
-(`EXCLUDED_ROLE_SCOPE_PHRASES` now includes customer support / customer
-service) with technical-rescue; then allowed role-family title match.
-Enforced at discovery (`_build_job`), the deterministic checks, the candidate
-pre-filter (new) and the final application safety gate.
-
-**Invariants:** E5-R21 answer memory / HITL / duplicate protection /
-cancellation / session locking / reconciliation; E5-R10 no application-count
-cap; two-consecutive-ERROR abort; Stop → CANCELLED; LOGIN_REQUIRED.
+This document describes the current system. Historical designs and checkpoint narratives are preserved in [`docs/archive/`](archive/README.md) and in the [decision log](DECISIONS.md).
 
 ---
 
-## E5-R21 — Multi-Job Autonomous Applications & Human-in-the-Loop Answer Memory
+## 1. System context
 
-**Status:** IMPLEMENTED, TESTED (1132 passed, 40 new) — offline only; no live application run in this checkpoint. Not committed (working tree).
+```mermaid
+flowchart TB
+    subgraph Operator
+        Browser[React dashboard<br/>Vite + TypeScript]
+    end
 
-**Shared-runner multi-job orchestration:**
+    subgraph Backend
+        API[FastAPI application]
+        Coordinator[DB-backed run coordinator]
+        Scheduler[APScheduler service]
+        Cycle[Autonomous cycle]
+        Manual[Manual apply service]
+        Discovery[Discovery service]
+        Matching[Deterministic matching]
+        AIQueue[Persistent AI queue]
+        Runner[Application runner]
+        Adapter[Playwright Naukri adapter]
+        Notifications[Notification service]
+    end
 
-```text
-AutonomousCycle._run_applications
-  └─ ONE ApplicationRunner per run
-       run_token / progress_hook / cancel_check
-       hitl = bool(run_token)
-       close_session_after_run = False
-       recover_stale_state = True
-  ├─ reconcile_history(db)          # lazy browser; only when unresolved rows exist
-  ├─ for job in priority_order:
-  │    run_applications([job.id])   # idempotent open_session; state → IDLE between jobs
-  └─ close_session()                # exactly once, run end
+    subgraph External
+        Naukri[Naukri.com]
+        Gemini[Gemini API]
+        SMTP[SMTP server]
+        Chrome[Persistent Chrome profile]
+    end
+
+    DB[(SQLite / PostgreSQL)]
+
+    Browser -->|REST /api| API
+    API --> Coordinator
+    API --> Scheduler
+    API --> DB
+    Coordinator --> Cycle
+    Coordinator --> Manual
+    Scheduler --> Cycle
+    Cycle --> Discovery
+    Cycle --> Matching
+    Cycle --> AIQueue
+    Cycle --> Runner
+    Manual --> Matching
+    Manual --> Runner
+    Discovery --> Adapter
+    Runner --> Adapter
+    Adapter --> Chrome
+    Adapter --> Naukri
+    AIQueue --> Gemini
+    Notifications --> SMTP
+    Notifications --> DB
+    Matching --> DB
+    Runner --> DB
 ```
 
-`open_session()` enters RUNNING *before* the browser start (IDLE→CRITICAL_ERROR is not a legal edge), then SEARCHING→FILTERING→APPLYING; `_open_failure` ∈ {`invalid_state`, `browser_start`} maps to `{"error": "Invalid state"}` vs zeroed stats. `AgentStateManager.ensure_idle()` (`_RECOVERABLE_TO_IDLE`) recovers stale non-auth states for shared runs; AUTH/SECURITY_REQUIRED are never recovered. Stale-state recovery is opt-in (`recover_stale_state=True`, cycle only) so the legacy strict-IDLE contract (`test_runner_requires_idle_state`) is unchanged.
-
-**Screening-answer chain (per question):** saved memory (`ScreeningAnswerService.find` — scope/staleness checked) → profile → AI (only when `answer_questions`) → human-in-the-loop. The legacy gate `questions and not self.answer_questions and not self.hitl` → NEEDS_ATTENTION is preserved when HITL is off.
-
-**Human-in-the-loop lifecycle:**
-
-```text
-_await_user_answer (hitl AND run_token, else UNAVAILABLE)
-  ├─ PendingQuestion(status=WAITING) persisted
-  ├─ progress event "waiting"  → coordinator.set_waiting(run_token, id)
-  ├─ poll via fresh short-lived Session (API commits visible) until
-  │    ANSWERED | SKIPPED | CANCELLED | EXPIRED
-  ├─ cancel_check → CANCELLED + row finalized; _record_stop_while_waiting
-  │    → attempt NEEDS_ATTENTION (run stops CANCELLED at next boundary)
-  ├─ SKIPPED → _record_user_skip → job SKIPPED (re-offered next run)
-  └─ ANSWERED → _auth_ok_after_wait (login re-check; logged-out → AUTH_REQUIRED)
-progress event "answer_received" → coordinator.clear_waiting
-```
-
-**Answer memory (`backend/services/applications/answer_memory.py`):** `ScreeningAnswer` scopes GLOBAL/EMPLOYER/JOB never widen silently; sources USER (API endpoint only) / PROFILE (carries `profile_hash`, stale on profile change); sensitive questions (password/OTP/token/…) are never stored or auto-answered; context-sensitive families (salary, notice, relocation, visa, availability, commitment) require `allow_global_reuse=True` for GLOBAL; choice answers are skipped when the saved answer is no longer among the offered options; upsert on fingerprint+scope+keys; `reuse_count`/`last_used_at` audited.
-
-**Dashboard observability:** `cycle_run_control` gains `progress` (JSON) and `waiting_for_question_id` (Migration 5). Snapshot exposes `display_status` (`WAITING_FOR_USER` while the lock guard stays RUNNING/CANCELLING), `waiting_for_user`, `waiting_for_question_id`, `progress`. APIs: `GET /api/autonomous-cycle/pending-question`, `POST /answer-question` (404/409/400 codes), `GET/PUT/DELETE /screening-answers`. Frontend polls status, renders the pending question (answer/skip, remember scope checkboxes) and a live progress row.
-
-**Unchanged:** cycle-facing API stays `run_applications([job.id])` per job; protected jobs 81/87/114/120; APPLIED-requires-evidence; duplicate protection; two-consecutive-ERROR abort; Stop → CANCELLED; LOGIN_REQUIRED; answer saved only by the API endpoint.
+The backend is the only component that mutates application state. The frontend is an operations console: it observes status and issues explicit commands. It does not control the browser directly.
 
 ---
 
-## E5-R20 — Conversational Nudge Classification & Ambiguous-Submission Reconciliation
+## 2. Runtime components
 
-**Status:** IMPLEMENTED, TESTED (1092 passed, 44 new) — offline only; no live application run in this checkpoint. Commit `c2868d0` (2026-10-12).
-
-**Trigger (E5-R19 live evidence):** the job 462 attempt died twice at the conversational drawer: the same background nudge re-rendered while a composer was present (answered 12× until `_CONVERSATIONAL_MAX_STEPS`), and the final submit was occluded by `sendMsgbtn_container` (pointer intercepted) — producing attempt row #147 `NEEDS_ATTENTION` even though history reconciliation later confirmed the job APPLIED (row #148, `reconciled_from_naukri_history`).
-
-**Adapter (`backend/services/naukri/adapter.py`):**
-
-```text
-classify_conversational_message(text) -> question | nudge | info
-  "?"/sentence-question check runs BEFORE nudge patterns
-  CONVERSATIONAL_NUDGE_PATTERNS / DISMISS_NUDGE_TEXTS / CONVERSATIONAL_SUBMIT_TEXT
-_pointer_hits_element(page, x, y)   # document.elementFromPoint at click point
-_pointer_safe_click(locator) -> clicked | occluded | not_visible |
-                                not_enabled | stale | timeout | error   # never raises
-dismiss_conversational_nudge(page) -> bool   # bounded, caller retries at most once
-submit_application(...)  -> skips occluded controls; sets
-    last_submit_outcome ∈ {SUBMITTED, NOT_SUBMITTED, AMBIGUOUS};
-    re-raises ONLY security / captcha / access-blocked
-submit_conversational_application(page) -> str   # never clicks the .sendMsg save control
-answer_conversational_question(..., expected_question=None)  # stale-prompt guard
-```
-
-**Runner (`backend/services/applications/runner.py`):** the conversational loop stays bounded (`_CONVERSATIONAL_MAX_STEPS = 12`, `_CONVERSATIONAL_MAX_PROMPT_HANDLES = 2`, `_CONVERSATIONAL_MAX_ANSWERS = 8`). A classified nudge is observed once and never answered (at most one dismissal; a second unchanged observation terminates the attempt). A `AMBIGUOUS` submit — conversational or legacy-form — routes through `_reconcile_unconfirmed_attempt` → `fetch_application_history` → `reconcile_from_history` **before** any `NEEDS_ATTENTION` verdict; a history-confirmed job reports `APPLIED` while the attempt row itself stays `NEEDS_ATTENTION` for audit.
-
-**Dashboard (`backend/api/routes/dashboard.py`, `backend/schemas/dashboard.py`):** `_confirmed_job_ids` (jobs with a later confirmed APPLIED row) are excluded from the needs-attention count and queue; `RecentApplicationItem` gains `job_confirmed: bool`.
-
-**Unchanged:** protected jobs 81/87/114/120, records #146/#147/#148, jobs 462/105, preferences, and the `APPLIED`-requires-evidence rule; 2 existing dashboard tests adapted to the new confirmed-vs-unresolved semantics (rows moved onto separate jobs, not weakened).
+| Component | Location | Responsibility |
+|---|---|---|
+| API application | `backend/main.py` | Lifespan initialization, CORS, exception handling, router registration. |
+| Settings | `backend/core/config.py` | Environment-driven configuration with the `NAUKRI_AGENT_` prefix. |
+| Database | `backend/database/` | SQLAlchemy engine/session management and idempotent schema initialization. |
+| Coordinator | `backend/services/autonomous_cycle/coordinator.py` | DB-backed singleton apply lock, run identity, cancellation, progress, and last-run persistence. |
+| Autonomous cycle | `backend/services/autonomous_cycle/service.py` | Discovery → filters → AI queue → final gate → runner orchestration. |
+| Manual apply | `backend/services/manual_apply/service.py` | Eligibility listing and explicit apply batches over stored jobs. |
+| Discovery | `backend/services/discovery/service.py` | Search groups, pagination, deduplication, metadata, and progress reporting. |
+| Matching | `backend/services/matching/` | Deterministic hard filters, relevance checks, title scope, salary parsing, URL normalization. |
+| AI queue | `backend/services/gemini/queue.py` | Durable queue for Gemini analysis with retry and quota states. |
+| Gemini provider | `backend/services/gemini/provider.py` | Structured profile extraction, job analysis, and answer generation. |
+| Application runner | `backend/services/applications/runner.py` | Browser session lifecycle, form completion, screening, evidence, recovery. |
+| Protection | `backend/services/applications/protection.py` | Shared application-history and user-skip protection rule. |
+| Answer memory | `backend/services/applications/answer_memory.py` | Scoped screening answers, staleness, sensitive-question blocking. |
+| Naukri adapter | `backend/services/naukri/adapter.py` | Playwright navigation, discovery, classification, form detection, click and submit helpers. |
+| Scheduler | `backend/services/scheduler/service.py` | Periodic orchestration; shares the apply lock. |
+| Browser session lock | `backend/services/browser_session_lock.py` | Cross-process exclusive ownership of the persistent browser profile. |
+| Lifecycle | `backend/services/lifecycle/` | Explicit start/stop/pause/resume and startup recovery. |
+| Notifications | `backend/services/notifications/` | Persisted notification events and optional email delivery. |
 
 ---
 
-## E5-R19 — Targeted Native Discovery Search Groups
+## 3. Application state and data model
 
-**Status:** IMPLEMENTED, TESTED (session record: 1048 passed) + LIVE (discovery run 79). Commit `a16f6b4` (2026-10-12).
+Core persisted entities:
 
-**Problem:** discovery searched only the configured `job_titles` verbatim, so eligible native roles phrased differently never surfaced; the run-finalizer also lost readable run attributes after commit/expire.
+| Entity | Purpose |
+|---|---|
+| `Profile` | Resume metadata and confirmed structured candidate facts. |
+| `JobPreference` | Search scope, target titles, locations, employment types, experience, salary floor, aggressiveness, IT allowlists. |
+| `Job` | Discovered listing, canonical URL, description, location, experience, salary, posted date, application mode, status. |
+| `Application` | One attempt or outcome for a job, including status, method, evidence, skip/failure reason, and reconciliation flags. |
+| `ApplicationAnswer` | Question/answer records attached to an application attempt. |
+| `ScreeningAnswer` | Reusable scoped answer memory with source, verification, staleness, and reuse metadata. |
+| `PendingQuestion` | Human-in-the-loop question lifecycle for an active run. |
+| `AIQueueItem` | Durable Gemini work item with attempts, retry timing, and failure state. |
+| `JobAnalysisModel` | Cached structured Gemini analysis. |
+| `DiscoveryRun` | Discovery execution record and counters. |
+| `CycleRunControl` | Singleton control row for the apply lock, active run, cancellation, progress, and last result. |
+| `Notification` | Persisted operational event. |
+| `Worker` | Worker registration and heartbeat state for coordinated AI work. |
 
-**Architecture (`backend/services/discovery/service.py`):** `_discovery_search_terms()` builds ordered, de-duplicated targeted search groups beyond the configured titles (E5-R19 marker), preserving the pre-E5-R19 fallback when preferences carry no titles. `_finalize_run` reloads the finalized run row so its attributes stay readable after the session commit (`service.py:566`).
+### Application statuses
 
-**Live evidence:** discovery run 79 (2026-10-12 14:14–14:36) COMPLETED: 753 jobs discovered, 60 new, 162 pages processed. The subsequent application attempt on job 462 (native `#147` click timeout, later confirmed `#148`) is the direct input to E5-R20. 2 files, +186/−22.
+```text
+PRE_APPLY
+DISCOVERED
+FILTERED
+AI_ANALYZED
+APPROVED_BY_RULES
+APPLICATION_STARTED
+APPLIED
+SUBMITTED
+EXTERNAL_APPLICATION
+NEEDS_ATTENTION
+SKIPPED
+```
+
+`APPLIED` is evidence-backed. `SUBMITTED` is used when a submission was performed but could not be positively confirmed. `NEEDS_ATTENTION` is an unresolved outcome, not a success or a generic failure.
+
+### Agent states
+
+```text
+IDLE
+RUNNING
+SEARCHING
+FILTERING
+ANALYZING
+APPLYING
+PAUSED
+AUTH_REQUIRED
+SECURITY_REQUIRED
+AI_QUOTA_EXHAUSTED
+NEEDS_ATTENTION
+STOPPED
+CRITICAL_ERROR
+```
+
+The cycle's durable `active_state` is intentionally narrower than the process-local agent state. A historical terminal result is never reported as an active run.
 
 ---
 
-## E5-R18 — Discovery-Driven Validation Run (No Eligible Candidate)
+## 4. Run orchestration
 
-**Status:** OPERATIONAL CHECKPOINT — no code change, therefore no commit; reconstructed from `discovery_runs` and `jobs` rows (verified 2026-10-13). No milestone marker for E5-R18 exists in code or git history.
+### 4.1 Autonomous cycle
 
-**Evidence:** discovery run 78 (2026-10-12 12:27:59–12:37:15) COMPLETED: 270 cards scanned across 54 pages, 3 new jobs (IDs 459 `Apprentice`, 460 `Trainee`, 461 `Fresher Graduate`). All three remain `status=DISCOVERED` with 0 application rows, 0 AI-queue entries, 0 analyses, and 0 match results — none entered candidacy, so no application was attempted and the run produced an honest no-attempt report. Rejection reasons are not persisted (no rejection-audit table); non-candidacy is evidenced by the absence of queue/analysis/application rows.
+```mermaid
+sequenceDiagram
+    participant UI as Dashboard
+    participant API as FastAPI
+    participant C as Coordinator
+    participant D as Discovery
+    participant M as Matching
+    participant Q as AI Queue
+    participant R as Runner
+    participant DB as Database
 
-**Constraint honored:** this checkpoint documents discovery validation only; it does not demonstrate multi-job application execution.
+    UI->>API: POST /api/autonomous-cycle/run
+    API->>C: try_acquire(max_applications)
+    alt lock already held
+        C-->>API: not acquired
+        API-->>UI: 409 with active run identity
+    else lock acquired
+        C-->>API: run token
+        API-->>UI: RUNNING
+        API->>D: run discovery
+        D-->>DB: jobs, modes, metadata
+        API->>M: relevance and hard filters
+        M-->>DB: decisions and reasons
+        API->>Q: enqueue eligible candidates
+        Q-->>DB: analysis results
+        loop eligible candidates
+            API->>R: apply one job
+            R-->>DB: truthful outcome
+            API->>C: persist progress
+        end
+        API->>C: complete or fail
+        C-->>DB: last result, release lock
+    end
+```
+
+Key properties:
+
+- `POST /api/autonomous-cycle/run` is the only autonomous start trigger.
+- The coordinator claims a singleton row atomically; duplicate starts receive `409`.
+- The scheduler does not auto-start on backend startup.
+- Discovery progress is persisted per search and surfaced in the UI.
+- A run processes all eligible candidates unless stopped or a terminal condition occurs.
+- `max_applications` remains in the request schema for compatibility but is ignored.
+
+### 4.2 Manual apply
+
+Manual apply is an operator-selected batch over jobs already in the local database.
+
+```mermaid
+sequenceDiagram
+    participant UI as Apply Queue
+    participant API as Manual Apply API
+    participant C as Coordinator
+    participant S as Manual Apply Service
+    participant R as Runner
+
+    UI->>API: GET /api/manual-apply/eligible
+    API->>S: list with eligibility verdicts
+    S-->>UI: items, reasons, counts
+
+    UI->>API: POST /api/manual-apply/start {job_ids}
+    API->>C: try_acquire()
+    alt lock held
+        API-->>UI: 409 apply process already running
+    else lock acquired
+        API->>S: validate selected ids
+        S-->>API: accepted and dropped ids
+        API->>S: run accepted batch
+        S->>R: shared safety pipeline
+        R-->>S: per-job outcomes
+        S-->>C: progress and final summary
+    end
+```
+
+Manual apply never runs discovery. It uses the same protection, relevance, hard-filter, external-boundary, evidence, session-recovery, and screening code paths as the autonomous cycle.
+
+### 4.3 Scheduler
+
+The scheduler is an optional periodic orchestrator. It shares the singleton apply lock with the autonomous cycle and manual apply. It can be started, stopped, paused, resumed, and configured through `/api/scheduler/*`. It is not automatically started by application startup.
 
 ---
 
-## E5-R17 — Shared Irrelevant-Role Filter
+## 5. Candidate pipeline
 
-**Status:** IMPLEMENTED, TESTED (session record: 1044 passed). Commit `1b7fa2b` (2026-10-12), 5 files, +529/−18.
-
-**Architecture:** one deterministic gate, `irrelevant_role_reason()` + `job_relevance_check()` (`backend/services/matching/engine.py`), now backs three call sites so they can no longer disagree:
-
-```text
-irrelevant_role_reason(title, role_category, department, description, allowed_titles)
-  1. unwanted title specializations (sales, hr, production, ...)
-  2. JD responsibility hits >= MIN_EXCLUDED_RESPONSIBILITY_HITS   # one loose mention never rejects
-  3. structural scope (role_category / department) — rejected outright on any
-     excluded-responsibility hit; otherwise requires genuine technical work
-     AND a title in an allowed role family (keeps Data Analyst under a
-     non-technical department, drops everything else)
-  missing metadata carries no signal (never rejects on absent fields)
+```mermaid
+flowchart LR
+    A[Discovery cards] --> B[Canonical identity and dedup]
+    B --> C[Relevance pre-check]
+    C --> D[Deterministic hard filters]
+    D --> E[Application-history protection]
+    E --> F[AI analysis]
+    F --> G[Final safety gate]
+    G --> H[Runner]
+    H --> I{Outcome}
+    I -->|evidence| J[APPLIED]
+    I -->|submitted, unconfirmed| K[SUBMITTED]
+    I -->|external| L[EXTERNAL_APPLICATION]
+    I -->|unresolved| M[NEEDS_ATTENTION]
+    I -->|safe rejection| N[SKIPPED]
 ```
 
-Call sites: MatchEngine deterministic checks, the final application safety gate (`backend/services/applications/service.py` — `run_final_safety_gate`, step 8 "Role relevance" at `service.py:273`), and discovery itself, which rejects irrelevant roles before they are persisted (`backend/services/discovery/service.py:494`). Location parity with the safety gate lives in `engine.py:550`. Regression locked: an "Associate Software Engineer" title under a non-IT scope (the pre-R17 leak) now rejects.
+### 5.1 Discovery
+
+- Builds searches from configured target titles and locations.
+- Supports pagination and multiple locations.
+- Classifies application mode during discovery when possible: `NAUKRI_NATIVE`, `EXTERNAL`, or `AMBIGUOUS`.
+- Deduplicates by canonical URL variants and job identity.
+- Applies a relevance pre-check before expensive lookups and backfills.
+- Parses posted dates only when grounded; unknown dates are never fabricated.
+- Persists discovery progress so a long sweep is legible.
+
+### 5.2 Relevance
+
+The shared relevance gate rejects clearly unrelated roles before they become candidates. It combines:
+
+- Curated target-role families
+- Unwanted specializations
+- Role-scope and responsibility phrases
+- Strong single-hit exclusions
+- Title and description context
+- Configured target titles
+
+The same gate is used by matching, candidate selection, the final safety gate, and manual eligibility so the same job does not receive contradictory verdicts.
+
+### 5.3 Deterministic hard filters
+
+Hard filters are authoritative. They cover:
+
+- Confirmed profile required
+- Preferences required
+- Target title scope
+- Location
+- Required experience
+- Disclosed salary floor
+- Employment type
+- IT-scope policy
+- Duplicate application history
+- Expired listings
+- External-only jobs for native apply
+- Suspicious-job flag
+
+Unknown values are handled honestly. For example, an undisclosed salary is not treated as below the floor.
+
+### 5.4 AI analysis
+
+Gemini produces structured analysis and recommendations. The analysis is advisory:
+
+- It can add a `suspicious` flag that blocks a job.
+- It cannot override a deterministic rejection.
+- Quota exhaustion is recorded as `QUOTA_BLOCKED`; it is not treated as a completed analysis.
+- Jobs without analysis can still proceed through deterministic fallback where supported.
+
+### 5.5 Final safety gate
+
+The final gate re-applies the same deterministic boundaries immediately before application. This prevents a stale decision from surviving a preference change, a new application row, or a mode reclassification.
 
 ---
 
-## E5-R16 — Login-Aware Gate, Cooperative Stop, History Reconciliation
+## 6. Protection semantics
 
-**Status:** IMPLEMENTED, TESTED (1033 backend tests, `npm run build` passes — commit message), LIVE-VERIFIED read-only reconciliation. Commit `0865f6b` (2026-10-12), 18 files, +1908/−63.
+`backend/services/applications/protection.py` is the single source of truth.
 
-**Architecture:**
+A job is protected when any of the following is true:
 
-- **Login state (read-only) gates the application phase:** a logged-out session terminates the run with `LOGIN_REQUIRED` (exit 2) instead of being misread as an application-mode classification; `LOGIN_REQUIRED` is a first-class terminal cycle state and renders as "Login required" in the dashboard.
-- **Stop via cooperative cancellation:** checks inside discovery, the AI queue, and the application loop make one Stop request effective everywhere; a user stop reports `CANCELLED`, never `COMPLETED`.
-- **`POST /api/applications/reconcile-history`:** read-only reconciliation of the authenticated `/myapply/historypage` against local rows — additive only (never deletes or downgrades), never writes to protected jobs 81/87/114/120, refuses to run while a cycle holds the browser profile.
-- **Idempotent application records:** one open attempt per job; interrupted attempts resolve to `NEEDS_ATTENTION`; `EXTERNAL_APPLICATION` requires positive destination evidence.
+- It has an application row with a blocking status:
+  - `DISCOVERED`
+  - `PRE_APPLY`
+  - `APPLICATION_STARTED`
+  - `APPLIED`
+  - `SUBMITTED`
+  - `NEEDS_ATTENTION`
+- It has a user-initiated `SKIPPED` row (`USER_SKIPPED` prefix).
+- It has application rows but none of them is a deliberate `SKIPPED` row.
 
-**Live evidence (read-only):** 31 local rows inspected, 28 historical applications reconciled (117 → 145 rows, additive, 0 new rows on re-run); no application was submitted during E5-R16.
+A job with no application rows is eligible. A job whose only rows are ordinary `SKIPPED` rows is re-processable. A blocking row always wins over an ordinary skip.
 
----
+Two access patterns exist:
 
-## E5-R15 — DB-Backed Cycle Lock, Stop Control, Browser Profile Lock
+- A correlated SQL predicate for unbounded candidate queries.
+- A bounded bulk helper for explicit ID sets.
 
-**Status:** IMPLEMENTED, TESTED (997 tests, frontend production build succeeds — commit message). Commit `51e3813` (2026-10-12), 23 files, +1937/−119.
-
-**Architecture:**
-
-- `cycle_run_control` singleton row + atomic claim (`backend/models/cycle_run.py`, comments in `backend/api/routes/autonomous_cycle.py`): prevents simultaneous runs **across restarts and processes**, replacing the process-local `threading.Lock`.
-- `POST /api/autonomous-cycle/stop`: idempotent cancellation honored at safe boundaries; `AutonomousCycle` reports `CANCELLED` (never `COMPLETED`) after a user stop.
-- `BrowserSessionLock` (`backend/services/browser_session_lock.py`): exclusive claim on the persistent `.agent/browser_session` Chrome profile so two agent processes can never open the same profile.
-- Dashboard Stop button with single-request guards and a `CANCELLING` state; discovery run id surfaced on the control row.
-
-**Attribution note:** the E5-R12, E5-R13 and E5-R14 code and tests (see below) landed inside this same commit — their markers and `test_e5_r12_native_priority.py` first appear here (`git log -S`), so R12–R14 have no commits of their own.
+The rule is a strict superset of the legacy per-row rule. It never weakens protection.
 
 ---
 
-## E5-R14 — Screening-QA Answering & IT-Scope Structural Rules
+## 7. Browser and session lifecycle
 
-**Status:** IMPLEMENTED within commit `51e3813` (2026-10-12; no separate commit). Code markers: `E5-R14` / `E5-R14 continuation`.
+The runner uses one shared Playwright session per batch.
 
-**Architecture:**
+```mermaid
+stateDiagram-v2
+    [*] --> CLOSED
+    CLOSED --> RUNNING: open_session()
+    RUNNING --> IDLE_BETWEEN_JOBS: job complete
+    IDLE_BETWEEN_JOBS --> RUNNING: next job
+    RUNNING --> SESSION_LOST: browser/page died
+    SESSION_LOST --> RUNNING: restart, up to 3 per batch
+    SESSION_LOST --> STOPPED: restart limit exhausted
+    RUNNING --> CLOSED: batch end
+    IDLE_BETWEEN_JOBS --> CLOSED: batch end
+```
 
-- `backend/services/applications/runner.py:619` — screening questions answered from profile skills/projects (screening QA preserved through the R15 batch).
-- `backend/services/matching/engine.py` — IT-scope decision order: explicit non-IT `role_category` rejection first; `role_category` matches when industry is missing or the title carries IT keywords; `department` consulted only when industry is missing; a matched industry is the strongest signal (allows `Apprentice - Trainee` under Software Product + Engineering–Software & QA — the job 105 case, `test_matching_rules.py`).
-- `backend/services/naukri/adapter.py` — conversational answer mechanics: radio-group, dropdown and text questions; clicks the `<label>` (not just the input) and verifies the radio is actually checked; the application drawer itself (`chatbot_Drawer`) is excluded from blocking-overlay dismissal.
+Rules:
 
-**Discrepancy (reconstructed):** a checkpoint checklist described E5-R14 as "apprenticeship exclusion" — no such exclusion exists. Apprenticeship is an **allowed** curated role family (`CURATED_ROLE_FAMILIES`, `engine.py:65`) at interest tier 2 (`backend/services/autonomous_cycle/service.py:96`); the E5-R14 markers cover IT-scope structure and screening/answer handling as above.
+- The persistent Chrome profile is protected by a cross-process file lock.
+- A session is opened once and reused across jobs.
+- A session loss detected **before** an attempt may restart the session and retry that job.
+- At most three mid-run session restarts are allowed per batch.
+- A session loss **during** an attempt is not retried blindly; it becomes `NEEDS_ATTENTION`.
+- Restart failure records a truthful skip, not a fabricated error or success.
+- Stop requests are honored between jobs and before a restart.
+- Remaining jobs are reported as never started when a run is cancelled.
 
 ---
 
-## E5-R13 — Native-Only Recovery Path & Structural Matching Awareness
+## 8. Application completion and evidence
 
-**Status:** IMPLEMENTED within commit `51e3813` (2026-10-12; no separate commit).
+The runner follows a mode-first, evidence-last contract:
 
-**Architecture:**
+1. Open the job page.
+2. Re-verify whether the listing is native, external, or ambiguous.
+3. Never force a native application without a visible native Apply control.
+4. Complete the form or conversational drawer.
+5. Submit only through a safe, non-occluded control.
+6. Require positive visible confirmation evidence before `APPLIED`.
+7. Reconcile ambiguous submissions against Naukri history.
+8. Record an unresolved attempt as `NEEDS_ATTENTION` when evidence is absent.
 
-- `backend/services/autonomous_cycle/service.py:1028` — the recovery apply path is restricted to `NAUKRI_NATIVE` jobs only.
-- `backend/services/matching/engine.py:358` — the IT gate considers `role_category` and `department` in addition to industry: allows e.g. Data Science in Pharma & Life Sciences while generic roles in non-IT industries still fail (non-IT industry requires an IT-keyword title).
-- `backend/services/naukri/adapter.py:1791` — blocking overlays (e.g. the chat widget) are dismissed before interacting with the application surface.
+Conversational applications have bounded loops:
 
-Tests: `test_autonomous_cycle.py` (recovery-path native-only, structural-vs-title gates), `test_matching_rules.py` (Data Science in Pharma passes), `test_checkpoint_c2_policy.py`.
+- At most 12 steps.
+- At most 2 prompt handles.
+- At most 8 answers.
 
----
-
-## E5-R12 — Native-First AI Queue Priority & Deterministic Fallback
-
-**Status:** IMPLEMENTED within commit `51e3813` (2026-10-12; no separate commit).
-
-**Architecture:**
-
-- `backend/services/gemini/queue.py` — deterministic priority for queued jobs, aligned with the application runner's candidate prioritization (`E5-R12`), so the AI queue and the apply loop rank the same way; `NAUKRI_NATIVE` candidates are prioritized.
-- `backend/services/autonomous_cycle/service.py:1025,1165` — jobs **without** an AI analysis that pass the deterministic filters are included through an explicit fallback path instead of being dropped; quota exhaustion never falsely marks jobs as analyzed.
-- Dedicated regression file `backend/tests/test_e5_r12_native_priority.py` (379 lines added in `51e3813`): native-first queue ordering, deterministic fallback, quota-exhaustion honesty.
+Nudges are dismissed, not answered. A repeated unchanged nudge terminates the attempt rather than looping.
 
 ---
 
-## E5-R10 / E5-R10B — Application Quotas Removed, Interest-Tier Prioritization
+## 9. Screening question lifecycle
 
-**Status:** IMPLEMENTED, TESTED. Commit `616f24c` (2026-10-11) — 28 files, +932/−1808 (removal-heavy).
+```mermaid
+stateDiagram-v2
+    [*] --> WAITING: Unanswerable question persisted
+    WAITING --> ANSWERED: POST answer-question
+    WAITING --> SKIPPED: POST skip
+    WAITING --> CANCELLED: Run stop
+    WAITING --> EXPIRED: 3600s timeout
+    ANSWERED --> [*]: Runner resumes
+    SKIPPED --> [*]: Job SKIPPED
+    CANCELLED --> [*]: Attempt NEEDS_ATTENTION
+    EXPIRED --> [*]: Attempt NEEDS_ATTENTION
+```
 
-**Architecture:**
+The wait loop polls through short-lived database sessions so API commits are visible. After an answered wait, the runner re-validates the Naukri login before continuing. A logged-out session becomes `AUTH_REQUIRED`.
 
-- **No application-count cap:** hourly/daily quotas and the `max_applications` budget slice are gone. `backend/services/applications/limits.py` is now a stub whose docstring records the removal ("Manual runs process all eligible matching jobs until the eligible queue is exhausted"); `max_applications` is accepted for API compatibility but only recorded for display (`backend/services/autonomous_cycle/runtime.py:25`, `backend/api/routes/autonomous_cycle.py:5,59`); the apply loop continues until the eligible queue is exhausted (`backend/services/autonomous_cycle/service.py:1087`); all deterministically eligible jobs are enqueued — no Gemini-budget slice.
-- **Interest-tier ranking (`interest_priority_rank`, `backend/services/autonomous_cycle/service.py:92`):** tier 0 Data Analytics/BI, tier 1 Data Engineering/ETL/Cloud/AI-ML/DS, tier 2 graduate/trainee/apprenticeship, tier 3 other eligible; within a tier: native Naukri Apply → freshness → match score.
-- **E5-R10B hard exclusions (`backend/services/autonomous_cycle/service.py:99`):** word-boundary multi-token target phrases plus HARD role exclusions (Sales/Support/Admin/Managerial/Creative/Trade) that always force tier 3 even when a domain keyword co-occurs ("Data Engineer Sales" never promotes); soft exclusions (architect/consultant) demote only when no clean multi-token target phrase hits. Not a count cap.
+### Answer memory
 
-**PRD conflict recorded:** `docs/MASTER_PRD.md` §29 (Application Limits) still specifies configurable daily/hourly caps — superseded by E5-R10; see the §29 status note in that file.
+Scopes:
+
+- `GLOBAL`: reusable across employers.
+- `EMPLOYER`: reusable for one employer.
+- `JOB`: reusable only for one job.
+
+Safeguards:
+
+- Sensitive questions (password, OTP, token, and similar) are never stored or auto-answered.
+- Context-sensitive families require explicit authorization for global reuse.
+- Profile-sourced answers carry a profile hash and go stale when the profile changes.
+- Option-based answers go stale when the option list changes.
+- Scopes never widen silently.
 
 ---
 
-## E5-R9 — Application-Mode Classification During Discovery
+## 10. AI queue
 
-**Status:** IMPLEMENTED, TESTED. Commit `d4386ba` (2026-10-11), 7 files, +470/−3; follow-up `1eb3302` (2026-10-11), 2 files, +81/−1.
+The AI queue is durable and independent of any single cycle.
 
-**Architecture:** `Job.application_mode` (`NAUKRI_NATIVE` / `EXTERNAL` / `AMBIGUOUS`) is persisted during discovery enrichment — classified on the search-result page already open via `detect_application_type` (`adapter.py:570`), so no second page visit per card. Additive migration only; unknown modes stay `NULL` and rank as ambiguous. Candidate sort key: mode rank → freshness → match score; external jobs stay eligible (classification only reorders). Backfill on rediscovery of unclassified jobs (`backend/services/discovery/service.py:256`); only classifier-known values persist, anything else stays `NULL` (`backend/services/discovery/service.py:528`).
+```mermaid
+stateDiagram-v2
+    [*] --> QUEUED
+    QUEUED --> PROCESSING
+    PROCESSING --> COMPLETED
+    PROCESSING --> RETRY_PENDING
+    PROCESSING --> QUOTA_BLOCKED
+    PROCESSING --> NEEDS_ATTENTION
+    PROCESSING --> FAILED
+    RETRY_PENDING --> PROCESSING
+    QUOTA_BLOCKED --> PROCESSING: quota restored
+    PROCESSING --> QUEUED: stale recovery
+```
+
+Statuses:
+
+```text
+QUEUED
+PROCESSING
+COMPLETED
+RETRY_PENDING
+QUOTA_BLOCKED
+NEEDS_ATTENTION
+FAILED
+```
+
+The queue supports native-first priority, retries, stale-item recovery, and worker ownership. Analysis results are cached and reused by job/profile context.
 
 ---
 
-## E5-R8 — Pagination Fix & Multi-Location Search
+## 11. Concurrency and locking
 
-**Status:** IMPLEMENTED, TESTED. Commit `8158b42` (2026-10-11), 4 files, +751/−100.
+Two locks protect the runtime:
 
-**Architecture:** discovery searches **every** configured location, not only `locations[0]` (`backend/services/discovery/service.py:201`) — one Naukri search URL per ordered, de-duplicated configured location (`backend/services/naukri/adapter.py:620`, `backend/services/discovery/service.py:387`), falling back to pre-E5-R8 behaviour when no locations are configured. The next-page control moved to a live-verified selector, replacing the pre-E5-R8 `a.styles_btn-secondary__2BqIV` picker that Naukri's markup had broken (regression test `test_naukri_adapter.py:2210`). New coverage: multi-location discovery (`test_discovery.py:198`) and next-page picking (`test_naukri_adapter.py:231`).
+### Apply lock
 
----
+`CycleRunControl` is a singleton database row. Acquisition is an atomic conditional update. The lock is shared by:
 
-## E5-R7 — Native Apply Container Detection & Conversational Drawer Support
+- Autonomous cycle
+- Manual apply
+- Scheduler apply phase
 
-**Status:** IMPLEMENTED, TESTED (957 passed), AND LIVE-VALIDATED (surgical single-job apply) — job 114 confirmed APPLIED via native method with evidence.
+A second process receives `409` with the active run identity. The lock is released on completion, failure, or cancellation.
 
-**Root cause:** Run 66 produced 0 applications because native Apply opens a conversational right-side drawer (`chatbot_Drawer chatbot_right`) with `.botMsg` question text, `input[type=radio].ssrc__radio` + `label[for=...]` choices, a hidden file-uploader `<form>`, a `[contenteditable=true]` composer, and a `div.sendMsg` save control (DIV, not button). Job pages have 0 visible `<form>` and 0 `role="dialog"`, so legacy container selectors never matched and `detect_application_questions()` returned `[]`, causing NEEDS_ATTENTION with "no questions detected".
+### Browser profile lock
 
-**E5-R7 Architecture (adapter, `backend/services/naukri/adapter.py`):**
+`BrowserSessionLock` prevents two processes from opening the same persistent Chrome profile. This matters because Chrome itself cannot safely share a user-data directory.
 
-```text
-_get_visible_application_container(page)
-  try legacy: [role="dialog"], .apply-drawer, .apply-modal, form
-    each gated by _looks_like_application_form (reject apply-button wrapper; require
-      visible radio / non-hidden non-file input / textarea / select /
-      [contenteditable=true] / button[type=submit] / .sendMsg / .submit-btn)
-  try conversational: .chatbot_Drawer, [class*="chatbot_Drawer"]
-    same _looks_like_application_form gate
-is_conversational_apply(page) = container class contains "chatbot_Drawer"
-detect_application_questions(page)
-  container = _get_visible_application_container(page)
-  container_cls = await container.get_attribute("class")
-  if "chatbot_Drawer" in container_cls:
-    return _detect_conversational_question(container)   # NEW gated branch
-  else:
-    return legacy form-field walk                        # unchanged
-```
+### Coordination behavior
 
-Conversational helpers: `_detect_conversational_question` (parses `.botMsg` + radio labels + composer), `_normalize_choice` (strips "N. " prefixes), `answer_conversational_question` (clicks radio label or fills composer), `_click_conversational_save` (`.sendMsg` / `.send .sendMsg` / `#sendMsg .sendMsg`).
-
-**Runner (`backend/services/applications/runner.py`):** after `FORM_OPENED`, `is_conversational_apply → True` routes to `_complete_conversational_application` (max 12 steps, AI radio answers via `_answer_radio_via_ai`); `False` routes to the legacy form path (unchanged).
-
-**Gating rationale:** the `chatbot_Drawer` class check in `detect_application_questions` prevents legacy forms and MagicMock test pages from entering the conversational branch (which previously produced coroutine-in-dict garbage on non-awaitable mocks).
-
-**Live validation (2026-10-11):** application row 64 (job 114, NEEDS_ATTENTION) deliberately reset to SKIPPED with audit reason (root-cause-justified); surgical apply produced new row 82: `status=APPLIED`, `method=NAUKRI_NATIVE`, `applied_at=2026-10-11T05:00:15`, `confirmation_evidence` contains `Applied to "Mis Analyst , fresher"`. Backend restarted PID 31396.
-
-**Unchanged:** `APPLIED` still requires positive confirmation evidence; external applications never clicked/submitted; jobs 87/120 untouched; jobs 23/85/59 APPLIED evidence intact; job 2 stays EXTERNAL; application limits not reset; no scheduler launched.
+- Stop is idempotent.
+- Cancellation is checked between jobs and before starting an application.
+- A run that is cancelled reports `CANCELLED`, not `COMPLETED`.
+- Startup recovery returns the process to `IDLE`; it does not resume a prior run automatically.
+- The scheduler does not auto-start.
 
 ---
 
-## E5-R6 — Native-URL Misclassification Recovery (Reconciliation Rule 2)
-
-**Status:** IMPLEMENTED, TESTED, AND LIVE-VALIDATED — human-triggered reconciliation recovered 16 locked jobs (run 64 then truthfully re-verified all 15 relevant ones as genuine external-apply-only pages; job 2 genuine external preserved); candidacy query deduplicated with `.distinct()` (run 65: `candidates=16`, one processing per job)
-
-**E5-R6 Architecture:**
-
-The E5-R5.3 reconciliation (`reconcile_stale_externals`, `backend/services/applications/service.py`) remains a single human-triggered service method behind `POST /api/applications/reconcile-stale-externals`, but now applies two rules in one idempotent call:
+## 12. Frontend architecture
 
 ```text
-reconcile_stale_externals()
-  Rule 1 (E5-R5.3, unchanged):
-    status == EXTERNAL_APPLICATION AND external_url == STALE_EXTERNAL_PAGE_CHROME_URL
-    -> SKIPPED, STALE_EXTERNAL_RECONCILE_SKIP_REASON
-  flush rule-1 changes
-  Rule 2 (E5-R6), for each remaining EXTERNAL_APPLICATION row:
-    protected job ID (87/120)?            -> unchanged, logged "protected_job_id"
-    confirmation_evidence or applied_at? -> unchanged, logged submission evidence
-    linked Job missing?                  -> unchanged, logged "missing_job_record"
-    external_url / job.url unparseable?  -> unchanged, logged ambiguous
-    normalized(external_url) != normalized(job.url)?
-                                         -> unchanged (genuine external or unrelated)
-    host not naukri.com?                 -> unchanged
-    path not /job-listings-*?            -> unchanged
-    else -> SKIPPED, PRE_R5_4_NATIVE_URL_RECOVERY_SKIP_REASON,
-            needs_attention cleared, history preserved
-  returns per-rule counts, IDs, remaining_external_ids
+frontend/src/
+  app/
+    App.tsx          data loading, polling, page composition, global actions
+    shell.ts         page IDs and navigation context
+  pages/
+    OverviewPage
+    JobsPage
+    ApplyQueuePage
+    ApplicationsPage
+    NeedsAttentionPage
+    AIQueuePage
+    AnalyticsPage
+    ActivityPage
+    NotificationsPage
+    ProfilePage
+    PreferencesPage
+  components/
+    AgentControl
+    ProfileWorkspace
+    ScreeningQuestionPanel
+    JobPreferences
+    StateBlocks
+  ui/
+    PageHeader, StatCard, StatusBadge, ProgressPanel,
+    JobCard, DataTable, DetailDrawer, ConfirmAction,
+    SearchFilterBar, QueueSummary, ReasonSummary, Pagination
+  services/api.ts
+  types/api.ts
+  styles.css
 ```
 
-`normalize_naukri_url_for_comparison()` performs only safe equivalence normalization (trim whitespace, lowercase host, http/https equivalence, drop fragment and default ports, strip trailing slash); any unparseable input returns `None` so the row is treated as ambiguous, never matched. A genuine external destination can never equal the job's own Naukri job-listing URL, so equality on the Naukri host/path proves the pre-R5.4 body-scan-first misclassification (external URL grounding had fallen back to `job.url` because no indicator-matched external CTA link existed).
+Design properties:
 
-Recovered rows are reclassified in place — never deleted — and the next autonomous cycle evaluates them through the unchanged pipeline: candidacy query (now `.distinct()`: one row per job, not one per historical SKIPPED application row — run-64 evidence showed `candidates=31` for 18 real jobs) → safety gate (deterministic rules; only the Gemini `suspicious` flag blocks) → duplicate protection → limits → unresolved-attempt guard → native Apply detection (E5-R5.4 native-first) → click → form → confirmation → persisted outcome. Recovery never auto-applies, never resets `NEEDS_ATTENTION`/confirmed states, and never bypasses duplicate protection for genuine externals. Live validation (runs 64/65): the 15 recovered relevant pages were verified to have zero Apply buttons and an "apply on company site" action-bar label — genuine external-apply-only listings, correctly re-locked as `EXTERNAL_APPLICATION` with grounded job URLs and `needs_attention=1` for human review.
+- Single-page application with in-memory page state; no client-side router.
+- The shell provides navigation and the global waiting-for-answer state.
+- Data is fetched from explicit API endpoints; no mock data is used in production paths.
+- Polling is used for live run and queue status; there are no WebSockets.
+- Loading, empty, and error states are explicit.
+- The UI never fabricates progress or outcome counts.
+- Destructive actions use confirmation controls.
+- The layout is responsive and includes a mobile bottom navigation.
 
 ---
 
-## E5-R3 — Freshness-First Discovery & Advisory-Only AI Recommendations
+## 13. API surface
 
-**Status:** COMPLETE — subjective AI recommendation no longer blocks; discovery and candidate selection are freshness-first
+The API is organized by workflow:
 
-**E5-R3 Architecture:**
+| Group | Prefix | Purpose |
+|---|---|---|
+| Health | `/api` | Liveness and readiness. |
+| AI provider | `/api/ai` | Gemini provider status and configuration summary. |
+| Profile | `/api/profile` | Resume upload, extraction, update, confirm. |
+| Matching | `/api/matching` | Preferences and deterministic evaluation. |
+| Discovery | `/api/discovery` | Start/stop/status. |
+| Autonomous cycle | `/api/autonomous-cycle` | Run/stop/status, pending question, answer memory. |
+| Manual apply | `/api/manual-apply` | Eligible jobs, start/stop/status, per-job skip. |
+| Applications | `/api/applications` | History, detail, run/start/stop, reconciliation. |
+| Dashboard | `/api/dashboard` | Summary, jobs, applications, attention. |
+| AI queue | `/api/ai-queue` | Enqueue, inspect, claim, process, mark states, recover. |
+| Scheduler | `/api/scheduler` | Start/stop/pause/resume/config/status. |
+| Lifecycle | `/api/agent` | Start/stop/pause/resume/recovery/status. |
+| Analytics | `/api/analytics` | Outcome and decision statistics. |
+| Notifications | `/api/notifications` | Notification stream. |
+| Decision | `/api/decision` | Per-job decision history and prioritization. |
+| Feedback | `/api/feedback` | Feedback records and summary. |
+| Worker | `/api/worker` | Worker registration, status, heartbeat. |
+| System | `/api/system` | Windows autostart controls. |
 
-The final safety gate is the single authoritative decision point before submission. Gemini's output remains advisory at that gate: only the explicit `suspicious` fraud flag blocks, while every deterministic rule is unchanged. To keep the bounded Gemini budget aimed at genuinely new listings, discovery now budgets **new distinct jobs** and candidate ordering is freshness-first.
-
-**Safety gate (`backend/services/applications/service.py`):**
-
-```text
-run_final_safety_gate(job, profile, preference, job_analysis)
-  1. Job exists
-  2. Profile confirmed
-  3. Duplicate / already-APPLIED protection
-  4. Location overlap
-  5. Fresher experience rule + strict IT-scope
-  6. Salary minimum (undisclosed allowed; disclosed 0 rejected)
-  7. Employment type
-  8. Title / search scope
-  9. job_analysis.suspicious == True  -> BLOCK   (advisory Gemini; only the fraud flag)
-     AI recommendation (APPLY/SKIP/NEEDS_ATTENTION) -> NOT a block
-```
-
-**Discovery freshness (`backend/services/naukri/adapter.py`, `backend/services/discovery/service.py`):**
-
-```text
-Naukri card -> _parse_posted_date(text): tz-aware UTC or None (never fabricated)
-  today / just now / yesterday / N days|weeks ago / 30+ days ago / absolute formats
-
-adapter.search_jobs(): emit each page's cards via _posted_sort_key
-  known dates newest-first, unknown dates last; pagination unchanged
-
-DiscoveryService.run_discovery():
-  jobs_discovered = all scanned cards (metric)
-  max_cards budget applies to NEW distinct jobs
-  duplicate -> _refresh_duplicate_job: last_seen advances; newer grounded posted_at adopted only
-```
-
-**Candidate ordering (`backend/services/autonomous_cycle/service.py`):**
-
-```text
-posted_freshness_key(posted_at): known -> (0, -timestamp); None -> (1, 0.0)
-job_freshness_key(job): (posted_freshness_key(posted_at), -discovered_at)
-
-_apply_hard_filters_and_enqueue(): eligible sorted by (job_freshness_key, -match_score)
-  -> Gemini budget spent on newest-posted eligible candidates, unknown last
-_run_applications(): candidates ordered posted_at DESC (nulls last), discovered_at DESC
-```
-
-**Preserved boundaries:** hard filters, duplicate protection, IT-scope/role matching, salary/experience/employment-type policy, `max_applications`/Gemini budgets, and all application limits are unchanged. Unknown posting dates are stored as `None` and sorted last; no date is invented. No URL/sort parameter was added to Naukri requests.
-
-**Test coverage:** 270 focused tests pass across `test_application_safety_gate.py`, `test_naukri_adapter.py`, `test_discovery.py`, and `test_autonomous_cycle.py` (new `TestFreshnessFirstOrdering`). Full backend suite: 878 passed, 0 failed (2026-10-09); the two failures previously reported here were resolved in E5-R3.1 (an outdated C2 IT-scope test expectation on unmodified `matching/engine.py`; a dashboard test-ordering isolation case). Zero regressions.
-
-**Files modified:** `backend/services/applications/service.py`, `backend/services/naukri/adapter.py`, `backend/services/discovery/service.py`, `backend/services/autonomous_cycle/service.py`, and their four test files.
-
-**Documentation updated:** `README.md`, `docs/MASTER_PRD.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT_STATUS.md`, `docs/DECISIONS.md`
+See [API.md](API.md) for the endpoint list.
 
 ---
 
-## E4-R10 — Targeted Role-Matching Improvement
+## 14. Security and trust boundaries
 
-**Status:** COMPLETE — Role-matching coverage improved
+- The backend has no built-in authentication. It is intended for trusted-local or trusted-network use.
+- CORS origins are explicit in production; wildcards are rejected.
+- Credentials and API keys are read from environment variables and are not returned by dashboard schemas.
+- Browser automation uses a persistent profile, not stored passwords.
+- External links are recorded, never submitted.
+- CAPTCHA and security challenges stop automation.
+- Logs are sanitized in production mode.
+- Production readiness requires PostgreSQL, a Gemini key, and explicit CORS origins.
+- There is no multi-tenant isolation.
 
-**E4-R10 Architecture:**
-
-E4-R10 extends the deterministic role-matching vocabulary in `ALLOWED_ROLE_FAMILIES` to cover relevant entry-level software and data roles that were previously rejected due to title phrase variations. The implementation is surgical: adds specific keywords aligned with user preferences, preserves all safety boundaries, and maintains strict exclusion of unrelated roles.
-
-**Role-family extensions in `backend/services/matching/engine.py`:**
-
-```python
-ALLOWED_ROLE_FAMILIES = {
-    "data": ["data analyst", "data engineer", "data analytic", "data science", "power bi"],
-    "software": ["software engineer", "software developer", "developer", "software development engineer", "software development"],
-    "devops": ["devops"],
-    "python": ["python developer"],
-    "qa": ["qa", "quality assurance"],
-    "sql": ["sql developer"],
-}
-```
-
-**Changes:**
-- Data family: added "data science" (data science intern/fresher roles), "power bi" (BI/reporting roles)
-- Software family: added "software development" (matches "Software Development Trainee" preference)
-- New QA family: "qa", "quality assurance" (matches "QA Engineer Fresher" preference)
-- New SQL family: "sql developer" (matches "SQL Developer Fresher" preference; standalone "sql" excluded to prevent SQL Server Administrator matches)
-
-**Constraints preserved:**
-- UNWANTED_SPECIALIZATIONS unchanged: "sales", "java", "php", ".net", "hardware", "mechanical", "manufacturing", "hr", "operations" still excluded
-- IT-scope filter unchanged: industry/keyword validation still required
-- Experience cap unchanged: max_required_experience_years=0 still enforced
-- Salary policy unchanged: min_salary_lpa=4 still enforced
-- Employment-type policy unchanged: Full Time, Internship, Contract still enforced
-- No "associate" catch-all: explicit phrases only
-- No broad role families without concrete test cases
-
-**Test coverage in `backend/tests/test_matching_rules.py`:**
-
-New role-matching tests (10):
-- `test_role_targeting_allowed_software_development_trainee`: Software Development Trainee roles
-- `test_role_targeting_allowed_data_science_roles`: Data Science Intern/Fresher/Engineer roles
-- `test_role_targeting_allowed_power_bi_roles`: Power BI Internship/Developer/Analyst roles
-- `test_role_targeting_allowed_qa_roles`: QA Engineer/Quality Assurance roles
-- `test_role_targeting_allowed_sql_roles`: SQL Developer/Engineer roles
-
-New regression tests (9):
-- `test_role_targeting_reject_sql_server_administrator`: SQL Server Administrator rejected (standalone "sql" exclusion)
-- `test_role_targeting_boundary_case_sales_mention_in_tech_role`: Pre-Sales Engineer rejected by unwanted specialization
-- `test_role_targeting_boundary_case_hardware_with_software`: Hardware Software Engineer rejected by unwanted specialization
-- `test_role_targeting_reject_pure_sales_roles`: Sales Executive/Manager rejected
-- `test_role_targeting_reject_mechanical_roles`: Mechanical Engineer rejected
-- `test_role_targeting_reject_manufacturing_roles`: Manufacturing/Production Engineer rejected
-- `test_role_targeting_reject_hr_roles`: HR Manager/Executive rejected
-- `test_role_targeting_reject_operations_roles`: Operations Manager/Executive rejected
-
-Total test count: 54 tests in test_matching_rules.py — all PASS
-
-**Verified outcomes:**
-- Job 55 (Software Development Trainee): NOW PASS (was FAIL)
-- Job 62 (Data Science Intern/Fresher): NOW PASS (was FAIL)
-- Job 64 (Power Bi Internship): NOW PASS (was FAIL)
-- Job 87 (Qa Engineer): NOW PASS (was FAIL)
-- Job 112 (ELK Engineer): FAIL (not in user preferences, DevOps/monitoring-specific — requires separate decision)
-
-**Integration:**
-- No changes to MatchEngine logic flow or filter order
-- No changes to AI evaluation or safety gate
-- No changes to database schema or API endpoints
-- Existing experience, salary, IT-scope, and employment-type tests remain passing
+If the API is exposed publicly, put it behind an authenticated reverse proxy or gateway and restrict access to the operator.
 
 ---
 
-## E4 — Dashboard Live-Run Outcome (Run #52)
+## 15. Failure handling
 
-**Status: E4 LIVE CYCLE EXECUTED — runtime/dashboard validation PASSED; application-submission objective UNRESOLVED.**
-
-This checkpoint documents the actual outcome of the E4 live cycle (Run #52) triggered through the Dashboard UI. It is documentation and Git only: no new autonomous cycle was executed, no source code was modified, and no database was modified during this checkpoint.
-
-**Verified Run #52 result (triggered by Dashboard UI):**
-
-- Trigger: Dashboard UI "Run Autonomous Cycle" button with `max_applications = 1`.
-- Run ID: `52`.
-- Discovery run ID: `52`.
-- Terminal status: `COMPLETED`.
-- Jobs discovered: `103`.
-- Jobs processed from the current run: `81`.
-- Candidates considered for application: `3`.
-- New applications submitted during Run #52: `0`.
-- Apply clicks during Run #52: `0`.
-- Runtime returned to `IDLE`, with `lock_held = false`.
-
-**Distinction between successful execution and zero applications:**
-
-- The cycle executed end-to-end: discovery, filtering, candidate evaluation, and safe completion. The runtime returned to `IDLE` and released its lock. The Dashboard UI, control/status APIs, non-reload Uvicorn runtime, and `max_applications = 1` control all behaved as designed. Runtime/dashboard validation therefore PASSED.
-- However, zero applications were submitted during Run #52. The three candidates considered did not reach a safe native Apply click. The application-submission objective remains UNRESOLVED and is recorded as an open issue for a separate investigation checkpoint.
-- The three existing applications referenced in earlier reports (records #18, #24, #25) belong to earlier runs (D4/D5 and D7), NOT to Run #52. They are preserved and unaltered.
-
-**Open issue (carried forward):** Why did Run #52 submit zero applications despite successful execution? Root cause has not been determined. Investigation is deferred to a separate checkpoint after this push. Do not claim the application objective was achieved.
-
-**Historical E4 records preserved:** The two accidental curl-triggered E4 attempts on 2026-10-08 that failed before browser startup remain preserved and unaltered. Run #52 is the first E4 cycle to execute end-to-end through the Dashboard UI.
-
-## E4-R2 Windows Playwright runtime requirement
-
-E4 live validation has NOT yet succeeded. This checkpoint documents a runtime/environment requirement and resolves the E4 browser-startup blocker; it is documentation-only (no E4 execution, no Dashboard Run click, no `POST /api/autonomous-cycle/run` call, no database modification, no backend/frontend source-code modification, no Playwright configuration change, no asyncio workaround).
-
-**Runtime model on Windows:**
-
-```text
-uvicorn --reload
-  → spawned reload worker uses WindowsSelectorEventLoop
-  → Playwright subprocess bootstrap raises NotImplementedError
-  → autonomous cycle fails immediately during browser startup
-
-uvicorn (no --reload)
-  → ProactorEventLoop
-  → Playwright driver starts successfully
-  → configured Chromium persistent context starts successfully
-  → standalone smoke test PASS
-```
-
-**Verified environment:** Windows 11, Python 3.14.2, FastAPI 0.141.1, Starlette 1.6.0, Playwright 1.63.0. The Playwright installation itself was healthy and the Chromium installation is healthy — the blocker was the event loop selected by the reload worker, not the browser installation.
-
-**Resolution:**
-
-- No source-code workaround was required.
-- `--reload` is incompatible with the Windows Playwright subprocess requirement in this environment.
-- Live autonomous execution must use non-reload Uvicorn. The correct live runtime invocation is:
-
-  ```powershell
-  python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
-  ```
-
-  WITHOUT `--reload`.
-
-**E4 status tracking:**
-
-- E4 live cycle has since EXECUTED end-to-end in Run #52 (triggered by Dashboard UI, `max_applications=1`, terminal status `COMPLETED`, `lock_held=false`). See the **E4 — Dashboard Live-Run Outcome (Run #52)** section at the top of this document.
-- Runtime/dashboard validation PASSED; the application-submission objective remains UNRESOLVED (zero applications in Run #52). Investigation is deferred to a separate checkpoint.
-- Historical E4 FAILED runs (including the two accidental curl-triggered attempts on 2026-10-08 that failed before browser startup) remain preserved and unaltered.
-- The non-reload Uvicorn runtime requirement documented above was the runtime fix that made Run #52 possible.
-
-**Do not claim the E4 application objective was achieved.** Describe E4 as runtime/dashboard validation passed, with application submission still unresolved.
-
-## E4-R autonomous-cycle runtime model
-
-The autonomous-cycle router owns a process-local runtime controller. It atomically holds a single execution lock and maintains separate `active_run` and `last_run` records. `active_state` is only `IDLE` or `RUNNING`; terminal `COMPLETED`/`FAILED` values belong only to `last_run`. A fresh backend process constructs an IDLE runtime, while persisted DiscoveryRun/Application records remain historical evidence. `GET /api/autonomous-cycle/status` snapshots this state without constructing `AutonomousCycle` or scheduling work. Completion, exception, and initialization-failure paths clear `active_run` and release the lock.
-
-**Run #52 exercised this model:** the cycle started, acquired the lock (`active_state=RUNNING`), completed normally, and returned to `IDLE` with `lock_held=false`. The `COMPLETED` terminal status and zero-application outcome are recorded in `last_run`, distinct from the active state. The two accidental curl-triggered E4 attempts on 2026-10-08 that failed before browser startup remain preserved in history.
-
-## CHECKPOINT E3: Safe Dashboard Autonomous-Cycle Control
-
-**Status:** COMPLETE — Dashboard can safely trigger autonomous cycles
-
-**E3 Architecture:**
-
-E3 enables safe manual triggering of the autonomous job application cycle from the dashboard by extracting the existing autonomous cycle logic into a reusable service and adding control/status API endpoints. The architecture preserves all safety boundaries while providing explicit user confirmation, status polling, and completion statistics.
-
-**Service extraction (`backend/services/autonomous_cycle/service.py`):**
-
-The `AutonomousCycle` class is extracted from the CLI (`run_autonomous_cycle.py`) and made available to both CLI and FastAPI:
-
-```text
-AutonomousCycle
-  ├── __init__(max_applications, dry_run, max_jobs, max_cards, enable_cli_output)
-  ├── run() → dict {exit_code, run_id, status, stats}
-  ├── _apply_hard_filters_and_enqueue() → stats
-  ├── _process_ai_queue() → stats
-  └── _run_applications() → stats
-```
-
-- CLI: `run_autonomous_cycle.py` → `AutonomousCycle(enable_cli_output=True)`
-- FastAPI: `POST /api/autonomous-cycle/run` → `AutonomousCycle(enable_cli_output=False)`
-
-**Control/status routes (`backend/api/routes/autonomous_cycle.py`):**
-
-```text
-POST /api/autonomous-cycle/run
-    Request: {max_applications: 1-10}
-    Response: {run_id, status, max_applications, message}
-    → Acquires process-level lock (threading.Lock)
-    → Returns 409 Conflict if cycle already running
-    → Starts cycle in background (asyncio.create_task)
-    → Returns immediately with RUNNING status
-
-GET /api/autonomous-cycle/status
-    Response: {status, run_id, started_at, completed_at, max_applications, stats}
-    → status: IDLE | RUNNING | COMPLETED | FAILED
-    → stats: {jobs_discovered, hard_filtered, queued, completed, applied, needs_attention, external, skipped, failed}
-```
-
-**Concurrency protection:**
-
-- Process-level lock (`threading.Lock`) prevents concurrent cycles in V1 local-first deployment
-- Future cloud deployment would require distributed locking (deferred)
-- Lock acquired on POST, released on cycle completion/failure
-- HTTP 409 Conflict returned if lock is already held
-
-**Frontend control flow (`frontend/src/app/App.tsx`):**
-
-```text
-mount
-  ├── getAutonomousCycleStatus() → initial status
-  ├── User clicks "Run Autonomous Cycle"
-  │   → Confirmation modal (explains safety rules, max_applications)
-  │   → Modal includes selectable Maximum applications control (1-10, default 1)
-  │   → User confirms → POST /api/autonomous-cycle/run { max_applications }
-  │   → Status changes to RUNNING
-  │   → Poll GET /api/autonomous-cycle/status every 4 seconds
-  │   → On COMPLETED/FAILED: refresh dashboard data
-  └── Cycle stats display on completion
-```
-
-**Safety boundaries preserved:**
-
-- Server-authoritative `max_applications` (client cannot control Gemini budget)
-- Gemini budget internally derived as `max_applications * 2` (not exposed to client)
-- All existing safety rules enforced: D6.1, D6.2, C2, D4/D5, D7
-- Frontend only calls control/status APIs — no direct Naukri or Gemini access
-- Explicit user confirmation required before execution
-- Status polling stops immediately on COMPLETED/FAILED/error
-
-**Test files:**
-- `backend/tests/test_autonomous_cycle.py` (92 tests: logic, boundaries, budgets, filtering)
-- `backend/tests/test_autonomous_cycle_api.py` (11 tests: API endpoints, concurrency, security)
+| Failure | Behavior |
+|---|---|
+| Discovery login required | Run stops with `LOGIN_REQUIRED`. |
+| Security challenge | Attempt records `NEEDS_ATTENTION`; automation stops. |
+| Gemini quota exhausted | Queue item becomes `QUOTA_BLOCKED`; no fake analysis. |
+| Browser session dies before attempt | Restart and retry, bounded to 3 restarts. |
+| Browser session dies during attempt | `NEEDS_ATTENTION`; never blindly retried. |
+| Submit ambiguity | History reconciliation, then `NEEDS_ATTENTION` if unresolved. |
+| Two consecutive runner errors | Cycle aborts remaining candidates. |
+| User stop | Cancellation at the next safe boundary; remaining jobs reported unstarted. |
+| Duplicate start | `409` with the active run identity. |
+| Stale AI queue item | Recovered to a safe state, never assumed complete. |
+| Startup after crash | Process returns to `IDLE`; no automatic resume. |
 
 ---
 
-## CHECKPOINT E2: Dashboard Operational Visibility & Safe Control Foundation
+## 16. Deployment architecture
 
-**Status:** COMPLETE — Dashboard provides accurate operational view
+```mermaid
+flowchart LR
+    subgraph Vercel
+        FE[Vite static build<br/>frontend/dist]
+    end
+    subgraph API Host
+        BE[FastAPI + Uvicorn]
+        DB[(PostgreSQL)]
+    end
+    subgraph Windows Operator Machine
+        CH[Chrome + Playwright]
+        NK[Naukri]
+    end
 
-**E2 Architecture:**
-
-E2 extends the E1 read-only dashboard API layer to provide comprehensive operational visibility without introducing execution controls. The dashboard now shows what the system last did, what happened during the latest discovery/autonomous run, application outcomes, jobs needing attention, and system health status.
-
-**Extended read-only routes (`backend/api/routes/dashboard.py`):**
-
-```text
-GET /api/dashboard/summary
-    → DiscoverySummary (latest completed run stats + total run count)
-    → ApplicationCounts (all-time status counts: applied, needs_attention, skipped, external, failed)
-    → ProfileSummary (status, confirmed, original_filename — NO secrets, NO resume_hash, NO profile data)
-
-GET /api/dashboard/recent-applications?limit=N   (N capped at 50)
-    → RecentApplicationItem[] (Application JOIN Job — title, company, status, method, dates)
-    → NO confirmation_evidence, NO external_url, NO credentials
-
-GET /api/dashboard/needs-attention?limit=N      (N capped at 50) [E2 NEW]
-    → NeedsAttentionItem[] (Application JOIN Job — title, company, status, skip_reason, failure_reason)
-    → NO confirmation_evidence, NO external_url, NO credentials
+    User --> FE
+    FE -->|HTTPS| BE
+    BE --> DB
+    BE -. browser automation .-> CH
+    CH --> NK
 ```
 
-**Schema layer (`backend/schemas/dashboard.py`):**
-
-All schemas use `model_config = ConfigDict(extra="forbid")` to prevent extra fields from leaking into responses. Fields were chosen by explicit positive enumeration — not by forwarding entire model rows.
-
-**Frontend data flow (`frontend/src/app/App.tsx`):**
-
-```text
-mount
-  ├── getHealth()           → agent state, service version (existing)
-  ├── getNotifications()    → notification feed (existing)
-  ├── getDashboardSummary() → metrics + profile status (E1)
-  ├── getRecentApplications() → activity feed (E1)
-  └── getNeedsAttention()   → needs-attention items (E2 NEW)
-
-Per-section state: loading | error | empty | data
-Backend offline → each section degrades independently (no crash)
-Retry button → re-fetches all dashboard data (E1)
-Refresh button → manual refresh with loading state (E2 NEW)
-```
-
-**Security boundaries maintained:**
-- No secrets, API keys, credentials, cookies, session data, or environment variable values in any new response
-- `confirmation_evidence` (internal applied-state field) excluded from recent-applications and needs-attention schemas
-- `resume_hash`, `Profile.data` fields excluded from profile summary schema
-- All dashboard endpoints are HTTP GET only — no mutations possible via these routes
-- No execution controls added: no "Run Agent", "Apply Now", "Retry Application" buttons
-
-**Test file:** `backend/tests/test_dashboard.py` (30 tests: 21 E1 + 9 E2)
+Hosted API deployment does not provide a cloud browser. Live automation still requires a Windows machine with Chrome and Playwright, or a future cloud browser implementation that is not part of the current scope.
 
 ---
 
-## CHECKPOINT E1: Frontend/API Integration Foundation
+## 17. Known architectural limitations
 
-**Status:** COMPLETE — Dashboard connected to real backend data
-
-**E1 Architecture:**
-
-E1 introduces a minimal, read-only dashboard API layer. The frontend no longer holds static placeholder values; it reads live data from the backend on every page load.
-
-**New read-only routes (`backend/api/routes/dashboard.py`):**
-
-```text
-GET /api/dashboard/summary
-    → DiscoverySummary (latest completed run stats + total run count)
-    → ApplicationCounts (all-time status counts: applied, needs_attention, skipped, external, failed)
-    → ProfileSummary (status, confirmed, original_filename — NO secrets, NO resume_hash, NO profile data)
-
-GET /api/dashboard/recent-applications?limit=N   (N capped at 50)
-    → RecentApplicationItem[] (Application JOIN Job — title, company, status, method, dates)
-    → NO confirmation_evidence, NO external_url, NO credentials
-```
-
-**Schema layer (`backend/schemas/dashboard.py`):**
-
-All schemas use `model_config = ConfigDict(extra="forbid")` to prevent extra fields from leaking into responses. Fields were chosen by explicit positive enumeration — not by forwarding entire model rows.
-
-**Frontend data flow (`frontend/src/app/App.tsx`):**
-
-```text
-mount
-  ├── getHealth()           → agent state, service version (existing)
-  ├── getNotifications()    → notification feed (existing)
-  ├── getDashboardSummary() → metrics + profile status (NEW E1)
-  └── getRecentApplications() → activity feed (NEW E1)
-
-Per-section state: loading | error | empty | data
-Backend offline → each section degrades independently (no crash)
-Retry button → re-fetches all four calls
-```
-
-**Security boundaries maintained:**
-- No secrets, API keys, credentials, or cookies in any new response
-- `confirmation_evidence` (internal applied-state field) excluded from recent-applications schema
-- `resume_hash`, `Profile.data` fields excluded from profile summary schema
-- All dashboard endpoints are HTTP GET only — no mutations possible via these routes
-
-**Test file:** `backend/tests/test_dashboard.py` (21 tests)
+- Naukri-only platform support.
+- Single-user, no authentication or tenant isolation.
+- Windows-first live browser automation.
+- No distributed browser workers.
+- AI queue coordination supports worker ownership, but the main application workflow is still local-first.
+- No WebSocket push; the UI polls.
+- `max_applications` is legacy-compatible but ignored.
+- External applications are never submitted.
+- CAPTCHA is never bypassed.
+- Historical checkpoint documents are not a description of current behavior; use this document and the decision log.
 
 ---
 
-## CHECKPOINT D6.2: Bounded Gemini Candidate Evaluation
-
-**Status:** COMPLETE — Gemini budget enforced BEFORE invocation, with queue isolation
-
-**D6.2 Architecture Change:**
-
-D6.1 bounded the AI queue enqueue budget, but MatchEngine was still calling Gemini for every job that passed deterministic filters BEFORE the enqueue budget was applied. This caused uncontrolled Gemini usage during autonomous cycles.
-
-D6.2 Fix Continuation:
-- Fixed `_process_ai_queue()` to only process queue items enqueued by the current autonomous cycle
-- Added `enqueued_queue_item_ids` tracking to prevent pre-existing queue items from bypassing the budget
-- Fixed candidate sorting to match comment (newest discovered_at first)
-- Deduplicated deterministic logic in MatchEngine via shared `_run_deterministic_checks()` method
-
-**New Architecture:**
-
-```text
-max_applications = N (actual application attempts)
-gemini_budget = max_applications * 2 (NEW Gemini evaluation budget)
-
-Pipeline:
-discovered (104)
-  ↓
-deterministic hard filters (profile, duplicate, role, experience, IT, salary, employment)
-  ↓
-eligible deterministic candidates (varies)
-  ↓
-bounded candidate selection (top gemini_budget only; E5-R3: newest posted_at first, unknown last, then discovered_at/match_score)
-  ↓
-enqueue to AI queue with queue_source="AUTONOMOUS_CYCLE"
-  ↓
-Gemini analysis (ONLY for bounded items from this cycle)
-  ↓
-application candidates (varies based on Gemini results)
-  ↓
-actual applications (capped at max_applications)
-```
-
-**Implementation in `backend/services/matching/engine.py`:**
-
-Added shared `_run_deterministic_checks()` method and deterministic-only wrapper:
-
-```python
-def _run_deterministic_checks(self, job: Job, profile: Profile, preference: JobPreference) -> MatchDecision:
-    """
-    Shared deterministic hard filter logic.
-    Returns a MatchDecision with decision=APPLY if all checks pass,
-    or SKIP/NEEDS_ATTENTION if any check fails.
-    """
-    # 1. Profile Status
-    # 2. Duplicate Detection
-    # 3. Role/Title Targeting Check
-    # 4. Strict fresher experience and IT-only checks
-    # 5. Salary Check
-    # 6. Employment type check
-    # NO Gemini call
-
-def evaluate_job_deterministic(self, job: Job, profile: Profile, preference: JobPreference) -> MatchDecision:
-    """Wrapper for deterministic-only evaluation (used by autonomous cycle)."""
-    decision = self._run_deterministic_checks(job, profile, preference)
-    if decision.decision == MatchDecisionEnum.APPLY:
-        decision.reason = "All deterministic checks passed. Ready for Gemini evaluation."
-    return decision
-
-def evaluate_job(self, job: Job, profile: Profile, preference: JobPreference) -> MatchDecision:
-    """Normal evaluation: deterministic checks then Gemini."""
-    decision = self._run_deterministic_checks(job, profile, preference)
-    if decision.decision != MatchDecisionEnum.APPLY:
-        return decision
-    # Call Gemini only if deterministic checks pass
-    analysis = self.ai.analyze_job(job_context, profile_context)
-    # ... return final decision with Gemini result
-```
-
-**Implementation in `run_autonomous_cycle.py`:**
-
-1. Added `enqueued_queue_item_ids` tracking (line 342)
-2. Fixed candidate sorting (line 415-423):
-   ```python
-   eligible_jobs.sort(
-       key=lambda x: (
-           -x["match_score"],
-           -(x["job"].discovered_at.timestamp() if x["job"].discovered_at else 0)
-       )
-   )
-   ```
-3. Updated `_process_ai_queue()` to accept `enqueued_queue_item_ids` (line 463)
-4. Only processes queue items enqueued by this cycle (queue_source="AUTONOMOUS_CYCLE")
-5. Prevents pre-existing queue items (SCHEDULER, MANUAL) from bypassing Gemini budget
-```
-
-**Implementation in `run_autonomous_cycle.py`:**
-
-```python
-# Line 379: Use deterministic-only evaluation
-match_decision = match_engine.evaluate_job_deterministic(job, profile, preferences)
-
-# Line 418: Apply Gemini budget BEFORE enqueuing
-gemini_budget = max(1, self.max_applications * 2)
-selected_jobs = eligible_jobs[:gemini_budget]
-capped_jobs = eligible_jobs[gemini_budget:]
-```
-
-**Example Behavior with max_applications=2:**
-
-- 10 eligible jobs pass deterministic filters
-- Top 4 (gemini_budget) selected for Gemini evaluation
-- Remaining 6 capped at deterministic stage (no Gemini call)
-- Gemini evaluates only 4 jobs
-- Application attempts: max 2
-
-**Key Behavioral Changes:**
-
-1. **Deterministic filtering happens first** - no Gemini call until job passes all deterministic rules
-2. **Gemini budget applied BEFORE invocation** - only bounded candidates are enqueued to AI queue
-3. **Cached analyses respected** - jobs with existing analyses don't trigger new Gemini calls
-4. **Deterministically rejected jobs never call Gemini** - early exit before AI evaluation
-
-**Safety Verification:**
-
-- NEW Gemini evaluations during autonomous cycle are bounded BEFORE invocation
-- For max_applications=1: NEW Gemini evaluations <= 2
-- For max_applications=2: NEW Gemini evaluations <= 4
-- For max_applications=3: NEW Gemini evaluations <= 6
-- Deterministically rejected jobs never call Gemini
-- Cached analyses do not cause NEW Gemini calls
-- Application attempts remain hard-capped by max_applications
-- Gemini remains advisory, Python rules remain final authority
-- All existing safety rules held (duplicate protection, current-run isolation, etc.)
-
-**Test Coverage:**
-
-- 8 new D6.2 regression tests in `TestD62BoundedGeminiEvaluation`
-- Total: 98 tests passing in test_autonomous_cycle.py (90 autonomous_cycle + 8 D6.2)
-- 0 failures
-
-**Note:** D7 live validation has NOT been performed as part of this checkpoint. D6.2 is a source implementation checkpoint only.
-
----
-
-## CHECKPOINT D7: Multi-Application Live Validation
-
-**Status:** COMPLETE — Multiple applications validated
-
-**D7 Architecture Validation:**
-
-D7 validated the D6.2 Gemini boundary and multi-application pipeline in a live autonomous cycle with max_applications=2. The system successfully discovered, filtered, evaluated, and applied to multiple independent native Naukri jobs while respecting all safety boundaries.
-
-**Live Validation Results (2026-10-07):**
-
-Command: `python run_autonomous_cycle.py --max-applications 2`
-
-Pipeline Execution:
-- Discovery run #32: 103 jobs discovered
-- Deterministic hard filters: 60 jobs rejected
-- Current-run candidates: 4 jobs selected for Gemini (jobs 99, 86, 85, 59)
-- D6.2 Gemini budget: 4 (max_applications=2 × 2)
-- NEW Gemini evaluations: 4 (exactly at budget)
-- Candidates capped: 5 (jobs 58, 56, 51, 20, 19)
-- Budget respected: YES
-
-Current-Run Isolation:
-- All 4 AI queue items tagged with queue_source="AUTONOMOUS_CYCLE"
-- Pre-existing MANUAL/SCHEDULER queue items NOT processed
-- Isolation: PASS
-
-Application Pipeline:
-- Job 99 (Neorealm Solutions): EXTERNAL classification → EXTERNAL_APPLICATION recorded (no submission)
-- Job 86 (Futureacad): NEEDS_ATTENTION (unpaid internship) → SKIPPED
-- Job 85 (Access Automation): NAUKRI_NATIVE → APPLIED (record #24, 1 Apply click)
-- Job 59 (Capgemini): NAUKRI_NATIVE → APPLIED (record #25, 1 Apply click)
-- Total APPLIED: 2
-- Total Apply clicks: 2 (exactly once per applied job)
-
-Safety Boundaries Validated:
-- Duplicate protection: PASS (no reapplications to existing jobs)
-- Current-run isolation: PASS (only current-run candidates processed)
-- Pre-existing queue consumption: NONE
-- CAPTCHA/security bypass: NONE
-- Questionnaire/form bypass: NONE
-- External application submission: NONE
-- Fabricated answers: NONE
-- max_applications hard cap: PASS (cycle stopped after 2 applications)
-
-**D7 Verdict:** PASS — multiple applications validated
-
-**Source Changes:** NONE (D7 is a validation checkpoint only)
-
-**Database Backup:** data/naukri_agent.db.bak-before-d7-live (not committed)
-
----
-
-## CHECKPOINT D6.1: Bounded Gemini Look-Ahead for Multi-Application Runs
-
-**Status:** COMPLETE — Separated Gemini candidate budget from application limit
-
-**D6.1 Architecture Change:**
-
-Previously, `max_applications` was used as both:
-1. Maximum Gemini candidates to enqueue
-2. Maximum actual application attempts
-
-This prevented backup candidates when initial candidates were rejected.
-
-**New Architecture:**
-
-```text
-max_applications = N (actual application attempts)
-max_gemini_candidates = max_applications * 2 (Gemini evaluation budget)
-
-Pipeline:
-discovered (104)
-  ↓
-hard filters (69 rejected)
-  ↓
-eligible candidates (varies)
-  ↓
-deterministic ranking by match_score
-  ↓
-enqueue top max_gemini_candidates (e.g., 4 when max_applications=2)
-  ↓
-Gemini analysis (bounded by max_gemini_candidates)
-  ↓
-application candidates (varies based on Gemini results)
-  ↓
-actual applications (capped at max_applications)
-```
-
-**Implementation in `run_autonomous_cycle.py`:**
-
-```python
-# Line 413: Bounded Gemini budget
-gemini_budget = max(1, self.max_applications * 2)
-selected_jobs = eligible_jobs[:gemini_budget]
-capped_jobs = eligible_jobs[gemini_budget:]
-```
-
-**Example Behavior with max_applications=2:**
-
-- 10 eligible jobs pass hard filters
-- Top 4 (max_gemini_candidates) enqueued to Gemini
-- Gemini results:
-  - Candidate 1 → EXTERNAL (no application attempt)
-  - Candidate 2 → NEEDS_ATTENTION (no application attempt)
-  - Candidate 3 → APPLY (application attempt 1)
-  - Candidate 4 → APPLY (application attempt 2)
-- Final: 2 applications attempted, max_applications respected
-
-**Safety Verification:**
-
-- Gemini budget remains explicitly bounded (max_applications * 2)
-- No uncontrolled AI processing
-- No fallback to AI-free application
-- Existing quota exhaustion behavior preserved
-- Current-run isolation unchanged
-- All existing safety rules held
-
-**Test Coverage:**
-
-- 11 new D6.1 regression tests in `TestD61BoundedGeminiLookAhead`
-- Updated 3 existing tests to reflect new budget logic
-- Total: 261 tests passing, 0 failures
-
-**Note:** D6.1's original implementation bounded the downstream AI queue, but MatchEngine could still invoke Gemini before that boundary. D6.2 fixes this by bounding NEW Gemini evaluations before invocation.
-
----
-
-## CHECKPOINT D5: Post-Click Evidence — Reload-Based Confirmation
-
-**Status:** COMPLETE — First verified native application confirmed
-
-**Root cause of D4 Boundary H failure:**
-
-Naukri instant-apply replaces the Apply button with `<span id="already-applied" class="already-applied">Applied</span>` only AFTER the page state is updated server-side. This transition does not happen within the 8-second in-page polling window. The page must be reloaded to show the persistent Applied badge.
-
-**D5 architecture change in `start_application()`:**
-
-```text
-Apply click
-    ↓
-8-second in-page polling (Phase 10 behavior; page-wide Applied scan deferred past the window)
-    ↓ timeout without evidence
-One bounded page reload (20s, domcontentloaded)
-    ↓
-post_apply_reload_settle_seconds wait (5s, configurable)
-    ↓
-_check_security() (security gate preserved)
-    ↓
-detect_applied_state()
-    ↓
-APPLIED / FORM_OPENED / NEEDS_ATTENTION
-```
-
-**Evidence selectors confirmed live (D5 investigation):**
-
-```html
-<!-- What Naukri renders after successful instant-apply -->
-<div class="styles_jhc__apply-button-container__...">
-  <span id="already-applied" class="styles_already-applied__... already-applied">Applied</span>
-</div>
-```
-
-Selector `#already-applied` (by ID), `.already-applied` (by class), and `#job_header #already-applied` all match this element. The existing `detect_applied_state()` selectors were already correct — only the timing was wrong.
-
-**New class-level constant:** `post_apply_reload_settle_seconds = 5` (configurable in tests via `adapter.post_apply_reload_settle_seconds = 0`)
-
-**Safety preserved:**
-- The reload does NOT click Apply again
-- Security check runs on reloaded page
-- `detect_applied_state()` uses same strict visible-evidence selectors
-- Reload failure → `NEEDS_ATTENTION` (no false APPLIED)
-- Single reload only — no loop
-
-**Confirmed live:**
-- Application 18 (Job 23): APPLIED, method=NAUKRI_NATIVE, confirmation_evidence="Applied"
-- APPLIED count: 1
-
----
-
-## CHECKPOINT D4: First Verified Native Naukri Application
-
-**Status:** Apply button clicked (evidence confirmed by D5)
-
-The D4 live run reached the physical Apply button for a real Naukri-native job and clicked it once. The 8-second post-click observation window ran but the `detect_applied_state` selectors found no matching Applied state evidence.
-
-**D4 Architecture observations:**
-
-- `_apply_hard_filters_and_enqueue`: Fixed to count pre-existing analyses as `pre_analyzed` (not `hard_filtered`) so the cycle proceeds to applications when all current-run jobs have prior analyses.
-- `run_final_safety_gate` title check: Replaced strict configured-title substring matching with `title_matches_allowed_role()` to prevent false rejections of valid-scope jobs.
-- `detect_applied_state`: Polls `#already-applied`, `.already-applied`, exact "Applied" text, or `Applied to "<title>"`. None matched for NetM Corporate Solutions job within 8s.
-- `_has_visible_application_container`: Polls `[role="dialog"]`, `.apply-drawer`, `.apply-modal`, `form`. None matched either.
-- Result: `ApplicationStartResult.NEEDS_ATTENTION` — no retry, no false APPLIED.
-
-**Next investigation boundary:** Inspect what Naukri actually shows after Apply click on a native job — does it open a form not captured by current container selectors, or use different text for the Applied state confirmation?
-
-**APPLIED count: 0 — no verified application has occurred.**
-
----
-
-## CHECKPOINT D1: Autonomous Discovery Tracking
-
-Current-run job ID tracking prevents historical DB jobs from being processed when live discovery fails. The autonomous cycle now tracks the current DiscoveryRun and only processes jobs from that specific run.
-
-**Current-Run Job ID Tracking:**
-- `DiscoveryRun` model includes `current_run_job_ids` column (comma-separated for SQLite compatibility)
-- DiscoveryService tracks job IDs in memory during discovery (`current_run_job_ids: set[int]`)
-- Both new jobs and existing jobs (duplicates) are added to current-run tracking
-- On completion, job IDs are persisted as comma-separated string
-- Autonomous cycle parses current-run job IDs and filters jobs to only those in the current run
-- Fallback to timestamp comparison if job IDs not available (shouldn't happen)
-- Cycle stops with error if `current_run.jobs_discovered == 0`
-
-**Direct Naukri Search Navigation:**
-- Removed homepage navigation dependency - navigates directly to search URL
-- Simplified security check to single call after search navigation
-- Removed bounded wait for homepage elements
-- Reduced navigation time and potential failure points
-
-**Role Targeting and Metadata Enrichment:**
-- Deterministic role/title targeting in MatchEngine before IT metadata gate
-- Explicitly rejects unwanted specializations: Java, PHP, .NET, C#, C++, Power Platform, Platform Engineer, Salesforce, SAP, ServiceNow, embedded, firmware, hardware, electrical, mechanical, civil, sales, marketing, HR, operations
-- Allowed role families: data (analyst, engineer), software (engineer, developer), devops, python developer
-- Enhanced NaukriAdapter metadata extraction with JSON-LD parsing, "Other Details" section extraction, and fallback body text scanning
-- Always fetches job details for IT metadata enrichment (industry/department/role_category) even when description is present
-
-**Historical Job Exclusion:**
-- Jobs not returned by current search are excluded from current-run tracking
-- Autonomous cycle only processes jobs with IDs in `current_run_job_ids`
-- Historical jobs remain in database but are not sent to Gemini or ApplicationRunner
-
-**Live Read-Only Validation (2026-10-06):**
-- 105 job cards discovered across 11 pages
-- 82 jobs tracked in current run (including existing duplicates)
-- 21 historical jobs excluded from current run
-- Current-run tracking confirmed working
-- Focused current-run tracking tests: 12 passed
-- Full backend suite: 681 passed, 0 failures
-
-## CHECKPOINT C: Autonomous Cycle Command
-
-The autonomous cycle command (`run_autonomous_cycle.py`) provides a command-line interface for running the complete job application flow with explicit controls:
-
-**Command-Line Interface:**
-- `--max-applications N`: Limit on real applications (default: 1)
-- `--dry-run`: Discovery and analysis only, no Apply clicks or application records
-- `--max-jobs N`: Cap on jobs inspected per run (default: unlimited)
-
-**Orchestration Flow:**
-The command calls existing services in sequence:
-1. DiscoveryService.run_discovery() - discovers jobs from Naukri
-2. MatchEngine.evaluate_job() - applies hard filters (salary, experience, employment type, location)
-3. AIQueueService.enqueue_job() - enqueues eligible jobs for AI analysis
-4. AIQueueService.process_item() - processes queue through Gemini
-5. ApplicationRunner.run_applications() - applies to eligible native jobs with dry_run flag
-
-**Safety Guarantees:**
-- S&P job `300926927428` is always excluded
-- External jobs are skipped (never applied to)
-- Native/external re-classification happens immediately before Apply click
-- Post-click Applied evidence is required before recording APPLIED
-- Stops on SECURITY_REQUIRED, AUTH_REQUIRED, hourly/daily limits, or critical errors
-- No input() prompts anywhere
-
-**Output:**
-- Per-job decision table with: company, title, native/external, filter results, Gemini result, gate result, outcome
-- Final summary with counts
-- Exit code 0 on normal completion, non-zero on AUTH/SECURITY/critical stop
-- Normal completion includes reaching the configured `max_applications` limit: exit 0, status `COMPLETED`. AUTH/SECURITY stops return exit 2, other critical stops return exit 3, both reported as `FAILED`.
-- A candidate the application runner never inspected (browser session failure or unusable agent state) is recorded as `ERROR` and stops the run; it is never recorded as `SKIPPED` and never creates an application row.
-- Empty candidate list reported as "0 eligible jobs found" (not a failure)
-
-**Test Coverage:**
-- `backend/tests/test_autonomous_cycle.py` covers eligible native jobs, external jobs, unpaid jobs, excluded jobs, max-applications limit, dry-run flag, current-run isolation, bounded Gemini look-ahead, and terminal/per-job outcome reporting
-- All tests use isolated temporary SQLite database
-- No live Naukri activity, Gemini calls, or Apply clicks in tests
-
-## Phase 10 Application-Type Reliability
-
-Application-surface classification is evidence-driven and conservative. `detect_application_type()` checks visible external indicators first, then visible native selectors. When neither is present, it waits exactly 500 ms and observes again without reloading. The result is `AMBIGUOUS` if evidence remains absent. `ApplicationRunner` converts ambiguity to `NEEDS_ATTENTION` before application creation, preserving the rule that unknown state is never native.
-
-The full adapter suite passed with 96 tests. A read-only live check found no security challenge; Quadrasystems had hidden/non-visible native selector nodes but no visible evidence and remained `AMBIGUOUS` after settling, while Cisco showed visible `Apply on company site` and remained `EXTERNAL`.
-
-## Phase 10 Live Native Application Test: Blocked Candidate Boundary
-
-The 2026-10-01 live check used the existing persistent Playwright/Naukri adapter. Authentication was valid and no visible security challenge was encountered. The backend was ready, the profile was confirmed, preferences existed, schema columns were present, and application limits were unused.
-
-The adapter performed one bounded read-only discovery pass for the configured `Data Analyst` title and inspected five results. It did not click Apply. Four results failed duplicate, employment-type, or native-classification checks; the only native result was already processed. Because no candidate reached the complete hard-filter and AI-approved boundary, the application runner was not invoked and the database was not modified. This preserves the rule that no application is created or marked successful without a safe eligible candidate and observed confirmation evidence.
-
-Automated successful application count remains 0; live submission validation is still pending.
-
-## Phase 10 Database Schema Migration
-
-**Mechanism:** Idempotent additive schema migration using column existence checks.
-
-**Implementation Pattern:**
-
-```python
-# In backend/database/database.py initialize_database()
-
-def initialize_database() -> None:
-    """Initialize schema and apply additive migrations."""
-    Base.metadata.create_all(bind=engine)
-
-    # Migration 1: is_dry_run column (Phase 9B-4)
-    if "is_dry_run" not in {
-        column["name"] for column in inspect(engine).get_columns("applications")
-    }:
-        with engine.begin() as connection:
-            connection.execute(text(
-                "ALTER TABLE applications ADD COLUMN is_dry_run BOOLEAN NOT NULL DEFAULT FALSE"
-            ))
-
-    # Migration 2: confirmation_evidence column (Phase 10)
-    if "confirmation_evidence" not in {
-        column["name"] for column in inspect(engine).get_columns("applications")
-    }:
-        with engine.begin() as connection:
-            connection.execute(text(
-                "ALTER TABLE applications ADD COLUMN confirmation_evidence TEXT NULL"
-            ))
-```
-
-**Characteristics:**
-- Runs during FastAPI lifespan initialization (before request handling)
-- Idempotent: checks column existence before attempting to add
-- Non-destructive: additive only, no drops or truncates
-- Data-preserving: existing rows unaffected
-- Dialect-compatible: uses standard SQL for both SQLite and PostgreSQL
-
-**Schema Validation:**
-
-```python
-# In backend/api/routes/health.py
-
-def _check_schema_compatibility(db: Session) -> dict:
-    """Phase 10: Check if database schema matches current models."""
-    engine = db.get_bind()
-    inspector = inspect(engine)
-    
-    required_columns = [
-        ("applications", "confirmation_evidence"),
-        ("applications", "is_dry_run"),
-    ]
-    
-    missing = []
-    for table_name, column_name in required_columns:
-        columns = inspector.get_columns(table_name)
-        column_names = {col["name"] for col in columns}
-        if column_name not in column_names:
-            missing.append(f"{table_name}.{column_name}")
-    
-    return {
-        "compatible": len(missing) == 0,
-        "missing": missing
-    }
-```
-
-## Checkpoint C2 policy
-
-The cycle enforces a zero-year experience cap and a strict IT-scope gate in
-both `MatchEngine` and the final safety gate. A job passes IT scope when its
-industry/department/role-category metadata is an allowed IT value; since the D5
-relaxation, a missing industry field also passes when the title contains an IT
-role/title keyword, and unrelated titles are still rejected upstream by
-deterministic role targeting. Discovery rejects
-over-cap cards before opening their pages and bounds scanning with
-`--max-cards` (default 150). External links are recorded without following
-company links, and visible native questions stop the flow for review.
-
-**Readiness Integration:**
-
-- `GET /api/readiness` includes schema compatibility check
-- Reports `schema: compatible` on success
-- Reports `schema: incompatible: <missing columns>` if migration needed
-- Returns `ready: not_ready` until schema is compatible
-
-**Standalone Execution:**
-
-```bash
-python -m backend.database.database
-# Outputs: Migration status, SUCCESS/FAILED, exit code 0/1
-```
-
-**Compatibility:**
-- SQLite: Fully tested and working (data/naukri_agent.db migrated and verified)
-- PostgreSQL: SQL syntax validated for compatibility
-- Column types: BOOLEAN (INTEGER in SQLite, BOOLEAN in PG), TEXT (standard)
-
-**Test Coverage:**
-- 7 focused migration tests in backend/tests/test_schema_migration.py
-- Old schema migration adds confirmation_evidence
-- Migration preserves existing rows and statuses
-- Migration is idempotent (runs twice safely)
-- Current schema requires no changes
-- Database isolation (never uses production DB)
-- Full suite: 557 tests passing
-
----
-
-## Phase 9 Notifications
-
-`NotificationService` is the single notification boundary. It persists notification records before delivery and uses the replaceable `SMTPEmailSender` only for email transport. SMTP credentials and recipients come from `NAUKRI_AGENT_` settings and are never included in logs. Delivery failures and missing configuration produce a `FAILED` notification record and do not raise into application/job processing. The service exposes typed helpers for critical errors, authentication requirements, security challenges, external applications, and evening summaries.
-
-The scheduler evaluates the evening summary during the configured 8 PM hour in `notification_timezone`; a date-based deduplication key prevents duplicate delivery. The history endpoint is `GET /api/notifications`, and the dashboard shows recent persisted records. Tests use a fake sender; no real SMTP delivery has been performed.
-
-## Phase 10 Application Boundary Fix
-
-`NotificationService` is the single notification boundary. It persists notification records before delivery and uses the replaceable `SMTPEmailSender` only for email transport. SMTP credentials and recipients come from `NAUKRI_AGENT_` settings and are never included in logs. Delivery failures and missing configuration produce a `FAILED` notification record and do not raise into application/job processing. The service exposes typed helpers for critical errors, authentication requirements, security challenges, external applications, and evening summaries.
-
-The scheduler evaluates the evening summary during the configured 8 PM hour in `notification_timezone`; a date-based deduplication key prevents duplicate delivery. The history endpoint is `GET /api/notifications`, and the dashboard shows recent persisted records. Tests use a fake sender; no real SMTP delivery has been performed.
-
-## Phase 10 Application Boundary Fix
-
-The application boundary is now evidence-driven and offline-validated. After a native Apply click,
-the adapter waits for explicit visible evidence within 8 seconds:
-
-```text
-Apply button click
-    ↓
-Wait for post-click evidence (max 8s)
-    ↓
-Applied evidence detected?
-    ├─ YES: #already-applied, .already-applied, exact "Applied", or 'Applied to "<title>"'
-    │   → Return ApplicationStartResult.APPLIED
-    │
-Visible application container detected?
-    ├─ YES: Dialog, drawer, modal, or form element visible
-    │   → Return ApplicationStartResult.FORM_OPENED (proceed to questions)
-    │
-Neither detected within timeout?
-    └─ → Return ApplicationStartResult.NEEDS_ATTENTION (no retry without manual reset)
-```
-
-**Post-click window mechanics (Run #59 fix):** each polling iteration runs the
-header/banner applied checks and then the application-container check. The
-page-wide element scan inside `detect_applied_state()` (two round trips per
-element across ~1,000 elements on a captured Naukri job page) is deferred: it
-runs exactly once after the window expires, before the reload decision, via
-`detect_applied_state(page, scan_whole_page=False)` inside the loop. Run #59
-measured the previous ordering consuming the entire window in one pass (Apply
-click `03:12:49.075`, reload decision `03:13:02.379` = 13.3s for an 8s bound),
-leaving the container check effectively unobserved. The terminal
-`NEEDS_ATTENTION` warning records `page.url`.
-
-**External application evidence (E5-R5.4 native-first ordering):**
-`_observe_application_type()` first checks for a visible native Apply control
-(`_find_scoped_apply_button`); when one exists the page is `NAUKRI_NATIVE` and
-the external scan never runs - a visible native button is authoritative, so an
-external-apply phrase appearing only in job-description prose cannot reclassify
-a native page as `EXTERNAL`. Only when no native control is visible does the
-external body-scan run over the `external_text_indicators` vocabulary, logging
-which indicator matched so an `EXTERNAL` decision is attributable. Genuine
-external CTAs never render a native Apply button, so they still classify
-`EXTERNAL`. The URL persisted for an `EXTERNAL_APPLICATION` row comes from
-`get_external_redirect_url()`, which returns only a non-Naukri link whose own
-visible text matches that same vocabulary; when no such link exists it returns
-`None` and the runner records `job.url`. Page-chrome links (promos, footers,
-social) are never recorded as redirect targets - 19 of the 20 historical
-`EXTERNAL_APPLICATION` rows carried the identical AmbitionBox promo URL and the
-remaining one a Naukri Facebook URL, because the old code returned the first
-non-Naukri anchor on the page.
-
-**Validation instrumentation (E5-R4.2, read-only):** the apply flow emits an
-attributable trail without changing any application behavior:
-
-```text
-External classification      -> matched indicator + page URL
-External URL resolution      -> CTA link text + href  (or explicit job-url fallback)
-Apply click                  -> page url before click, page url after click
-New tab / popup              -> bounded wait_for_event("page") over
-                                window + reload settle + 5s grace
-                                -> new_tab_detected=yes|no  (read-only observer)
-Each bounded-window check    -> post-click check #N at +X.XXs: applied=... container=...
-Window close                 -> post-click window closed: elapsed=... checks=...
-Terminal NEEDS_ATTENTION     -> terminal_state=NEEDS_ATTENTION checks=N screenshot=<path>
-                                (data/apply_terminal_<label>_<stamp>.png)
-```
-
-The observer never clicks, fills, navigates, or closes the page it watches;
-no form is submitted, no application/retry-queue/preference record is written,
-security checks still run after the click and after the reload, and `APPLIED`
-still requires positive visible evidence.
-
-**Offline DOM harness (E5-R4.3, optional):** the detection layer above is
-covered without touching Naukri by `backend/tests/test_naukri_adapter_offline_dom.py`
-(9 tests). Each test starts headless Chromium with no persistent profile,
-aborts every request at the context level (`context.route("**/*")`, zero
-network egress), and feeds the real adapter's read-only methods a
-`page.set_content()` document: the saved snapshot `data/job_page_snapshot.html`
-(gitignored local artifact; skipped when absent) for native classification,
-duplicate-ID header selection, absent applied/container evidence, page-chrome
-external links (`get_external_redirect_url` -> `None`), and the security gate;
-and a controlled synthetic page for external attribution, CTA grounding,
-applied-state evidence, form-container detection, screenshot capture under
-`tmp_path`, and both popup-observer outcomes. The popup probe clicks a neutral
-local button that opens `about:blank` - no Apply control exists on the page.
-The module is skipped with a clear reason when `playwright` or its Chromium
-binaries are unavailable, so the normal backend suite does not depend on
-Chromium. What remains live-only: whether Naukri's real Apply click opens a
-popup, server-side instant-apply persistence behind the D5 reload decision,
-real click/redirect timing, live security challenges, DOM drift versus the
-2026-10-02 snapshot, and auth/session-gated rendering.
-
-**Stale-external reconciliation (E5-R5.3):** jobs locked by the pre-E5-R4.1
-false external classification are released by a human-triggered,
-signature-scoped reconciliation - never automatically:
-
-```text
-ApplicationService.reconcile_stale_externals()   (service.py; POST
-/api/applications/reconcile-stale-externals; no parameters)
-  selects  ONLY  status == EXTERNAL_APPLICATION
-           AND  external_url == STALE_EXTERNAL_PAGE_CHROME_URL
-                (exact byte-for-byte match; the proven AmbitionBox
-                 page-chrome URL, never a job-specific external CTA)
-  reclassifies matching rows -> SKIPPED
-  records  STALE_EXTERNAL_RECONCILE_SKIP_REASON  (prior classification
-           came from the known page-chrome URL; no external application
-           was opened, submitted, or confirmed; job released to the
-           normal candidate pipeline)
-  clears   needs_attention
-  preserves the record, external_url, and application_method (audit)
-  returns  {affected_count, application_ids, job_ids, signature}
-  idempotent: a second call matches nothing
-```
-
-Never modified, even when carrying the signature URL: `APPLIED`,
-`SUBMITTED` (the persisted `SUBMITTED_UNCONFIRMED` status),
-`NEEDS_ATTENTION` (jobs 87/120 stay locked - remote status uncertain,
-human resolution required), `FAILED`, already-`SKIPPED`. Nothing is
-deleted; the autonomous cycle never calls this path; released jobs
-re-enter through the normal candidacy query, runner guard, duplicate
-protection, safety gate, and limits - no filter is bypassed. The
-reconciled `SKIPPED` status satisfies both lock layers (the candidacy
-query's `status == SKIPPED` branch and the runner's EXTERNAL/
-NEEDS_ATTENTION guard), so the job becomes a candidate again only if
-every deterministic rule passes on its own merits.
-
-E5-R6 (see the E5-R6 section at the top of this document) extended the
-same method and endpoint with a second rule that recovers
-`EXTERNAL_APPLICATION` rows whose `external_url` equals the linked
-job's own canonical Naukri URL after safe normalization (the pre-R5.4
-body-scan-first misclassification signature). The response now also
-reports `recovered_count`, `recovered_application_ids`,
-`recovered_job_ids`, and `remaining_external_ids`; protected statuses
-and genuine external destinations remain untouched by both rules.
-
-**Truthful outcomes and bounded error recovery (E5-R5.2):** the runner/cycle
-outcome path separates a clicked-but-unconfirmed submission from a confirmed
-application, and isolates runner errors:
-
-```text
-submit clicked + confirm_submission() positive   -> APPLIED
-                                                   (status=APPLIED, evidence stored,
-                                                    applications_count += 1)
-submit clicked + confirmation absent             -> SUBMITTED_UNCONFIRMED
-                                                   (status stays SUBMITTED, applied_at
-                                                    set, no retry/resubmission,
-                                                    submitted_unconfirmed += 1,
-                                                    budget NOT consumed, never
-                                                    reported under "Applied")
-runner ERROR (no outcome reported)               -> 1st: recorded, loop continues
-                                                   2nd consecutive: abort with
-                                                   "Two consecutive runner errors;
-                                                   aborting remaining candidates"
-                                                   (non-normal stop, exit code 3)
-valid non-ERROR outcome                          -> resets the consecutive-error counter
-per-candidate exception                          -> neither increments nor resets it
-SECURITY_REQUIRED / AUTH_REQUIRED                -> immediate abort (unchanged)
-```
-
-`ApplicationRunner.stats` and the cycle's `_run_applications` stats both carry
-`submitted_unconfirmed`; `_process_single_job` includes it in
-`reported_outcomes` so an unconfirmed-only result can never be misread as
-`ERROR`. `AutonomousCycleRunResponse.stats` is a free-form dict, so the key
-serializes additively with no schema change. Budget, duplicate safeguards,
-safety gates, and hourly/daily limits are unchanged and remain authoritative.
-
-### Question Detection Scoping (Phase 10)
-
-Questions are detected only within visible application containers. Each field must satisfy:
-- Visible on page
-- Enabled (not disabled)
-- Non-zero bounding box (width > 0, height > 0)
-- Not readonly
-- Not hidden-type input
-- Not header/search input patterns
-
-Rejected fields are skipped silently; question detection returns only qualified fields.
-
-### Experience Computation (Phase 10)
-
-`compute_profile_experience_years()` computes actual elapsed years from `start_date`/`end_date`:
-- Parses multiple date formats (YYYY-MM, Month YYYY, etc.)
-- Handles "Present" as current datetime
-- Calculates (end - start) / 365.25 years
-- Falls back to entry count if dates unparseable
-- Returns 0.0 for no experience
-
-Used consistently in:
-- Final safety gate experience check
-- Profile answer generation
-- Experience hard filter evaluation
-
-The +2 year tolerance is preserved and reported in rejection reasons.
-
-## Gemini V1 Model Configuration
-
-The V1 default Gemini model is `gemini-flash-lite-latest`, selected after `gemini-2.5-flash` repeatedly returned `429 RESOURCE_EXHAUSTED` and the alternate completed the existing structured `JobAnalysis` flow. `GeminiProvider` continues to pass the configurable `Settings.gemini_model` value directly to the `google.genai` client; `NAUKRI_AGENT_GEMINI_MODEL` can override the default. `gemini-3.1-flash-lite-preview` was also tested successfully but is not selected for V1. Prompts, schema parsing, retry behavior, and provider abstraction are unchanged. Phase 9B-3 live native form validation remains incomplete.
-
-## Phase 9B-3 Production JD Extraction Fix
-
-`NaukriAdapter.fetch_job_description()` preserves the security check and extracts rendered text using this order:
-
-1. visible `[class*="dang-inner-html"]`
-2. visible `section[class*="job-desc-container"]`
-
-The first valid visible element wins. The method returns normalized text and returns an empty string only when neither selector yields a visible element or when the existing guarded fetch path fails. This fixes the runtime-suffixed Naukri hashed-class mismatch identified by live diagnostics without changing application, matching, scheduler, or Gemini behavior. Focused adapter tests cover selector variants, precedence, hidden-element fallback, and no-match behavior. Phase 9B-3 live native application validation remains incomplete.
-
-## Phase 9B-3 Live JD Extraction Diagnostic: BLOCKER IDENTIFIED
-
-The current live diagnostic inspected two persisted native Naukri pages without clicking Apply or invoking application code. First American returned HTTP 200 with visible body text length 7,264; ReactZ Consulting returned HTTP 200 with visible body text length 4,486. Both pages exposed JD text in rendered DOM elements. `NaukriAdapter.fetch_job_description()` currently checks `.job-desc` and exact `.styles_JDC__`; both matched zero elements on both pages. Observed structures were `section.styles_job-desc-container__txpYf` and `div.styles_JDC__dang-inner-html__h0K4t`, with visible JD text lengths of 2,835/2,096 and 1,416/687 respectively. No iframe was involved. This is a selector-strategy defect, not missing page content. Production selectors were not changed in this checkpoint. Gemini is deferred because quota is exhausted, and no Apply or submit action occurred.
-
-## Phase 9B-3 Diagnostic Job Description Flow
-
-The bounded live diagnostic now reuses `NaukriAdapter.fetch_job_description()` for each selected real job before Gemini analysis. The returned text is assigned to the diagnostic `Job.description`, persisted, and included in the Gemini context. Candidate inspection occurs before selection; only native candidates with an existing or newly obtained APPLY recommendation can be selected, while external candidates are excluded. Persisted analyses are reused and quota exhaustion stops further analysis. This keeps the diagnostic data flow aligned with production DiscoveryService without changing production discovery, Gemini, matching, scheduler, or application code. The change was validated offline only; no live search or Gemini request was run, and Phase 9B-3 remains incomplete.
-
-## Phase 9B-3 Native Application Detection Fix
-
-Live inspection of a real First American Data Analyst page found a Naukri-native application surface: a visible `button#apply-button` / `button.apply-button` control with exact text `Apply`, and no `Apply on company site` control. The adapter previously recognized only older selectors and incorrectly returned `EXTERNAL`.
-
-`NaukriAdapter.detect_application_type()` now checks rendered external indicators first, then stable native selectors and visible exact-text `Apply` buttons. `start_application()` uses the same stable `#apply-button` and `button.apply-button` selectors so the detected native flow can start. Hashed CSS classes are not used. Focused regression tests cover native controls, external indicators, pages without controls, and the current native start selector. A new live browser run is still required; this checkpoint did not submit an application.
-
-## Test Database Isolation Checkpoint
-
-Runtime persistence and test persistence are separate. The application continues to use the configured V1 SQLite database at `data/naukri_agent.db`, while `backend/tests/conftest.py` creates a disposable temporary file-backed SQLite engine for tests. Before tests run, database/session references used by the FastAPI app and directly imported services are redirected to that test engine. `Base.metadata.drop_all()` and `create_all()` therefore operate only on the disposable test database.
-
-This prevents the test suite from deleting profiles, resumes, jobs, analyses, preferences, or applications in the runtime database. Regression coverage verifies that the test path differs from the production path and that resetting the test schema leaves production row counts unchanged. Focused persistence tests passed, and the full backend suite passed with 512 tests.
-
-## Phase 9B-3 False-Positive Fix Checkpoint
-
-Live Naukri diagnosis found that a normal HTTP 200 job page was incorrectly classified as a security challenge because raw HTML contained Naukri's internal `"showCaptcha":false` state value. `NaukriAdapter._check_security()` now evaluates `page.inner_text("body")` rather than raw `page.content()`. Bare `captcha` is not a standalone visible-text trigger; explicit visible reCAPTCHA/hCAPTCHA labels, human-verification phrases, security challenges, login indicators, and blocked-access indicators remain safety gates. This preserves the rule that actual visible security challenges stop automation without adding bypass or stealth behavior.
-
-The targeted regression suite covers the raw `showCaptcha:false` value, bare visible `captcha`, explicit visible security indicators, and a normal Naukri job page. 77 Naukri adapter tests and 509 full backend tests are recorded as passing. A second real visible-browser Naukri dry-run remains the next validation step; this checkpoint does not claim Phase 9B-3 live validation is complete, and no application submission occurred.
-
-## Profile Duplicate ERROR Recovery (Phase 9B-2C)
-
-When a duplicate resume upload finds an existing profile in `ERROR` status, the pipeline recovers:
-
-```text
-Duplicate resume upload (same SHA-256)
-    ↓
-Existing Resume record found
-    ↓
-Check existing Profile status
-    ↓
-CONFIRMED / REVIEW_REQUIRED → reuse existing profile (no extraction)
-    ↓
-ERROR → read stored PDF bytes from disk
-    ↓
-Re-run PDF text extraction (PdfTextExtractor)
-    ↓
-Re-run Gemini profile extraction (_extract_profile_with_retry)
-    ↓
-Update existing Profile record in-place (no new records)
-    ↓
-Success: ERROR → REVIEW_REQUIRED, confirmed=false
-Failure: remains ERROR
-```
-
----
-
-## Phase 9B-2B Defect Fixes
-
-### prompt_version Persistence (Issue 1)
-
-`AIQueueService.process_item()` now uses `JOB_ANALYSIS_PROMPT_V1` from `prompts.py`:
-
-```text
-Gemini analysis completes
-    ↓
-JobAnalysisModel created with prompt_version=JOB_ANALYSIS_PROMPT_V1
-    ↓
-Persisted to database (non-null, traceable to actual prompt)
-```
-
-### Experience Year Computation (Issue 2)
-
-`compute_profile_experience_years()` in `normalizer.py` replaces `len(experience_list)`:
-
-```text
-Experience list from profile
-    ↓
-For each entry: parse start_date + end_date
-    ↓
-Compute elapsed years (positive deltas only)
-    ↓
-Sum across all entries
-    ↓
-Fallback: len(list) if no dates parseable
-```
-
-Hard-filter flow unchanged:
-
-```text
-MatchEngine.evaluate_job()
-    ↓
-compute_profile_experience_years(profile.experience)
-    ↓
-if exp_min > user_exp_years + 2 → SKIP (never reaches Gemini)
-    ↓
-else → Gemini analysis (advisory)
-```
-
----
-
-## Phase 9A: Scheduler Automation Loop (Complete Pipeline)
-
-The scheduler now orchestrates the complete Phase 9A automation loop:
-
-```text
-Scheduler Cycle (triggered every N minutes or manually)
-    ↓
-1. Discover Jobs (NaukriAdapter: search, fetch descriptions, deduplicate)
-    ↓
-2. Persist Jobs (Database: store in Job table with status=DISCOVERED)
-    ↓
-3. Apply Hard Filters (MatchEngine: deterministic rules on location, salary, experience, employment type)
-    ↓
-4. Enqueue Eligible Jobs (AIQueueService: jobs passing hard filters → AI queue)
-    ↓
-5. Process AI Queue (GeminiProvider: analyze jobs, validate Pydantic schema)
-    ↓
-6. AI Results Persist (JobAnalysisModel: store match_score, recommendation, etc.)
-    ↓
-7. Identify Completed Jobs (AIQueueItem.status = COMPLETED)
-    ↓
-8. Invoke ApplicationRunner (pass job IDs to ApplicationRunner.run_applications)
-    ↓
-9. Application Runner Flow (described below - unchanged from Phase 8)
-    ↓
-10. Record Results (Application model: status, applied_at, failure_reason, etc.)
-```
-
-### Key Guarantees
-
-- **Hard filters are authoritative**: Gemini analysis is advisory only. Hard filters block jobs from entering the application path.
-- **ApplicationRunner remains sole executor**: All application submission goes through ApplicationRunner, which runs the final safety gate.
-- **Failure isolation**: Single job failures don't cascade; processing continues safely.
-- **Quota enforcement**: If Gemini quota is exhausted, queue processing stops gracefully without applying jobs.
-- **No live submissions in Phase 9A**: Infrastructure ready, but real Naukri submissions deferred to Phase 9B.
-
-### Scheduler Methods
-
-- `_apply_hard_filters_and_enqueue(db)` → Apply MatchEngine hard filters to DISCOVERED jobs, enqueue eligible ones
-  - Returns stats: discovered, hard_filtered, queued, errors
-  - Skips jobs already analyzed or queued
-  - Continues on individual job failures
-
-- `_process_ai_queue_items(db)` → Process up to 5 queue items per cycle through Gemini
-  - Returns stats: processed, completed, retry_pending, quota_blocked, needs_attention, failed, errors
-  - Recovers stale items first
-  - Stops gracefully on quota exhaustion
-
-- `_invoke_application_runner(db)` → Find jobs with completed AI analysis, pass to ApplicationRunner
-  - Returns stats: candidates, applied, skipped, needs_attention, failed, errors
-  - Skips jobs without AI analysis (final safety gate requires analysis)
-  - ApplicationRunner runs in same database session
-
----
-
-## Distributed Work Coordination Architecture (Phase 8.5B)
-
-Multiple workers safely claim and process distributed AI queue work without race conditions:
-
-```text
-AI Queue Work Items (Jobs requiring Gemini analysis)
-    ↓
-Work Coordination Fields (claimed_by, last_heartbeat_at, available_at)
-    ↓
-Worker Claiming (PostgreSQL: SELECT...FOR UPDATE SKIP LOCKED, SQLite: transaction-safe)
-    ↓
-Ownership Verification (only claiming worker can heartbeat/release/complete/fail)
-    ↓
-Heartbeat Tracking (prevents stale detection, updates last_heartbeat_at)
-    ↓
-Stale Detection (items without heartbeat > 30min)
-    ↓
-Stale Recovery (safe escalation to NEEDS_ATTENTION if max_attempts exceeded)
-    ↓
-Release/Complete/Fail Operations (terminal states, idempotent where appropriate)
-    ↓
-Existing Application Safety Gates (duplicate detection, safety gate, application limits) - UNCHANGED
-```
-
-### Work Coordination Fields (AIQueueItem Extensions)
-
-- `claimed_by` (String, nullable, indexed): worker_id currently owning this item
-- `last_heartbeat_at` (DateTime UTC, nullable): timestamp of latest heartbeat from claiming worker
-- `available_at` (DateTime UTC, nullable, indexed): timestamp after which item is eligible for claiming again
-
-### Work Coordination Service
-
-**Claiming:**
-- `claim_next_work(worker_id)` → atomically select next eligible item and assign to worker
-  - Selection: QUEUED or RETRY_PENDING status, no owner, available_at null or past
-  - Ordering: priority descending, then created_at ascending (deterministic)
-  - PostgreSQL: SELECT...FOR UPDATE SKIP LOCKED (prevents race conditions)
-  - SQLite: transaction-safe selection (see compatibility below)
-  - Returns work dict or None if no eligible work
-
-**Ownership:**
-- `heartbeat_work(worker_id, work_id)` → update last_heartbeat_at if owner
-  - Requires: worker owns item, item not in terminal state (COMPLETED/FAILED/NEEDS_ATTENTION)
-  - Updates: last_heartbeat_at = now
-  - Raises: WorkNotOwnedError if worker doesn't own, WorkStateError if terminal state
-
-**Stale Detection & Recovery:**
-- `detect_stale_work()` → find items with owner but no heartbeat > 30min
-  - Returns: list of stale work dicts
-  - Does not modify state
-  - Ignores: completed, failed, needs_attention, unclaimed items
-
-- `recover_stale_work(work_id)` → clear ownership and advance stale item safely
-  - Safety: if max_attempts NOT exceeded → RETRY_PENDING (eligible immediately)
-  - Safety: if max_attempts exceeded → NEEDS_ATTENTION (human review required)
-  - Preserves: existing duplicate detection, safety gates, application limits
-  - Never blindly retries with uncertain execution outcome
-
-**Lifecycle:**
-- `release_work(worker_id, work_id)` → release ownership with 5min backoff
-  - Requires: worker owns item
-  - Result: claimed_by cleared, available_at set to now+5min
-  - Use case: worker cannot process now, defer to later or different worker
-
-- `complete_work(worker_id, work_id)` → mark COMPLETED, clear ownership
-  - Requires: worker owns item (idempotent if already completed)
-  - Allows: repeated calls (idempotent)
-  - Result: status = COMPLETED, ownership cleared, terminal
-
-- `fail_work(worker_id, work_id, error, reason)` → mark FAILED, clear ownership
-  - Requires: worker owns item
-  - Result: status = FAILED, ownership cleared, terminal
-  - Captures: error details for debugging
-
-**Worker Load:**
-- `get_worker_load(worker_id)` → current work stats
-  - Returns: claimed_count (all owned items), processing_count (PROCESSING status)
-
-### Database Compatibility
-
-**PostgreSQL (Production):**
-- Uses atomic `SELECT...FOR UPDATE SKIP LOCKED`
-- Prevents race conditions: one worker locks the best item, others skip to next
-- Guarantees: no two workers claim the same item
-- Transactions: isolation level READ COMMITTED sufficient
-- Best for: high concurrency, multiple workers
-
-**SQLite (Development/Testing):**
-- Uses transaction-safe fallback without row-level locking
-- Fallback: deterministic selection + commit within transaction
-- Limitation: multiple workers may briefly see the same item (no SKIP LOCKED)
-- Workaround: deterministic ordering ensures consistent behavior across runs
-- Testing: all 49 coordination tests pass with SQLite
-- Note: for production multi-worker scenarios, PostgreSQL required
-
-### Safety Preservation
-
-**Existing Application Safety is Authoritative:**
-- Duplicate detection: existing ApplicationService.check_duplicate_application() unchanged
-- Safety gate: existing ApplicationService.run_final_safety_gate() unchanged
-- Application limits: existing ApplicationLimitService.check_limits() unchanged
-- Stale recovery never bypasses these gates
-
-**Stale Recovery Safety:**
-- If execution outcome is uncertain (browser crash, no heartbeat, max_attempts exceeded):
-  - Recovery escalates to NEEDS_ATTENTION (requires human review)
-  - Never blindly retries application
-  - Preserves existing safety architecture
-
-**Ownership Rules:**
-- Only claiming worker can heartbeat/release/complete/fail
-- Different worker attempting operation raises WorkNotOwnedError
-- Prevents accidental work theft or overlap
-
-### Current Scope (Phase 8.5B)
-
-- Atomic work claiming
-- Ownership verification
-- Heartbeat tracking
-- Stale detection
-- Stale recovery (safety-preserving)
-- Release/complete/fail operations
-- Worker load tracking
-- PostgreSQL and SQLite support
-
-### Future Scope (Phase 8.5C+)
-
-- Cloud browser execution
-- Browser session migration
-- Remote browser lifecycle management
-- Cloud browser providers (Browserless, Browserbase)
-- Persistent cloud browser sessions
-- Kubernetes orchestration
-- Redis/Celery/RabbitMQ integration
-- Multi-region infrastructure
-
----
-
-## Worker Foundation Architecture (Phase 8.5A)
-
-
-Persistent worker identity layer enabling future cloud coordination:
-
-```text
-Worker Registration & Identity
-    ↓
-Worker Types (LOCAL_WINDOWS, CLOUD_BROWSER)
-    ↓
-Worker Status Lifecycle (STARTING, IDLE, RUNNING, PAUSED, STOPPING, STOPPED, ERROR)
-    ↓
-Worker Service Layer (register, get, list, update_status)
-    ↓
-Worker API Endpoints (status, register, get by ID)
-    ↓
-Future: Distributed Task Claiming, Heartbeat, Stale Recovery (Phase 8.5B+)
-```
-
-### Worker Model
-
-- `worker_id` (UUID, unique, indexed): persistent identity across sessions
-- `worker_type` (Enum): LOCAL_WINDOWS (current) or CLOUD_BROWSER (future)
-- `status` (Enum): STARTING, IDLE, RUNNING, PAUSED, STOPPING, STOPPED, ERROR
-- `runtime_environment` (String): identifies deployment context
-- `created_at`, `updated_at`, `started_at`, `stopped_at` (DateTime UTC): lifecycle tracking
-- No sensitive data: passwords, cookies, sessions, API keys, or Naukri credentials never stored
-
-### Worker Service
-
-- `register_worker(request)`: safely repeatable; same type+environment returns same worker_id
-- `get_worker(worker_id)`: retrieve by ID; returns None if not found
-- `list_workers()`: all workers with active count (excludes STOPPED/ERROR)
-- `update_worker_status(worker_id, status)`: transitions status; tracks started_at on RUNNING, stopped_at on STOPPED/ERROR
-
-### Worker API
-
-- `GET /api/worker/status`: list all workers with active count
-- `POST /api/worker/register`: register new or return existing worker
-- `GET /api/worker/{worker_id}`: retrieve specific worker; 404 if not found
-
-### Current Scope
-
-- Worker identity and registration
-- Status lifecycle tracking
-- Persistent database storage (SQLite/PostgreSQL)
-- No task claiming, heartbeat, or stale recovery
-- No browser lifecycle refactoring
-- No cloud execution
-
-### Future Scope (Phase 8.5B-D)
-
-- Distributed task claiming with PostgreSQL row locking
-- Worker heartbeat and stale-worker detection/recovery
-- Browser lifecycle refactoring (currently direct)
-- Cloud browser worker execution
-- Task assignment and worker coordination
-
----
-
-## Hosted FastAPI Deployment Architecture (Phase 8.3)
-
-The backend has been prepared for production hosting with enhanced configuration, security, and monitoring:
-
-```text
-Production Configuration
-    ↓
-Environment Separation (LOCAL_WINDOWS/CLOUD)
-    ↓
-CORS Configuration (configurable origins)
-    ↓
-Health/Readiness Endpoints
-    ↓
-Production-Safe Error Handling
-    ↓
-Production-Safe Logging (sensitive info redaction)
-    ↓
-Database Configuration (SQLite/PostgreSQL)
-    ↓
-Storage Configuration (abstraction ready for object storage)
-    ↓
-Browser/API Separation (no auto-start)
-```
-
-### Production Configuration
-
-- Environment detection: LOCAL_WINDOWS (V1) vs CLOUD (future)
-- Production mode detection: development vs production
-- CORS origins: configurable via `NAUKRI_AGENT_FRONTEND_ORIGINS` (comma-separated)
-- Database URL: SQLite locally and external PostgreSQL required for production readiness
-- Runtime environment: configurable via RUNTIME_ENVIRONMENT
-- All configuration driven by environment variables with NAUKRI_AGENT_ prefix
-
-### CORS Strategy
-
-- Development mode: allows localhost origins for convenience
-- Production mode: uses only configured origins from FRONTEND_ORIGINS
-- Multiple origins supported via comma-separated list
-- Wildcard origins NOT used in production
-- Configurable methods: GET, POST, PUT, OPTIONS, DELETE
-- Configurable headers: Content-Type, X-Request-ID, Authorization
-
-### Health and Readiness
-
-- Liveness endpoint (/api/health): process-only status; no database or Gemini work
-- Readiness endpoint (/api/readiness): detailed component status
-- Readiness checks: database, configuration, storage, AI provider, runtime environment
-- Production mode requires PostgreSQL, Gemini configuration, and explicit non-wildcard frontend origins
-- Component status uses safe machine-readable values without raw exception details
-- Ready for container orchestration and health checks
-
-### Error Handling
-
-- Catch-all exception handler prevents sensitive information exposure
-- Generic exceptions return safe error messages without stack traces
-- Application errors return structured responses with error categories
-- Validation errors return 422 with category information
-- No filesystem paths, environment variables, or secrets in API responses
-
-### Logging
-
-- Development mode: standard JsonFormatter for debugging
-- Production mode: SafeJsonFormatter with automatic redaction
-- Sensitive keys, nested structures, credential URLs, authorization headers, cookies, sessions, and exception details are redacted or omitted
-- Structured logging with timestamp, level, message, and component
-- Extra fields: component, event, error_category, request_id, job_id, application_id
-- Logs never contain API keys, credentials, or sensitive user data
-
-### Database Configuration
-
-- SQLite default for local development (sqlite:///./data/naukri_agent.db)
-- PostgreSQL support via `NAUKRI_AGENT_DATABASE_URL`, with transparent `postgresql://` to `postgresql+psycopg://` conversion (Phase 8.2)
-- PostgreSQL connection pooling enabled for cloud deployment (`pool_size`, `max_overflow`)
-- SQLite directory creation for both relative and absolute paths
-- No SQLite-only assumptions preventing hosted operation
-- Database initialization works correctly in both modes
-- Connection pooling and session management via SQLAlchemy
-
-### Storage Configuration
-
-- StorageService abstraction for file operations
-- Local filesystem storage for LOCAL_WINDOWS (V1)
-- Methods: store_file, read_file, delete_file, file_exists, get_file_size
-- Directory management: create_directory, delete_directory
-- Path resolution with resolve_path()
-- Ready for future object storage (S3/Azure/GCS) without code changes
-
-### Browser/API Separation
-
-- API process does NOT auto-start Playwright browser
-- Browser only starts when explicitly called via DiscoveryService
-- Clear separation between API process and browser worker
-- RuntimeContext controls browser automation support
-- LOCAL_WINDOWS: browser automation supported
-- CLOUD: browser automation disabled (future remote browser)
-- Safe for future cloud architecture with separate browser worker
-
-### Frontend API Configuration
-
-- Environment-based backend URL via VITE_API_BASE_URL
-- Development: `http://127.0.0.1:8000` fallback when the variable is absent
-- Production: a required public HTTPS `VITE_API_BASE_URL`; production never falls back to localhost
-- The centralized client normalizes a trailing slash and appends `/api` once, so either an API origin or an existing `/api` URL is accepted
-- All frontend API consumers use the centralized client, with timeout, network, HTTP, and malformed-response handling that does not expose backend details
-
-### Vercel Frontend Configuration (Phase 8.4)
-
-- There is no root `vercel.json` (the file that ran `npm --prefix frontend ci`, `npm --prefix frontend run build`, and published `frontend/dist` was removed in commit `b646607`). The build is driven by the Vercel project Root Directory `frontend`, which installs `frontend/package.json`, runs the Vite build, and publishes `frontend/dist`.
-- `VITE_API_BASE_URL` is public browser configuration only. It must not contain API keys, credentials, cookies, session data, or private tokens.
-- The Vercel origin is configured on the backend through `NAUKRI_AGENT_FRONTEND_ORIGINS`; multiple explicit origins remain supported.
-- The current dashboard uses in-page state and hash links rather than client-side browser-path routes, so no Vercel SPA rewrite is required.
-- This configuration is deployment preparation; no Vercel site has been deployed or verified.
-
-### Responsive Mobile Frontend Architecture (Phase 8.4.1)
-
-**Mobile-First Responsive Design:**
-- Responsive CSS with mobile-first breakpoints: 320px, 360px, 375px, 390px, 414px, 480px, 768px, 1024px, 1280px, 1440px+
-- Desktop layout (>768px): Sidebar (260px fixed) + topbar + content; mobile header and bottom nav hidden
-- Tablet layout (768px-1024px): Sidebar collapses to icons only (80px); mobile nav available
-- Mobile layout (<768px): Mobile header (56px) + content + bottom navigation (56px)
-
-**Mobile Header (56px, sticky):**
-- Hamburger menu button (44x44px touch target)
-- Brand text and icon ("Naukri Agent")
-- Notifications bell button (44x44px)
-- Hidden on desktop (>768px)
-
-**Sidebar Drawer (Mobile):**
-- Positioned fixed, slides in from left (left: -100% → left: 0)
-- Semi-transparent backdrop overlay (rgba(0,0,0,0.5), z-index 99)
-- Auto-closes when navigation item clicked or backdrop clicked
-- Full navigation menu maintained (Overview, Activity, Analytics, Profile, Preferences)
-- Jobs and Applications remain disabled (routes not implemented)
-
-**Bottom Navigation (56px, sticky, mobile only):**
-- 5 primary destinations: Home (Overview), Activity, Jobs (disabled), Apps (disabled), More (Analytics)
-- Active state indicator (color: primary-blue)
-- 44x44px+ touch targets per navigation item
-- Icon + label layout, vertically stacked
-- Hidden on desktop (>768px)
-
-**Responsive Component Layouts:**
-- Metrics: 4-column (desktop) → 2-column (tablet) → 1-column (mobile)
-- Analytics: 3-column (desktop) → 2-column (tablet) → 1-column (mobile)
-- Forms: 2-column (desktop/tablet) → 1-column (mobile)
-- Buttons: flex-wrap (desktop) → stack vertically (mobile)
-- Profile upload zone: horizontal layout → vertical stacking (mobile)
-- Status panels, cards, activity sections: responsive padding and margins
-
-**Touch-Friendly Controls:**
-- All interactive elements minimum ~44x44px
-- Form inputs on mobile: 16px font size (prevents iOS zoom-on-focus)
-- Focus states preserved with blue outline and light background
-- No hover states required for mobile interaction
-
-**Typography Responsiveness:**
-- h1: 26px (desktop) → 20px (small mobile)
-- h2: 18px (desktop) → 16px (small mobile)
-- Body text: 14px with responsive adjustments
-- Labels and badges: readable at all sizes
-
-**Content Safety:**
-- No accidental horizontal scrolling at critical breakpoints (320px, 360px, 375px, 390px, 414px)
-- All cards and components constrained to viewport width
-- Long text wraps properly
-- Tables/charts contained or scrollable within component bounds
-- Content padding-bottom accounts for fixed bottom nav (80px total)
-
-**Mobile UX Inspiration (Naukri-inspired, not copied):**
-- Compact mobile header with contextual actions
-- Drawer navigation pattern for secondary menu
-- Bottom navigation for primary destinations
-- Card-based presentation for jobs/applications/activity
-- Efficient vertical scrolling information hierarchy
-- Touch-optimized spacing and controls
-- Clear status indicators and agent state display
-
-**Desktop Preservation:**
-- Sidebar remains 260px fixed left on desktop (>1024px)
-- Topbar remains visible with page header and backend state
-- Content area max-width 1200px maintained
-- All desktop metrics/analytics/form layouts preserved
-- No mobile header or bottom nav on desktop
-- No functional regressions
-
-### Hosted Service Configuration
-
-- `Procfile` runs `uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}`.
-- `render.yaml` defines a Python web service using root `requirements.txt` and the platform-provided `PORT`.
-- Render configuration contains only environment-variable placeholders for PostgreSQL, Gemini, and frontend origins; it contains no secret values.
-- `python run.py` remains the local-development entry point and binds to its configured local host/port.
-
-### Security Considerations
-
-- CORS origins configured, no wildcard in production
-- Error responses don't expose stack traces or internal details
-- Logging redacts sensitive information automatically
-- Configuration properties don't expose API keys or secrets
-- API responses never return credentials or sensitive configuration
-- No filesystem paths in API responses
-- No environment variables in API responses
-- No secrets in logs or error messages
-
----
-
-## Cloud Readiness Architecture
-
-The application includes runtime and storage abstractions to support future cloud deployment while maintaining local-first V1 operation:
-
-```text
-RuntimeContext (environment detection)
-    ↓
-StorageService (file operations abstraction)
-    ↓
-Settings (environment variable driven configuration)
-    ↓
-Database (SQLite/PostgreSQL flexibility)
-```
-
-### Runtime Abstraction
-
-`RuntimeContext` provides environment-specific information and behavior without scattering environment checks throughout the codebase:
-
-- `RuntimeEnvironment.LOCAL_WINDOWS`: Desktop application on Windows (V1 current)
-- `RuntimeEnvironment.CLOUD_READY`: Server/cloud environment (future, not implemented in V1)
-- Auto-detects current runtime (Windows vs others)
-- Properties for: browser automation support, Windows auto-start support, persistent browser session support
-- Methods for: database URL retrieval, storage path resolution, directory paths
-- Global singleton instance with `get_runtime_context()` and `set_runtime_context()`
-
-### Storage Abstraction
-
-`StorageService` provides a clean interface for file operations, abstracting the underlying storage mechanism:
-
-- Methods for: `store_file`, `read_file`, `delete_file`, `file_exists`, `get_file_size`
-- Methods for: `list_files`, `create_directory`, `delete_directory`
-- Path resolution with `resolve_path()`
-- Directory management: resume storage, data storage, log storage, browser user data
-- Atomic file operations with temporary files
-- Global singleton instance with `get_storage_service()`
-
-### Configuration Enhancement
-
-Settings are now environment variable driven with `NAUKRI_AGENT_` prefix:
-
-- Storage paths changed from Path fields to string fields with property resolution
-- Properties for absolute path resolution: `resume_storage_path`, `data_path`, `log_path`, `browser_user_data_path`
-- Added `runtime_environment` configuration field
-- Support for both relative and absolute paths
-- Database URL supports both SQLite and PostgreSQL
-
-### Integration Points
-
-- `NaukriAdapter` uses `get_browser_user_data_dir()` from settings
-- `ResumeService` uses `StorageService` for file operations
-- All path resolution goes through storage abstraction
-- Database configuration supports both SQLite and PostgreSQL
-
-### Future Cloud Direction
-
-The abstractions enable future cloud deployment without changing business logic:
-
-- Cloud environments will use `CLOUD_READY` runtime mode
-- Storage abstraction enables S3/Azure Blob/GCS integration
-- Database abstraction enables PostgreSQL migration
-- Remote browser automation will be needed for cloud deployment
-- All existing V1 functionality remains local Windows only
-
-## Phase 1 Foundation
-
-The application is Windows-first and local-first. React provides the local dashboard, FastAPI owns API and orchestration boundaries, and SQLAlchemy isolates application code from SQLite-specific behavior.
-
-```text
-React + TypeScript dashboard
-           |
-        FastAPI API
-           |
-  Services / typed schemas
-     |                 |
-AIProvider       JobPlatformAdapter
-GeminiProvider   NaukriAdapter
-           |
- SQLAlchemy database boundary
-           |
-        SQLite (V1)
-```
-
-## Boundaries
-
-- API routes translate HTTP requests into typed schemas and service calls.
-- Services contain product behavior; Phase 1 includes only state and adapter boundaries.
-- `AIProvider` cannot access browser automation. `GeminiProvider` makes no API call until Phase 3.
-- `JobPlatformAdapter` isolates platform-specific work. `NaukriAdapter` contains Playwright-based job discovery automation implemented in Phase 5.
-- The database module owns engines and sessions. Future PostgreSQL support is configured through `DATABASE_URL`.
-
-## State Foundation
-
-`AgentState` is a typed API contract. `AgentStateManager` permits only declared transitions; persistence, scheduling, and recovery arrive in Phase 7.
-
-## Future Cloud Direction
-
-The boundaries permit later queue-backed workers and PostgreSQL while retaining API, rules, provider, and platform-adapter contracts. No cloud infrastructure is part of Phase 1.
-
-Cloud readiness infrastructure (implemented as foundational abstractions):
-
-- `RuntimeContext` enables environment-specific behavior without code changes
-- `StorageService` enables object storage (S3/Azure/GCS) without code changes
-- Database abstraction enables PostgreSQL migration without code changes
-- Environment variable configuration enables cloud deployment via environment
-- All V1 functionality remains local Windows only
-- Future cloud deployment will require: remote browser automation, object storage integration, PostgreSQL deployment
-
-## Profile Workflow (Phase 2)
-
-```text
-PDF upload -> validation -> SHA-256 storage -> PyMuPDF text extraction
-    -> narrow Gemini profile extractor -> Pydantic validation
-    -> REVIEW_REQUIRED -> user edit/save -> explicit CONFIRMED
-```
-
-`ProfileService` owns the workflow. It stores only generated resume filenames and hashes in the database; API responses never expose local paths or raw resume text. A newly uploaded resume is current but cannot overwrite its predecessor's confirmed facts until its own review is explicitly confirmed.
-
-## AI Engine Workflow (Phase 3)
-
-The reasoning bounds run exclusively through a centralized `GeminiProvider`.
-
-```text
-Gemini SDK (google-genai) -> Provide System Instruction Context
-    -> Response -> Pydantic Schema Validation (Strict JSON)
-    -> SQLAlchemy Record (JobAnalysis / AIUsage)
-    -> Backend App Logic
-```
-
-The app's AI integration does NOT make direct browser-related commands or manipulate business execution; it strictly conforms to JSON-bound models (e.g. returning a deterministic `recommendation: AIRecommendation`) and catches rate-limiting or quota errors proactively.
-
-## Discovery Workflow (Phase 5)
-
-```text
-DiscoveryService orchestrates job discovery:
-    ↓
-NaukriAdapter (Playwright) starts browser session
-    ↓
-Navigate Naukri search with user's job titles/locations
-    ↓
-Extract job cards (title, company, location, salary, experience, posted_at, employment_type, external_job_id)
-    ↓
-Paginate through search results (pages_processed tracking)
-    ↓
-Fetch job descriptions from individual pages when needed
-    ↓
-Normalize and deduplicate (by external_job_id, URL, title+company)
-    ↓
-Persist to SQLite (Job, DiscoveryRun with statistics)
-    ↓
-Handle security/authentication failures (AUTH_REQUIRED, SECURITY_REQUIRED states)
-    ↓
-AgentState lifecycle management (RUNNING → SEARCHING → FILTERING → IDLE/STOPPED/ERROR)
-```
-
-`DiscoveryService` owns the workflow. It uses Playwright for normal browser interactions without evasion techniques. Security challenges (CAPTCHA, human verification) halt discovery and transition to SECURITY_REQUIRED state. Authentication failures transition to AUTH_REQUIRED state. The service tracks pages_processed, jobs_discovered, new_jobs, duplicate_jobs, and errors in DiscoveryRun statistics.
-
-## Scheduler Workflow (Phase 7 - Checkpoint 1)
-
-```text
-SchedulerService orchestrates scheduled job discovery:
-    ↓
-JobScheduler (APScheduler AsyncIOScheduler)
-    ↓
-Configurable interval (default hourly, max_instances=1)
-    ↓
-Scheduled task callback triggers DiscoveryService
-    ↓
-Agent state check (skip if agent is busy)
-    ↓
-DiscoveryService.run_discovery()
-    ↓
-SchedulerConfig persistence (enabled, interval, state, timestamps)
-    ↓
-AgentState lifecycle management
-```
-
-`SchedulerService` owns the orchestration and persistence. It uses APScheduler for timing with `max_instances=1` to prevent overlapping runs. Configuration (enabled, interval_minutes, max_instances) is persisted to the database for recovery across restarts. The scheduler respects agent state - it skips discovery when the agent is in RUNNING, SEARCHING, FILTERING, or APPLYING states. The scheduler is timing/orchestration only - business rules remain in DiscoveryService. API routes provide control (start, stop, pause, resume) and status reporting. Safe startup/shutdown is integrated with the FastAPI lifespan.
-
-## Application Limits Workflow (Phase 7 - Checkpoint 2A)
-
-```text
-ApplicationLimitService enforces hourly/daily volume limits:
-    ↓
-Uses existing JobPreference model (max_hourly_applications, max_daily_applications)
-    ↓
-Counts only successful applications (APPLIED/SUBMITTED status)
-    ↓
-Hourly usage: applications with applied_at >= now - 1 hour
-    ↓
-Daily usage: applications with applied_at >= now - 24 hours
-    ↓
-Limit check: blocks if hourly_used >= max_hourly OR daily_used >= max_daily
-    ↓
-ApplicationRunner: checks limits AFTER duplicate check, BEFORE safety gate
-    ↓
-SchedulerService: checks limits BEFORE starting discovery
-    ↓
-Deterministic Python logic only - Gemini never decides limits
-```
-
-`ApplicationLimitService` owns the limit enforcement logic. It uses the existing JobPreference model which already had limit fields from Phase 4. Only successful applications (APPLIED or SUBMITTED status) count toward limits - failed, skipped, or external applications do not. The limit check happens in two places: (1) in ApplicationRunner after duplicate check but before the safety gate, and (2) in SchedulerService before starting discovery. This ensures resources aren't wasted on applications that would be blocked, and the scheduler doesn't start discovery when limits are reached. Limits are enforced using deterministic Python logic only - Gemini never decides whether a limit is exceeded. API routes provide limit status and configuration management.
-
-## AI Queue Workflow (Phase 7 - Checkpoint 2B)
-
-```text
-AIQueueService manages persistent work queue for Gemini analysis:
-    ↓
-Enqueue discovered jobs (SCHEDULER or MANUAL source)
-    ↓
-Priority-based processing (higher priority first)
-    ↓
-Sequential processing with quota handling
-    ↓
-Retry logic (1min, 5min, 15min delays)
-    ↓
-Stale item recovery (PROCESSING stuck > 30min)
-    ↓
-Status tracking: QUEUED, PROCESSING, COMPLETED, RETRY_PENDING, QUOTA_BLOCKED, NEEDS_ATTENTION, FAILED
-```
-
-`AIQueueService` owns the queue management. It uses AIQueueItem model for persistence with status, priority, attempt tracking, and retry scheduling. Items are enqueued from scheduler after discovery or manually via API. Processing is sequential with GeminiProvider for analysis. Quota exhaustion items are marked QUOTA_BLOCKED and retried when quota becomes available. Stale items (stuck in PROCESSING > 30min) are recovered to RETRY_PENDING or NEEDS_ATTENTION on startup. The queue respects deterministic priority calculation based on job freshness, description completeness, and title relevance. API routes provide queue status, enqueue, and manual processing triggers.
-
-## Agent Lifecycle Workflow (Phase 7 - Checkpoint 3)
-
-```text
-AgentLifecycleService orchestrates agent lifecycle:
-    ↓
-Safe startup recovery (recover stale queue, reset active states to IDLE)
-    ↓
-Prerequisite validation (confirmed profile, job preferences, API key)
-    ↓
-START: Validate prerequisites → Start scheduler → Transition to RUNNING
-    ↓
-PAUSE: Pause scheduler → Transition to PAUSED (queue preserved)
-    ↓
-RESUME: Validate prerequisites → Resume scheduler → Transition to RUNNING
-    ↓
-STOP: Stop scheduler → Transition to STOPPED (queue preserved)
-    ↓
-State transitions follow AgentStateManager rules
-```
-
-`AgentLifecycleService` owns lifecycle orchestration without duplicating AgentStateManager. It provides safe start/stop/pause/resume operations with prerequisite validation. Startup recovery resets active states (RUNNING, SEARCHING, FILTERING, APPLYING) to IDLE to prevent automatic application submission after restart. Problem states (AUTH_REQUIRED, SECURITY_REQUIRED) are preserved for user attention. Stale AI queue items are recovered on startup. The service integrates with SchedulerService and AIQueueService for complete lifecycle management. API routes provide lifecycle status and control endpoints.
-
-## Windows Auto-Start Workflow (Phase 7 - Checkpoint 3)
-
-```text
-WindowsAutoStartService manages Windows Task Scheduler integration:
-    ↓
-Enable: Create Task Scheduler task (ONLOGON trigger, user-level)
-    ↓
-Disable: Delete Task Scheduler task
-    ↓
-Status: Check if task exists and is enabled
-    ↓
-Platform-aware: Only available on Windows
-```
-
-`WindowsAutoStartService` owns Windows auto-start management using Task Scheduler. It creates user-level tasks (no admin required) with ONLOGON trigger to start the application when the user logs in. The task runs with HIGHEST privileges which may be needed for browser automation. Auto-start is optional and user-controlled - not automatic during development. The service checks task status, enables/disables via schtasks command, and provides platform-aware behavior (no-op on non-Windows). API routes provide auto-start status and control. This allows the application to start automatically with Windows while still requiring explicit user action to begin job processing (safe default).
-
-## Decision Quality Workflow (Phase 7 - Checkpoint 4)
-
-```text
-DecisionQualityService evaluates job decision quality:
-    ↓
-Hard filter checks (authoritative Python rules):
-    - Profile confirmation
-    - Location match
-    - Experience compatibility
-    - Salary minimum
-    - Employment type
-    - Job title scope
-    - Duplicate protection
-    ↓
-If hard filter fails → HARD_REJECT
-    ↓
-AI Analysis integration (advisory only):
-    - Role relevance
-    - Skill relevance
-    - Job quality
-    - Suspicious detection
-    ↓
-Signal calculation:
-    - Role relevance score (0-1)
-    - Skill relevance score (0-1)
-    - Experience compatibility score (0-1)
-    - Location match score (0-1)
-    - Salary suitability score (0-1)
-    - Job quality score (0-1)
-    - Freshness score (0-1)
-    - Duplicate probability (0-1)
-    - Suspicious probability (0-1)
-    - Feedback adjustment (-1 to 1)
-    ↓
-Decision score calculation (0-100)
-    ↓
-Priority determination:
-    - HIGH_PRIORITY (score ≥ 80)
-    - NORMAL_PRIORITY (score ≥ 60)
-    - LOW_PRIORITY (score ≥ 40)
-    - SKIP (score ≥ 20)
-    - HARD_REJECT (hard filter failed)
-    - NEEDS_ATTENTION (special cases)
-    ↓
-Explainable decision with reason codes
-    ↓
-DecisionQualityRecord persistence for analytics
-```
-
-`DecisionQualityService` owns decision quality assessment. Hard filters remain authoritative - Gemini recommendations are advisory only. The service combines deterministic Python rules with AI analysis to produce explainable decisions with structured reason codes. Decision scores are calculated using weighted signal combination. Priority levels are determined based on decision scores and special cases. All decisions are persisted to DecisionQualityRecord for analytics and learning.
-
-## Job Prioritization Workflow (Phase 7 - Checkpoint 4)
-
-```text
-JobPrioritizationService prioritizes jobs for application:
-    ↓
-Get list of job IDs to prioritize
-    ↓
-For each job:
-    - Evaluate decision quality via DecisionQualityService
-    - Calculate priority level
-    - Generate explanation
-    ↓
-Sort by priority (descending):
-    - HIGH_PRIORITY → 5
-    - NORMAL_PRIORITY → 4
-    - LOW_PRIORITY → 3
-    - SKIP → 2
-    - HARD_REJECT → 1
-    - NEEDS_ATTENTION → 0
-    ↓
-Within same priority, sort by decision score (descending)
-    ↓
-Return prioritized job list
-    ↓
-Filter to eligible jobs (HIGH/NORMAL/LOW priority only)
-    ↓
-Apply limit if specified
-```
-
-`JobPrioritizationService` owns job prioritization logic. It uses DecisionQualityService for job evaluation and sorts jobs by priority level and decision score. The service provides methods to get all prioritized jobs, eligible jobs only, and eligible jobs with limit. Prioritization is deterministic and reproducible for the same inputs. Hard-filtered jobs (HARD_REJECT) never become higher priority than eligible jobs.
-
-## Feedback and Learning Workflow (Phase 7 - Checkpoint 4)
-
-```text
-FeedbackService manages user feedback:
-    ↓
-Submit feedback for a job:
-    - Feedback type (RELEVANT, NOT_RELEVANT, etc.)
-    - Optional comments
-    ↓
-Store in JobFeedback model
-    ↓
-Feedback influence on decision quality:
-    - Positive feedback → increase adjustment
-    - Negative feedback → decrease adjustment
-    - Adjustment range: -1 to 1
-    ↓
-Get feedback summary:
-    - Total feedback count
-    - Feedback type breakdown
-    - Relevance rate calculation
-```
-
-`FeedbackService` owns feedback management. It stores explicit user feedback in JobFeedback model and provides methods to submit, retrieve, and summarize feedback. Feedback influences decision quality by adjusting the feedback_adjustment signal in DecisionQualityService. Learning boundaries are enforced - feedback cannot modify hard filters, change user preferences, or bypass safety gates. Feedback is used for ranking/prioritization only.
-
-## Application Analytics Workflow (Phase 7 - Checkpoint 4)
-
-```text
-AnalyticsService provides application analytics:
-    ↓
-Analytics summary:
-    - Discovered jobs
-    - Total applications
-    - Successful applications
-    - Skipped applications
-    - Needs attention
-    - External applications
-    - Success rate
-    - AI requests
-    - AI analyses
-    - Discovery runs
-    ↓
-Skip reasons analysis:
-    - Top skip reasons with counts
-    - Configurable time period
-    ↓
-Decision breakdown:
-    - Priority distribution
-    - Counts and percentages
-    ↓
-Applications by day:
-    - Daily application counts
-    - Time-series data
-    ↓
-Applications by job profile:
-    - Breakdown by job title
-    - Application counts per title
-    ↓
-Primary reason codes:
-    - Top decision reason codes
-    - Aggregated statistics
-    ↓
-Feedback summary:
-    - Total feedback
-    - Feedback type breakdown
-    - Relevance rate
-    ↓
-Recent decision activity:
-    - Latest decision quality records
-    - Priority, score, reason codes
-```
-
-`AnalyticsService` owns analytics and reporting. It uses existing Job, Application, DecisionQualityRecord, and JobFeedback data to provide comprehensive analytics without creating fake historical data. All analytics respect configurable time periods and provide aggregate metrics for decision-making and performance monitoring.
-
-## Frontend Architecture
-
-The frontend is built with modern React architecture for production-ready SaaS dashboard experience:
-
-```text
-React 19.1.0 + TypeScript 5.8.3
-    ↓
-Vite 6.3.5 (build tooling)
-    ↓
-Tailwind CSS 4.1.4 (styling)
-    ↓
-Lucide React 0.468.0 (icons)
-    ↓
-Component-based architecture
-```
-
-**Component Structure:**
-- App shell with navigation and layout
-- Reusable state components (LoadingState, EmptyState, ErrorState, BackendState)
-- Feature-specific components (AnalyticsDashboard, AgentControl, ProfileWorkspace, JobPreferences)
-- Type-safe API integration with TypeScript
-- Modern React patterns with hooks
-
-**Design System:**
-- Naukri-inspired color palette (primary blue, deep blue, accent orange)
-- Consistent spacing system (4px, 8px, 16px, 24px, 32px)
-- Responsive design (desktop, tablet, mobile)
-- Accessibility-first approach (ARIA labels, keyboard navigation, focus states)
-- Modern visual language with rounded corners, shadows, and transitions
-
-**Build Pipeline:**
-- TypeScript compilation for type safety
-- Vite production build with code splitting
-- CSS bundling with Tailwind
-- Optimized bundle size (267.10 kB JS, 28.43 kB CSS)
-- Fast build times (17.59s)
-
-**API Integration:**
-- RESTful API communication with FastAPI backend
-- Type-safe API contracts with TypeScript interfaces
-- Error handling and loading states
-- Backend connection state management
-- Graceful degradation for offline scenarios
-## Phase 10 Application Boundary Fix
-
-The application boundary is now evidence-driven offline. After a native Apply click,
-the adapter waits for explicit visible `#already-applied`, `.already-applied`, exact
-`Applied`, or `Applied to "<title>"` evidence before marking an application APPLIED.
-If a visible application container appears, question handling is scoped to that
-container and excludes hidden, disabled, zero-sized, and readonly controls. If
-neither state appears within the bounded wait, the attempt becomes NEEDS_ATTENTION.
-Native/external classification occurs before creating APPLICATION_STARTED and is
-rechecked immediately before the click. Unresolved EXTERNAL_APPLICATION and
-NEEDS_ATTENTION attempts require manual reset before retry. This checkpoint was
-validated offline only; no live browser action or submission occurred.
+## 18. Related documents
+
+- [README](../README.md)
+- [API reference](API.md)
+- [Architecture decisions](DECISIONS.md)
+- [Development status](DEVELOPMENT_STATUS.md)
+- [Product requirements](MASTER_PRD.md)
+- [Future roadmap](FUTURE_IMPLEMENTATION_ROADMAP.md)
+- [Historical archive](archive/README.md)
